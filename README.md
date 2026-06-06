@@ -252,4 +252,4 @@ For bug reports or feature requests, open an issue in the repository.
 ---
 
 # Credits
-[**`Myden`**](https://github.com/md7u) - **`rLine`** & **`Cudane`** Founder. | Made with 🤍 and **Rust**.
+[**`Myden`**](https://github.com/md7u) - **`Cudane`** & **`MCX`** Founder. | Made with 🤍 and **Rust**.
