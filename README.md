@@ -196,7 +196,7 @@ mcx -b --config /path/to/config.json
 - MCX automatically creates a lock in the path `/var/lib/mcx/lock` when any process starts to prevent database conflicts. If the program is interrupted using Ctrl+C, the engine automatically removes the lock to prevent subsequent operations from freezing.
 - All package extraction and metadata.json file checks are performed within a temporary, isolated environment in `var/tmp/mcx/stage/` to ensure that live system files are not affected until the check is successful and the correct checksum is met.
 
-## System Profile Format
+# System Profile Format
 MCX can reconcile the installed package set against a declarative JSON profile.
 
 Example:
@@ -211,7 +211,7 @@ Example:
 
 The `build` command installs missing packages and removes packages not declared in the profile.
 
-# Build fFrom Source and Run
+# Build From Source and Run
 Build the project with **`cargo`**:
 
 ```shell
