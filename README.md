@@ -1,106 +1,228 @@
-```text
- __  __  ______  __  ____            _                      __  __                                   
-|  \/  |/ ___\ \/ / |  _ \ __ _  ___| | ____ _  __ _  ___  |  \/  | __ _ _ __   __ _  __ _  ___ _ __ 
-| |\/| | |    \  /  | |_) / _` |/ __| |/ / _` |/ _` |/ _ \ | |\/| |/ _` | '_ \ / _` |/ _` |/ _ \ '__|
-| |  | | |___ /  \  |  __/ (_| | (__|   < (_| | (_| |  __/ | |  | | (_| | | | | (_| | (_| |  __/ |   
-|_|  |_|\____/_/\_\ |_|   \__,_|\___|_|\_\__,_|\__, |\___| |_|  |_|\__,_|_| |_|\__,_|\__, |\___|_|   
-                                               |___/                                 |___/               
-```
+# MCX
 
-MCX is a high-performance, functional package management engine designed for Desind GNU/Linux. It bridges the gap between complex functional declarations and raw system execution by converting Guix-style definitions into optimized, standalone Makefiles.
+MCX is a Rust-based package manager engine for Cudane Linux. It manages package installation, removal, dependency resolution, system profile reconciliation, and repository metadata using a lightweight JSON-backed state layer and async networking.
 
----
+## What MCX Is
 
-## Package Structure
+MCX is intended to provide a neutral package lifecycle runtime for a Linux distribution by:
 
-Each release (e.g., `mcx-0.26.tar.xz`) contains the following core components:
+- resolving package dependencies with a topological solver
+- downloading package archives over HTTP
+- verifying archive integrity before installation
+- staging and extracting payloads safely
+- persisting package state and history in JSON
+- reconciling a declared system profile with the installed package set
 
-```text
-mcx-*.tar.xz/
-├── mcx.c              # Source code for the binary manager
-├── converter.py       # Intelligent S-expression to Makefile engine
-├── bootstrap.sh       # Automation for registry generation and compilation
-└── registry/          # Database of generated Makefile recipes
-    ├── 0xffff/        # Individual package directory
-    │   └── 0.10.mk    # Version-specific build and fetch instructions
-    └── ...            # Thousands of pre-converted packages
+## Project Structure
 
-```
+Key folders and files:
 
----
+- `src/main.rs` — CLI entrypoint and subcommand routing
+- `src/commands/` — implementation of install, remove, search, update, upgrade, query, clean, verify, fix, config, history, and build commands
+- `src/core/` — package database, dependency solver, transaction history, changelog, and declarative profile handling
+- `src/archive/` — archive extraction and collision detection
+- `src/network/` — HTTP downloader with sequential and ranged chunked downloads
+- `src/utils/ui.rs` — terminal output helpers and progress rendering
+- `Cargo.toml` — build metadata, runtime dependencies, and release optimizations
 
-## How It Works
+## How MCX Works
 
-### 1. The Conversion Engine (`converter.py`)
+### Package State
 
-The engine scans the local repository for `.scm` package definitions. It parses nested S-expressions to extract metadata such as source URLs, versions, and recursive dependencies. It then flattens this complexity into a deterministic `.mk` file for every package version.
+MCX stores registry and package state under the configured root path:
 
-### 2. Sovereign Management (`mcx`)
+- `var/lib/mcx/local.json` — installed and available package metadata
+- `var/lib/mcx/history.jsonl` — transaction history journal
+- `var/cache/mcx` — downloaded package archives
+- `var/tmp/mcx/stage` — extraction staging area
 
-The C-based manager handles the high-level logic:
+Package metadata includes package name, version, license, source URL, checksum data, dependency list, file manifest, provides, and conflicts.
 
-* **Parallel Execution:** Utilizes all available CPU cores for compilation.
-* **Isolation:** Supports installation into isolated environments via `chroot`.
-* **System Integration:** Links the manager to `/usr/bin/` and enables bash auto-completion.
+### Dependency Solving
 
----
+The dependency solver:
 
-## Installation Steps (Manual Deployment)
+- loads package manifests from the local database
+- resolves recursive package dependencies
+- supports virtual providers via `provides`
+- detects cyclic dependency loops
+- verifies conflict constraints before install planning
+- produces a topologically ordered install plan
 
-Since this package is a sovereign source-to-binary distribution, follow these manual steps to integrate MCX into your system:
+### Transactions and Safety
 
-### 1. Extract the Package
+Install and remove actions are wrapped in transactions that:
 
-```bash
-tar -xf mcx-0.26.tar.xz
-cd mcx
+- back up files before overwriting them
+- record staged file paths
+- track affected packages
+- commit JSON state only after successful completion
+- rollback automatically if a transaction is dropped without committing
 
-```
+This design reduces the risk of partial or inconsistent package installations.
 
-### 2. Generate the Package Registry
+## CLI Usage
 
-Run the converter engine to scan the `.scm` definitions and generate the Makefile recipes:
+The `mcx` binary supports a subcommand-based interface. Use `--root <path>` to change the root filesystem base (default: `/`).
 
-```bash
-python3 converter.py
-
-```
-
-### 3. Build the Sovereign Manager
-
-Give **MCX** the excution permissions:
+### Install packages
 
 ```bash
-chmod +x mcx
+mcx install <package>...
 ```
 
-### 4. System-Wide Integration (The Root Actions)
+Aliases: `in`, `add`
 
-To make `mcx` available as a global command and enable all system features:
-
-* **Move to Permanent Location**: It is recommended to keep the MCX directory in a stable path:
-```bash
-sudo mkdir -p /opt/mcx
-sudo cp -r . /opt/mcx/
-cd /opt/mcx
-```
-
-* **Link Binary and Enable Auto-completion**: Run the internal setup command to create symlinks in `/usr/bin/` and activate bash completion:
-```bash
-sudo ./mcx install-sys
-```
-
----
-
-## Usage
-
-Once installed, you can build and install any package from the registry:
+### Add a local package file
 
 ```bash
-# Build a package
-mcx build 0xffff
-
-# Install a package to the system (Requires Root)
-sudo mcx install 0xffff
-
+mcx add-local <file>
 ```
+
+Aliases: `local`, `package`, `xcs`
+
+### Remove packages
+
+```bash
+mcx remove <package>...
+```
+
+Aliases: `rm`, `uninstall`, `delete`
+
+### Search available packages
+
+```bash
+mcx search <query>
+```
+
+Aliases: `find`, `look`
+
+### Update local manifest registry
+
+```bash
+mcx update
+```
+
+Aliases: `refresh`, `sync`
+
+### Upgrade the installed set
+
+```bash
+mcx upgrade
+```
+
+Aliases: `up`, `dist-upgrade`
+
+### Query package status
+
+```bash
+mcx query <package>
+```
+
+Aliases: `info`, `show`
+
+### Clean cache and history
+
+```bash
+mcx clean
+```
+
+Aliases: `wipe`, `clear`
+
+### Verify installation state
+
+```bash
+mcx verify
+```
+
+Aliases: `check`, `certify`
+
+### Fix dependency graph issues
+
+```bash
+mcx fix
+```
+
+Aliases: `fix-deps`, `repair`
+
+### Inspect configuration
+
+```bash
+mcx config
+```
+
+Aliases: `cfg`, `settings`
+
+### History and rollback
+
+```bash
+mcx history [--rollback <transaction_id>]
+```
+
+Aliases: `log`, `record`
+
+### Rebuild from system profile
+
+```bash
+mcx build <profile.json>
+```
+
+Aliases: `make`, `create`
+
+## System Profile Format
+
+MCX can reconcile the installed package set against a declarative JSON profile.
+
+Example profile:
+
+```json
+{
+  "version": "1.0",
+  "architecture": "x86_64",
+  "packages": ["foo", "bar", "baz"]
+}
+```
+
+The `build` command installs missing packages and removes packages not declared in the profile.
+
+## Build and Run
+
+Build the project with Cargo:
+
+```bash
+cargo build --release
+```
+
+Run the compiled binary:
+
+```bash
+./target/release/mcx install foo
+```
+
+Use a custom root path:
+
+```bash
+./target/release/mcx --root /tmp/mcx-root install foo
+```
+
+## Notes
+
+- The implementation is written in Rust and uses `tokio` for async operations.
+- Package state is managed in JSON and persisted under the configured root.
+- The downloader supports both sequential downloads and ranged chunked downloads for larger files.
+- The configuration editor module provides a TUI editor implementation, though `mcx config` currently reports configuration state.
+- Some CLI commands currently act as workflow scaffolding or simulated progress UI while the core install/remove logic is fully implemented.
+
+## Contributing
+
+To extend MCX or add new features, start with these files:
+
+- `src/main.rs`
+- `src/commands/*.rs`
+- `src/core/database.rs`
+- `src/core/solver.rs`
+- `src/network/download.rs`
+- `src/archive/extract.rs`
+- `src/utils/ui.rs`
+
+For bug reports or feature requests, open an issue in the repository.
