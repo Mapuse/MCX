@@ -8,7 +8,7 @@
 ```
 ---
 
-MCX is a Rust-based package manager engine for Cudane Linux. It manages package installation, removal, dependency resolution, system profile reconciliation, and repository metadata using a lightweight JSON-backed state layer and async networking, it's intended to provide a neutral package lifecycle runtime for Cudane Linux by:
+**`MCX`** is a Rust-based package manager engine for Cudane Linux. It manages package installation, removal, dependency resolution, system profile reconciliation, and repository metadata using a lightweight JSON-backed state layer and async networking, it's intended to provide a neutral package lifecycle runtime for Cudane Linux by:
 
 - resolving package dependencies with a topological solver
 - downloading package archives over HTTP
