@@ -1,0 +1,48 @@
+[package]
+name = "mcx"
+version = "1.0.0"
+edition = "2024"
+authors = ["Cudane Linux"]
+description = "Neutral Package Manager for Cudane Linux with CSLa1 license"
+
+[[bin]]
+name = "mcx"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { version = "1.44.0", features = ["full"] }
+anyhow = "1.0.96"
+thiserror = "2.0.12"
+
+reqwest = { version = "0.12.13", default-features = false, features = ["rustls-tls", "json", "stream"] }
+futures-util = "0.3.31"
+
+rusqlite = { version = "0.33.0", features = ["bundled"] }
+serde = { version = "1.0.218", features = ["derive"] }
+serde_json = "1.0.139"
+
+tar = "0.4.44"
+zstd = "0.13.3"
+tempfile = "3.27.0"
+
+sha2 = "0.10.8"
+regex = "1.11.2"
+chrono = { version = "0.4.40", features = ["serde"] }
+
+clap = { version = "4.5.28", features = ["derive"] }
+ratatui = "0.29.0"
+crossterm = "0.28.1"
+indicatif = "0.17.11"
+console = "0.15.11"
+
+directories = "6.0.0"
+futures = "0.3.32"
+libc = "0.2.186"
+wiremock = "0.6.5"
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
