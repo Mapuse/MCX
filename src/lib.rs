@@ -18,6 +18,7 @@ pub use core::changelog::ChangelogManager;
 pub use core::completion::CompletionEngine;
 pub use core::database::Database;
 pub use core::declarative::ProfileValidator;
+pub use core::features::FeatureEngine;
 pub use core::graph::DepGraph;
 pub use core::history::HistoryEngine;
 pub use core::manifest::ManifestParser;

@@ -2,7 +2,7 @@ use std::fs;
 use std::path::Path;
 use std::sync::Arc;
 use anyhow::{Result, anyhow};
-use futures::future::join_all;
+use futures_util::future::join_all;
 use crate::core::solver::DependencySolver;
 use crate::core::db::Database;
 use crate::network::download::Downloader;

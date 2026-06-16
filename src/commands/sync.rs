@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 use std::sync::Arc;
-use futures::future::join_all;
+use futures_util::future::join_all;
 use crate::core::db::Database;
 use crate::network::download::Downloader;
 use crate::archive::hash::HashVerifier;
@@ -28,6 +28,7 @@ impl SyncCommand {
             let final_manifest = meta_dir.join(format!("{}.json", repo.name));
             let index_path = self.root.join("var/lib/mcx/repos").join(format!("{}.index", repo.name));
             let dl = Arc::clone(&downloader);
+            let repo_name = repo.name.clone();
 
             tasks.push(tokio::spawn(async move {
                 dl.download_package(&repo.url, &temp_manifest).await?;
@@ -37,14 +38,14 @@ impl SyncCommand {
                 }
 
                 std::fs::rename(&temp_manifest, &final_manifest)?;
-                Ok::<_, anyhow::Error>((repo.name, index_path))
+                Ok::<_, anyhow::Error>((repo_name, index_path))
             }));
         }
 
         let mut transaction = self.db.begin_transaction()?;
         for result in join_all(tasks).await {
-            let (repo_name, index_path) = result??;
-            transaction.update_repository_index(&repo_name, index_path.to_str().unwrap())?;
+            let (ref repo_name, ref index_path) = result??;
+            transaction.update_repository_index(repo_name, index_path.to_str().unwrap())?;
         }
 
         transaction.commit()?;

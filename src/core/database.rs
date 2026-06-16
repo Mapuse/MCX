@@ -28,6 +28,8 @@ pub struct PackageMetadata {
     pub files: Vec<PathBuf>,
     pub provides: Option<Vec<String>>,
     pub conflicts: Option<Vec<String>>,
+    #[serde(default)]
+    pub features: Vec<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]

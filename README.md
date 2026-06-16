@@ -1,203 +1,350 @@
-```text
- __  __  ______  __  ____            _                      __  __                                   
-|  \/  |/ ___\ \/ / |  _ \ __ _  ___| | ____ _  __ _  ___  |  \/  | __ _ _ __   __ _  __ _  ___ _ __ 
-| |\/| | |    \  /  | |_) / _` |/ __| |/ / _` |/ _` |/ _ \ | |\/| |/ _` | '_ \ / _` |/ _` |/ _ \ '__|
-| |  | | |___ /  \  |  __/ (_| | (__|   < (_| | (_| |  __/ | |  | | (_| | | | | (_| | (_| |  __/ |   
-|_|  |_|\____/_/\_\ |_|   \__,_|\___|_|\_\__,_|\__, |\___| |_|  |_|\__,_|_| |_|\__,_|\__, |\___|_|   
-                                               |___/                                 |___/           
-```
+# MCX Package Manager
+
 ---
 
-**`MCX`** is a Rust-based package manager engine for Cudane Linux. It manages package installation, removal, dependency resolution, system profile reconciliation, and repository metadata using a lightweight JSON-backed state layer and async networking, provides a neutral package lifecycle runtime for Cudane Linux by:
+**MCX** is a Rust-based package manager for **Cudane Linux**. It handles package installation, removal, dependency resolution, system profile reconciliation, repository synchronization, and metadata management using a JSON-backed state layer, async networking, and a transaction-safe engine. MCX also implements **nine kernel-level runtime features** that consume and act on the metadata embedded in every package archive.
 
-- resolving package dependencies with a topological solver
-- downloading package archives over HTTP
-- verifying archive integrity before installation
-- staging and extracting payloads safely
-- persisting package state and history in JSON
-- reconciling a declared system profile with the installed package set
+---
 
-# Structure
-- `src/main.rs` — CLI entrypoint and subcommand routing
-- `src/commands/` — implementation of install, remove, search, update, upgrade, query, clean, verify, fix, config, history, and build commands
-- `src/core/` — package database, dependency solver, transaction history, changelog, and declarative profile handling
-- `src/archive/` — archive extraction and collision detection
-- `src/network/` — HTTP downloader with sequential and ranged chunked downloads
-- `src/utils/ui.rs` — terminal output helpers and progress rendering
-- `Cargo.toml` — build metadata, runtime dependencies, and release optimizations
+## Table of Contents
 
-# How MCX Works
+- [Table of Contents](#table-of-contents)
+- [Architecture](#architecture)
+- [Package State Layer](#package-state-layer)
+- [Transaction Safety](#transaction-safety)
+- [CLI Usage](#cli-usage)
+  - [Package Management](#package-management)
+  - [Local Package Handling](#local-package-handling)
+  - [Repository Management](#repository-management)
+  - [System Profile Build](#system-profile-build)
+  - [History and Rollback](#history-and-rollback)
+  - [Configuration and Utilities](#configuration-and-utilities)
+- [Kernel-Level Runtime Features](#kernel-level-runtime-features)
+  - [Lazy Mount](#lazy-mount)
+  - [CAS Deduplication](#cas-deduplication)
+  - [Atomic Rollback](#atomic-rollback)
+  - [Delta Reconstruction](#delta-reconstruction)
+  - [Memory Snapshot (Checkpoint/Restore)](#memory-snapshot-checkpointrestore)
+  - [Cloud-Streamable Overlay](#cloud-streamable-overlay)
+  - [Isolated State Overlay](#isolated-state-overlay)
+  - [P2P Swarm Distribution](#p2p-swarm-distribution)
+  - [Resource Throttle and Self-Healing Telemetry](#resource-throttle-and-self-healing-telemetry)
+- [Metadata Feature Flag Reference](#metadata-feature-flag-reference)
+- [Dependency Solving](#dependency-solving)
+- [System Profile Format](#system-profile-format)
+- [Build From Source](#build-from-source)
+- [Notes](#notes)
+- [Contributing](#contributing)
+- [Credits](#credits)
 
-### Package State
-MCX stores registry and package state under the configured root path:
+---
 
-- `var/lib/mcx/local.json` — installed and available package metadata
-- `var/lib/mcx/history.jsonl` — transaction history journal
-- `var/cache/mcx` — downloaded package archives
-- `var/tmp/mcx/stage` — extraction staging area
+## Architecture
 
-Package metadata includes package name, version, license, source URL, checksum data, dependency list, file manifest, provides, and conflicts.
+MCX is organized into four main layers:
 
-# Dependency Solving
+- **`src/main.rs`** — CLI entry point and subcommand routing (clap-based parser). All commands have both short flags (`-i`, `-r`, `-s`, etc.) and long flags (`--install`, `--remove`, `--search`, etc.) plus aliases for convenience.
+- **`src/commands/`** — implementation of install, remove, search, update, upgrade, query, clean, verify, fix, config, history, build, and all feature commands.
+- **`src/core/`** — package database, dependency solver, transaction history, changelog, declarative profile handling, repository manager, and **FeatureEngine** implementing all nine runtime capabilities.
+- **`src/archive/`** — archive extraction, collision detection, hash verification.
+- **`src/network/`** — HTTP downloader with sequential and ranged chunked downloads.
+- **`src/utils/`** — terminal output helpers, configuration management.
+
+---
+
+## Package State Layer
+
+MCX stores all registry and package state under the configured root path:
+
+| Path | Purpose |
+| ------ | --------- |
+| `var/lib/mcx/local.json` | Installed and available package metadata ledger |
+| `var/lib/mcx/history.jsonl` | Transaction history journal |
+| `var/cache/mcx` | Downloaded package archives |
+| `var/tmp/mcx/stage` | Extraction staging area |
+| `var/lib/mcx/generations/` | Atomic rollback generation snapshots |
+| `var/lib/mcx/active/` | Symlinks to the current generation of each package |
+| `var/lib/mcx/cas/` | Content-addressable storage for shared library dedup |
+| `var/lib/mcx/snapshots/` | Memory snapshots (checkpoint data) |
+| `var/lib/mcx/stream/` | Cloud-stream mount helper scripts |
+| `var/lib/mcx/swarm/` | P2P peer database and swarm hash registrations |
+
+Each package metadata record contains: `pkg_name`, `version`, `license`, `source`, `checksum`, `dependencies`, `files`, `provides`, `conflicts`, and `features`.
+
+---
+
+## Transaction Safety
+
+Install and remove actions are wrapped in **atomic transactions** that:
+
+- Back up targeted files before overwriting them
+- Record all staged file paths
+- Track affected packages by name
+- Commit JSON state only after every file operation succeeds
+- **Roll back automatically** if a transaction is dropped without committing (via `Drop` trait)
+
+This eliminates partial or inconsistent package installations.
+
+---
+
+## CLI Usage
+
+### Package Management
+
+| Action | Short Flag | Long Flag | Aliases | Example |
+| -------- | ----------- | ----------- | --------- | --------- |
+| Install | `-i` | `--install` | `in`, `add` | `mcx -i firefox vim` |
+| Remove | `-r` | `--remove` | `rm`, `uninstall`, `delete` | `mcx -r firefox` |
+| Search | `-s` | `--search` | `find`, `look` | `mcx -s browser` |
+| Query | `-q` | `--query` | `info`, `show` | `mcx -q firefox` |
+| Update | `-u` | `--update` | `refresh`, `sync` | `mcx -u` |
+| Upgrade | `-U` | `--upgrade` | `up`, `dist-upgrade` | `mcx -U` |
+| Clean | `-c` | `--clean` | `wipe`, `clear` | `mcx -c` |
+| Verify | `-v` | `--verify` | `check`, `certify` | `mcx -v` |
+| Fix deps | `-f` | `--fix` | `fix-deps`, `repair` | `mcx -f` |
+
+### Local Package Handling
+
+```shell
+# Install a local .xcs archive
+mcx -a /path/to/package.xcs
+
+# When the metadata's features list includes lazy-mount / cas-deduplication /
+# atomic-rollback, the installation automatically triggers those engines.
+```
+
+### Repository Management
+
+| Action | Long Flag | Aliases | Example |
+| -------- | ----------- | --------- | --------- |
+| Add | `--repo-add` | `ra` | `mcx --repo-add myrepo https://repo.example.com/index.json` |
+| Remove | `--repo-remove` | `rr` | `mcx --repo-remove myrepo` |
+| List | `--repo-list` | `rl` | `mcx --repo-list` |
+
+Repositories are synchronized in parallel via `mcx -u`, which downloads each repository's index concurrently and verifies checksums.
+
+### System Profile Build
+
+```shell
+mcx -b --config /etc/cudane/system.json
+```
+
+Rebuilds the system to match a declarative JSON profile — installs missing packages, removes undeclared ones.
+
+### History and Rollback
+
+```shell
+# View transaction history
+mcx -h
+
+# Roll back to a specific transaction
+mcx -h --rollback <transaction_id>
+```
+
+### Configuration and Utilities
+
+```shell
+# Open the built-in TUI editor (nano-like)
+mcx -C
+# Ctrl+O: Save  |  Ctrl+X: Exit
+```
+
+---
+
+## Kernel-Level Runtime Features
+
+MCX reads the `features` / `optimization_features` array from every package's `metadata.json` and activates the corresponding runtime engines. The following nine features are supported:
+
+### Lazy Mount
+
+**Flag:** `"lazy-mount"`
+
+When a package's metadata includes `"lazy-mount"`, MCX generates a **dinit service script** at `/etc/dinit.d/mount-<pkgname>.dinit`. This script performs the mount on demand (when the service is requested) rather than at boot time, reducing boot pressure.
+
+```shell
+# Manual generation
+mcx -L mypackage /system/mypackage/data
+
+# Remove the service
+mcx --lazy-umount mypackage
+```
+
+**Engine:** `FeatureEngine::generate_lazy_mount_service()` writes a dinit script that runs `/bin/mount <mount_point>` on service start.
+
+### CAS Deduplication
+
+**Flag:** `"cas-deduplication"`
+
+Content-addressable storage eliminates redundant shared library copies across packages. MCX scans `system/lib/` for `.so` files, computes their SHA-256 hash, and stores them in `var/lib/mcx/cas/{first-2-hex}/{full-hash}`. Duplicates are replaced with hard links to the canonical copy.
+
+```shell
+# Run dedup on a staging directory
+mcx -D run /path/to/staging
+
+# View statistics
+mcx -D stats
+```
+
+**Engine:** `FeatureEngine::deduplicate_libraries()`
+
+### Atomic Rollback
+
+**Flag:** `"atomic-rollback"`
+
+Every package installation creates a numbered **generation** snapshot under `var/lib/mcx/generations/<pkg_name>/`. A symlink at `var/lib/mcx/active/<pkg_name>` points to the currently active generation. Rollback is a simple symlink flip — no file copying required.
+
+```shell
+# Roll back to generation 2
+mcx -R mypackage 2
+
+# List all generations
+mcx --generations mypackage
+
+# Example output:
+#   Gen 1
+#   Gen 2 [active]
+#   Gen 3
+```
+
+**Engine:** `FeatureEngine::enable_atomic_rollback()`, `rollback_to_generation()`
+
+### Delta Reconstruction
+
+**Flag:** `"delta-reconstruct"`
+
+Apply a `.xcd` micro-diff file to an old `.xcs` package to produce a new package version locally, avoiding full network downloads.
+
+```shell
+mcx -d old-package.xcs delta.xcd new-package.xcs
+```
+
+**`.xcd` format:** Zstd-compressed tar containing `diff.meta` (JSON with `pkg_name`, `from_version`, `to_version`, `removed` paths) and `files/` (new/modified file overlays).
+
+**Engine:** `FeatureEngine::reconstruct_delta()`
+
+### Memory Snapshot (Checkpoint/Restore)
+
+**Flag:** `"memory-snapshot"`
+
+CRIU-inspired technology: MCX takes a snapshot of a running process's memory via `/proc/<pid>/mem` (or falls back to `/proc/<pid>/maps`), compresses it with Zstd, and stores it under `var/lib/mcx/snapshots/<pkg_name>/snap-<timestamp>.mem`.
+
+```shell
+# Checkpoint process with PID 1234 for package 'myapp'
+mcx --checkpoint myapp 1234
+
+# List snapshots
+mcx --snapshots myapp
+```
+
+**Engine:** `FeatureEngine::checkpoint_process()`
+
+### Cloud-Streamable Overlay
+
+**Flag:** `"cloud-streamable"`
+
+Packages can be mounted directly from a remote URL via HTTP range-requests using `squashfuse`. MCX generates a shell script at `var/lib/mcx/stream/<pkg_name>.sh` that can be called to lazily mount the remote SquashFS filesystem without waiting for a full download.
+
+```shell
+# Generate streaming mount script
+mcx --stream-mount myapp https://repo.example.com/myapp.xcs /mnt/myapp
+
+# Remove the script
+mcx --stream-umount myapp
+```
+
+**Engine:** `FeatureEngine::generate_stream_mount_script()`
+
+### Isolated State Overlay
+
+**Flag:** `"isolated-state-overlay"`
+
+MCX creates an **ephemeral OverlayFS** per package in `~/.mcx/overlays/<pkg_name>/`. The package's configuration files are isolated in a private capsule — uninstalling the package leaves zero traces. Two instances of the same package can run with completely different configurations simultaneously.
+
+```shell
+# Create isolated overlay
+mcx --overlay-create myapp ~/.config/myapp
+
+# Remove overlay (cleanup on uninstall)
+mcx --overlay-remove myapp
+```
+
+**Engine:** `FeatureEngine::create_isolated_overlay()`
+
+### P2P Swarm Distribution
+
+**Flag:** `"p2p-swarm"`
+
+MCX implements a lightweight **peer-to-peer exchange protocol** where packages are identified by a cryptographic swarm hash. Peers register their addresses and advertised hashes in a local database. When installing a package, MCX can locate and fetch blocks from nearby peers rather than a central server.
+
+```shell
+# Register a swarm hash for a package
+mcx --swarm-hash myapp e3b0c44298fc1c149afbf4c8996fb924
+
+# Query a swarm hash
+mcx --swarm-get myapp
+
+# List known peers
+mcx --swarm-peers
+
+# Add a peer
+mcx --swarm-peer-add 192.168.1.50:9735 peer-abc123
+```
+
+**Engine:** `FeatureEngine::register_swarm_hash()`, `register_swarm_peer()`
+
+### Resource Throttle and Self-Healing Telemetry
+
+**Flag:** `"resource-throttle"`
+
+MCX writes **cgroup resource limits** for each package at `/sys/fs/cgroup/mcx/<pkg_name>/`, enforcing memory ceilings (`memory.max`) and CPU quotas (`cpu.max`). If a process exceeds its limits, the kernel throttles it automatically. This prevents any single package from consuming all system resources.
+
+```shell
+# Set max 512 MB memory, 50% CPU for myapp
+mcx --throttle-set myapp 512 50
+
+# Remove limits
+mcx --throttle-remove myapp
+```
+
+**Engine:** `FeatureEngine::enforce_resource_limits()`, `remove_resource_limits()`
+
+---
+
+## Metadata Feature Flag Reference
+
+When a package is built, its `metadata.json` can contain an `optimization_features` array. The following flags activate the corresponding MCX runtime engines:
+
+| Flag | Feature | Engine Method |
+| ------ | --------- | -------------- |
+| `"lazy-mount"` | On-demand dinit mount | `generate_lazy_mount_service()` |
+| `"cas-deduplication"` | Library dedup via CAS | `deduplicate_libraries()` |
+| `"atomic-rollback"` | Symlink-switchable generations | `enable_atomic_rollback()` |
+| `"delta-reconstruct"` | Micro-diff package rebuild | `reconstruct_delta()` |
+| `"memory-snapshot"` | Process checkpoint/restore | `checkpoint_process()` |
+| `"cloud-streamable"` | Remote SquashFS streaming | `generate_stream_mount_script()` |
+| `"isolated-state-overlay"` | Per-package config isolation | `create_isolated_overlay()` |
+| `"p2p-swarm"` | Decentralized peer-to-peer | `register_swarm_hash()` |
+| `"resource-throttle"` | Cgroup resource policing | `enforce_resource_limits()` |
+
+---
+
+## Dependency Solving
+
 The dependency solver:
 
-- loads package manifests from the local database
-- resolves recursive package dependencies
-- supports virtual providers via `provides`
-- detects cyclic dependency loops
-- verifies conflict constraints before install planning
-- produces a topologically ordered install plan
+- Loads package manifests from the local database
+- Resolves recursive package dependencies
+- Supports virtual providers via `provides`
+- Detects cyclic dependency loops
+- Verifies conflict constraints before install planning
+- Produces a topologically ordered install plan
+- Resolves library providers by file and `provides` matching
 
-# Transactions and Safety
-Install and remove actions are wrapped in transactions that:
+---
 
-- back up files before overwriting them
-- record staged file paths
-- track affected packages
-- commit JSON state only after successful completion
-- rollback automatically if a transaction is dropped without committing
+## System Profile Format
 
-This design reduces the risk of partial or inconsistent package installations.
-
-# CLI Usage
-This is a complete user guide for the MCX modular and standalone package manager for the Cudane distribution, covering all aspects of system administration, from handling local packages generated by the rLine build tool to repository maintenance and core system performance management.
-
-> [!NOTE]
-> MCX does not require typing `sudo`, it's prompts for the password automatically.
-
-## 1. Handling Local Packages
-Since the packaging system relies on the Zstd-compressed, high-performance, standalone package format, you can manage and install manually built packages as follows:
-### Installing a Local Package (.xcs)
-When you build a package using `rline` and produce a file with the `.xcs` extension, you can install it directly into the system using the following command:
-
-```shell
-mcx -a /path/to/package.xcs
-```
-
-> How it works: MCX decompresses the archive using the Zstd engine, reads `metadata.json`, and then dynamically checks and lists the package files to register them in the system database before integrating them into the system root.
-
-## 2. Package & Repository Management
-MCX allows you to interact with official Cudane distribution repositories or external repositories to fetch, update, and clean the system.
-
-### Sync Repositories
-To update the list of available packages and link dependencies to the latest updates from the servers:
-
-```shell
-mcx -u
-```
-
-### Install Packages from a Repository
-To install one or more programmatically processed packages from the catalog:
-
-```shell
-mcx -i <package_name>
-```
-
-Or install multiple packages at once:
-
-```shell
-mcx -i <package1> <package2> <package3>
-```
-
-### Upgrade the Entire System
-To check for changes and update all installed packages to the latest build environment output:
-
-```shell
-mcx -U
-```
-
-### Remove Packages
-To cleanly uninstall packages; MCX relies on a dynamically generated file array during installation to completely delete files without leaving any residual files:
-
-```shell
-mcx -r <package_name>
-```
-
-### Package Query
-To view details of a specific package, check if it is installed, and review its logs:
-
-```shell
-mcx -q <package_name>
-```
-
-### Package Search
-To search local and external repositories for a specific package:
-
-```shell
-mcx -s <query>
-```
-
-### File Verification
-To compare current system files with the digital fingerprint and checksum stored in the database (to ensure no corruption or unauthorized modification has occurred):
-
-```shell
-mcx -v
-```
-
-## 3. System & Configuration
-To open a fast, built-in text editor (similar to GNU Nano) To modify the main MCX configuration file without an external editor:
-
-```shell
-mcx -C
-```
-
-> Ctrl+O: To save changes and write the file to disk.
-> Ctrl+X: To exit and return to the terminal.
-
-### Cleanup of Junk and Temporary Files
-To clean up the system and free up space by clearing the cache and old installation logs:
-
-```shell
-mcx -c
-```
-
-> How it works: Emptys the Binary Footprint cache folders in `var/cache/mcx` and rebuilds clean logs for future transactions.
-
-### Fixing Dependencies and Isolating Links
-If hyperlinks for libraries or workspaces become corrupted, this command automatically repairs them:
-
-```shell
-mcx -f
-```
-
-## 4. History & Rollback
-MCX has a hierarchical tracking system that protects the Cudane distribution from crashing in case of an interrupted or failed installation.
-
-### View History
-To view the history of previous operations to see when and how packages were installed:
-
-```shell
-mcx -h
-```
-
-### Rollback
-To roll back the entire system to a specific point in time or generation and restore the system to its previous state:
-
-```shell
-mcx -h --rollback <generation_id>
-```
-
-## 5. Building System
-You can build a minimal distributions based on your own configuration(s)
-
-### Rebuild
-To completely rebuild the system based on a central configuration file (such as Cudane's core settings):
-
-```shell
-mcx -b --config /path/to/config.json
-```
-
-> [!NOTE]
-> Default path if not specified: /etc/cudane/system.json
-
-# Notes (vol. 1)
-- MCX automatically creates a lock in the path `/var/lib/mcx/lock` when any process starts to prevent database conflicts. If the program is interrupted using Ctrl+C, the engine automatically removes the lock to prevent subsequent operations from freezing.
-- All package extraction and metadata.json file checks are performed within a temporary, isolated environment in `var/tmp/mcx/stage/` to ensure that live system files are not affected until the check is successful and the correct checksum is met.
-
-# System Profile Format
-MCX can reconcile the installed package set against a declarative JSON profile.
-
-Example:
+MCX can reconcile the installed package set against a declarative JSON profile:
 
 ```json
 {
@@ -207,48 +354,50 @@ Example:
 }
 ```
 
-The `build` command installs missing packages and removes packages not declared in the profile.
+The `build` command (`-b`) installs missing packages and removes packages not declared in the profile.
 
-# Build From Source and Run
-Build the project with **`cargo`**:
+---
+
+## Build From Source
 
 ```shell
 cargo build --release
-```
-
-Run the compiled binary:
-
-```shell
 ./target/release/mcx install foo
-```
-
-Use a custom root path:
-
-```shell
 ./target/release/mcx --root /tmp/mcx-root install foo
 ```
 
-# Notes (vol. 2)
-- The implementation is written in Rust and uses `tokio` for async operations.
-- Package state is managed in JSON and persisted under the configured root.
-- The downloader supports both sequential downloads and ranged chunked downloads for larger files.
-- The configuration editor module provides a TUI editor implementation, though `mcx config` currently reports configuration state.
-- Some CLI commands currently act as workflow scaffolding or simulated progress UI while the core install/remove logic is fully implemented.
+---
 
-# Contributing
+## Notes
+
+- MCX automatically creates a lock at `/var/lib/mcx/lock` when any process starts, preventing database corruption from concurrent access. The lock is automatically removed on Ctrl+C.
+- All package extraction and `metadata.json` checks are performed in a temporary isolated environment at `var/tmp/mcx/stage/`.
+- The implementation is written in **Rust** and uses **tokio** for async operations.
+- The downloader supports both sequential downloads and ranged chunked downloads for files larger than 5 MB.
+- The configuration editor module provides a **TUI editor** accessible via `mcx -C`.
+- Package state is managed in **JSON** and persisted under the configured root.
+- Repository indexes are synchronized in **parallel** — each repository's fetch and verification runs concurrently.
+- The `--root` flag allows operating on an alternative root filesystem (useful for containers or cross-installs).
+
+---
+
+## Contributing
+
 To extend MCX or add new features, start with these files:
 
-- `src/main.rs`
-- `src/commands/*.rs`
-- `src/core/database.rs`
-- `src/core/solver.rs`
-- `src/network/download.rs`
-- `src/archive/extract.rs`
-- `src/utils/ui.rs`
+- `src/main.rs` — CLI entry point and command routing
+- `src/core/database.rs` — package metadata and ledger state
+- `src/core/features.rs` — all nine runtime feature engines
+- `src/core/repo.rs` — multi-repository management and parallel sync
+- `src/core/solver.rs` — dependency resolution
+- `src/archive/extract.rs` — archive extraction
+- `src/network/download.rs` — HTTP downloader
+- `src/commands/` — subcommand implementations
 
 For bug reports or feature requests, open an issue in the repository.
 
 ---
 
-# Credits
-[**`Myden`**](https://github.com/md7u) - **`Cudane`** & **`MCX`** Founder. | Made with 🤍 and **Rust**.
+## Credits
+
+[**`Myden`**](https://github.com/md7u) - **`Cudane`** and **`MCX`** Founder. Made with 🤍 and **Rust**.

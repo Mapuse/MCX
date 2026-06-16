@@ -1,93 +1,55 @@
-use std::sync::Arc;
 use std::path::PathBuf;
-use anyhow::Result;
-use futures::future::join_all;
-use tokio::fs;
+use std::sync::Arc;
+use futures_util::future::join_all;
 use crate::core::db::Database;
-use crate::core::repo::RepositoryManager;
 use crate::network::download::Downloader;
+use crate::archive::hash::HashVerifier;
 
 pub struct NetworkSyncEngine {
-    db: Arc<Database>,
-    repo_mgr: RepositoryManager,
-    downloader: Downloader,
     root: PathBuf,
+    db: Arc<Database>,
 }
 
 impl NetworkSyncEngine {
-    pub fn new(db: Arc<Database>, root: String) -> Self {
-        Self {
-            db,
-            repo_mgr: RepositoryManager::new(&root),
-            downloader: Downloader::new(),
-            root: PathBuf::from(root),
-        }
+    pub fn new(root: PathBuf, db: Arc<Database>) -> Self {
+        Self { root, db }
     }
 
-    pub async fn synchronize_repositories(&self) -> Result<()> {
-        let configured_repos = self.db.get_configured_repositories()?;
-        let mut tasks = Vec::with_capacity(configured_repos.len());
+    /// Synchronizes all configured repositories in parallel
+    pub async fn sync_all_repositories(&self) -> Result<(), anyhow::Error> {
+        let meta_dir = self.root.join("var/lib/mcx/sync");
+        std::fs::create_dir_all(&meta_dir)?;
 
-        for repo in configured_repos {
-            let dl = self.downloader.clone();
+        let remotes = self.db.get_configured_repositories()?;
+        let downloader = Arc::new(Downloader::new());
+        let mut tasks = Vec::new();
+
+        for repo in remotes {
+            let temp_path = meta_dir.join(format!("{}.tmp", repo.name));
+            let final_path = meta_dir.join(format!("{}.json", repo.name));
+            let dl = Arc::clone(&downloader);
             let repo_name = repo.name.clone();
-            let index_target_url = format!("{}/index.json", repo.url.trim_end_matches('/'));
-            let local_index_path = self.repo_mgr.get_local_index_path(&repo.name);
+            let checksum = repo.checksum.clone();
 
             tasks.push(tokio::spawn(async move {
-                dl.download_package(&index_target_url, &local_index_path).await?;
-                Ok::<_, anyhow::Error>((repo_name, local_index_path))
-            }));
-        }
-
-        let results = join_all(tasks).await;
-        let mut tx = self.db.begin_transaction()?;
-
-        for res in results {
-            let (repo_name, index_path) = res??;
-            tx.update_repository_index(&repo_name, index_path.to_str().unwrap_or(""))?;
-        }
-
-        tx.commit()?;
-        Ok(())
-    }
-
-    pub async fn verify_remote_mirrors(&self) -> Result<Vec<(String, bool)>> {
-        let configured_repos = self.db.get_configured_repositories()?;
-        let mut tasks = Vec::with_capacity(configured_repos.len());
-
-        for repo in configured_repos {
-            let dl = self.downloader.clone();
-            tasks.push(tokio::spawn(async move {
-                let status = dl.check_endpoint_availability(&repo.url).await;
-                (repo.name, status)
-            }));
-        }
-
-        let mut status_matrix = Vec::with_capacity(tasks.len());
-        for res in join_all(tasks).await {
-            status_matrix.push(res?);
-        }
-
-        Ok(status_matrix)
-    }
-
-    pub async fn cleanup_stale_package_files(&self, pkg_name: &str, new_installed_files: &[PathBuf]) -> Result<()> {
-        if let Ok(old_metadata) = self.db.get_package_manifest(pkg_name) {
-            let mut tasks = Vec::new();
-
-            for old_file in old_metadata.files {
-                if !new_installed_files.contains(&old_file) {
-                    let file_to_remove = self.root.join(&old_file);
-                    tasks.push(tokio::spawn(async move {
-                        if file_to_remove.exists() && file_to_remove.is_file() {
-                            let _ = fs::remove_file(file_to_remove).await;
-                        }
-                    }));
+                dl.download_package(&repo.url, &temp_path).await?;
+                
+                if let Some(ref expected_hash) = checksum {
+                    HashVerifier::verify_integrity(&temp_path, expected_hash)?;
                 }
-            }
-            join_all(tasks).await;
+
+                std::fs::rename(&temp_path, &final_path)?;
+                Ok::<_, anyhow::Error>((repo_name, final_path))
+            }));
         }
+
+        let mut transaction = self.db.begin_transaction()?;
+        for result in join_all(tasks).await {
+            let (ref repo_name, ref index_path) = result??;
+            transaction.update_repository_index(repo_name, index_path.to_str().unwrap_or(""))?;
+        }
+
+        transaction.commit()?;
         Ok(())
     }
 }

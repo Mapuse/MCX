@@ -9,7 +9,7 @@ impl ManifestParser {
     pub fn parse_embedded_manifest<P: AsRef<Path>>(extracted_root: P) -> Result<PackageEntity> {
         let metadata_path = extracted_root.as_ref().join("metadata.json");
         if !metadata_path.exists() {
-            return Err(anyhow!("Package metadata specifications file missing from rline payload structure: {:?}", metadata_path));
+            return Err(anyhow!("Package metadata specifications file missing from payload structure: {:?}", metadata_path));
         }
 
         let content = fs::read_to_string(&metadata_path)
