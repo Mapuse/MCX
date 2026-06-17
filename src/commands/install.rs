@@ -4,7 +4,7 @@ use std::sync::Arc;
 use anyhow::{Result, anyhow};
 use futures_util::future::join_all;
 use crate::core::solver::DependencySolver;
-use crate::core::db::Database;
+use crate::core::database::Database;
 use crate::network::download::Downloader;
 use crate::archive::extract::Extractor;
 use crate::archive::hash::HashVerifier;

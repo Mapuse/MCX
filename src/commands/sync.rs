@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 use futures_util::future::join_all;
-use crate::core::db::Database;
+use crate::core::database::Database;
 use crate::network::download::Downloader;
 use crate::archive::hash::HashVerifier;
 
@@ -33,7 +33,7 @@ impl SyncCommand {
             tasks.push(tokio::spawn(async move {
                 dl.download_package(&repo.url, &temp_manifest).await?;
                 
-                if let Some(expected_hash) = repo.checksum {
+                if let Some(expected_hash) = &repo.checksum {
                     HashVerifier::verify_integrity(&temp_manifest, &expected_hash)?;
                 }
 

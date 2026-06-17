@@ -48,7 +48,7 @@ impl RepositoryManager {
         Ok(())
     }
 
-    /// Adds a new repository
+    
     pub fn add_repository(&self, repo: RepositoryInfo) -> Result<()> {
         let mut repos = self.load_repositories()?;
         if repos.iter().any(|r| r.name == repo.name) {
@@ -58,7 +58,7 @@ impl RepositoryManager {
         self.save_repositories(&repos)
     }
 
-    /// Removes a repository by name
+    
     pub fn remove_repository(&self, name: &str) -> Result<()> {
         let mut repos = self.load_repositories()?;
         let len_before = repos.len();
@@ -69,7 +69,7 @@ impl RepositoryManager {
         self.save_repositories(&repos)
     }
 
-    /// Syncs all repositories in parallel, returns (repos_synced, errors)
+    
     pub async fn sync_all_parallel(&self) -> Result<(usize, Vec<String>)> {
         let repos = self.load_repositories()?;
         if repos.is_empty() {
@@ -137,7 +137,7 @@ impl RepositoryManager {
         Ok((synced, errors))
     }
 
-    /// Cross-repository package search: searches all synced indexes
+    
     pub fn search_across_repos(&self, query: &str) -> Result<Vec<(String, PackageMetadata)>> {
         let mut results = Vec::new();
         if !self.sync_dir.exists() {
@@ -167,8 +167,8 @@ impl RepositoryManager {
         Ok(results)
     }
 
-    /// Cross-repository install resolution: returns all matching packages
-    /// across all synced repos for a given package name
+    
+    
     pub fn resolve_across_repos(&self, pkg_name: &str) -> Result<Vec<PackageMetadata>> {
         let mut results = Vec::new();
         if !self.sync_dir.exists() {

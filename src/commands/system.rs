@@ -2,7 +2,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
 use anyhow::{Result, Context, anyhow};
-use crate::core::db::Database;
+use crate::core::database::Database;
 use crate::core::declarative::SystemProfile;
 use crate::commands::install::InstallCommand;
 use crate::commands::remove::RemoveCommand;

@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 use futures_util::future::join_all;
-use crate::core::db::Database;
+use crate::core::database::Database;
 use crate::network::download::Downloader;
 use crate::archive::hash::HashVerifier;
 
@@ -15,7 +15,7 @@ impl NetworkSyncEngine {
         Self { root, db }
     }
 
-    /// Synchronizes all configured repositories in parallel
+    
     pub async fn sync_all_repositories(&self) -> Result<(), anyhow::Error> {
         let meta_dir = self.root.join("var/lib/mcx/sync");
         std::fs::create_dir_all(&meta_dir)?;

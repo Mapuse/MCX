@@ -30,7 +30,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 pub enum Commands {
-    // -- Package Management --
+    
     #[command(short_flag = 'i', long_flag = "install", aliases = ["in", "add"])]
     Install { packages: Vec<String> },
 
@@ -73,7 +73,7 @@ pub enum Commands {
     #[command(short_flag = 'b', long_flag = "build", aliases = ["make", "create"])]
     Build { config: String },
 
-    // -- Repository Management --
+    
     #[command(long_flag = "repo-add", aliases = ["ra"])]
     RepoAdd { name: String, url: String },
 
@@ -83,53 +83,53 @@ pub enum Commands {
     #[command(long_flag = "repo-list", aliases = ["rl"])]
     RepoList,
 
-    // -- Lazy Mount --
+    
     #[command(short_flag = 'L', long_flag = "lazy-mount", aliases = ["mount"])]
     LazyMount { package: String, mount_point: String },
 
     #[command(long_flag = "lazy-umount", aliases = ["umount"])]
     LazyUmount { package: String },
 
-    // -- CAS Dedup --
+    
     #[command(short_flag = 'D', long_flag = "dedup", aliases = ["cas", "dedup"])]
     Cas {
         #[command(subcommand)]
         action: CasAction,
     },
 
-    // -- Atomic Rollback --
+    
     #[command(short_flag = 'R', long_flag = "rollback", aliases = ["rb"])]
     Rollback { package: String, generation: u64 },
 
     #[command(long_flag = "generations", aliases = ["gens"])]
     Generations { package: String },
 
-    // -- Delta --
+    
     #[command(short_flag = 'd', long_flag = "delta", aliases = ["reconstruct", "xcd"])]
     Delta { old_xcs: String, delta_xcd: String, output: String },
 
-    // -- Memory Snapshot --
+    
     #[command(long_flag = "checkpoint", aliases = ["snap"])]
     Checkpoint { package: String, pid: u32 },
 
     #[command(long_flag = "snapshots", aliases = ["snaps"])]
     Snapshots { package: String },
 
-    // -- Cloud Stream --
+    
     #[command(long_flag = "stream-mount", aliases = ["sm"])]
     StreamMount { package: String, url: String, mount_point: String },
 
     #[command(long_flag = "stream-umount", aliases = ["sum"])]
     StreamUmount { package: String },
 
-    // -- Isolated Overlay --
+    
     #[command(long_flag = "overlay-create", aliases = ["oc"])]
     OverlayCreate { package: String, target_path: String },
 
     #[command(long_flag = "overlay-remove", aliases = ["or"])]
     OverlayRemove { package: String },
 
-    // -- P2P Swarm --
+    
     #[command(long_flag = "swarm-hash", aliases = ["sh"])]
     SwarmHash { package: String, hash: String },
 
@@ -142,7 +142,7 @@ pub enum Commands {
     #[command(long_flag = "swarm-peer-add", aliases = ["spa"])]
     SwarmPeerAdd { address: String, peer_id: String },
 
-    // -- Resource Throttle --
+    
     #[command(long_flag = "throttle-set", aliases = ["ts"])]
     ThrottleSet { package: String, max_memory_mb: u64, max_cpu_pct: u64 },
 
@@ -169,7 +169,7 @@ async fn main() {
     };
 
     match args.command {
-        // -- Standard package management --
+        
         Commands::Install { packages } => {
             UserInterface::display_info(&format!("Installing: {:?}", packages));
             let cmd = InstallCommand::new(args.root.clone(), Arc::clone(&db));
@@ -205,7 +205,7 @@ async fn main() {
                     if let Ok(pkgs) = db.get_all_installed_packages() {
                         if let Some(last) = pkgs.last() {
                             if last.features.iter().any(|f| f == "lazy-mount") {
-                                let _ = engine.generate_lazy_mount_service(last, &format!("/system/{}", last.pkg_name));
+                                let _ = engine.generate_mount_service(last, &format!("/system/{}", last.pkg_name));
                             }
                             if staging.exists() {
                                 let _ = engine.deduplicate_libraries(&staging, last);
@@ -274,7 +274,7 @@ async fn main() {
             UserInterface::display_success("Done.");
         }
 
-        // -- Repository management --
+        
         Commands::RepoAdd { name, url } => {
             let mgr = crate::core::repo::RepositoryManager::new(&args.root);
             match mgr.add_repository(crate::core::database::RepositoryInfo {
@@ -303,7 +303,7 @@ async fn main() {
             }
         }
 
-        // -- Lazy Mount --
+        
         Commands::LazyMount { package, mount_point } => {
             let engine = FeatureEngine::new(&args.root);
             let meta = db.get_package_manifest(&package)
@@ -311,20 +311,20 @@ async fn main() {
                     eprintln!("Package not found: {}", package);
                     process::exit(1);
                 });
-            match engine.generate_lazy_mount_service(&meta, &mount_point) {
+            match engine.generate_mount_service(&meta, &mount_point) {
                 Ok(p) => UserInterface::display_success(&format!("Created: {:?}", p)),
                 Err(e) => { eprintln!("{}", e); process::exit(1); }
             }
         }
         Commands::LazyUmount { package } => {
             let engine = FeatureEngine::new(&args.root);
-            match engine.remove_lazy_mount_service(&package) {
+            match engine.remove_mount_service(&package) {
                 Ok(_) => UserInterface::display_success("Removed."),
                 Err(e) => { eprintln!("{}", e); process::exit(1); }
             }
         }
 
-        // -- CAS --
+        
         Commands::Cas { action } => {
             let engine = FeatureEngine::new(&args.root);
             match action {
@@ -347,7 +347,7 @@ async fn main() {
             }
         }
 
-        // -- Rollback --
+        
         Commands::Rollback { package, generation } => {
             let engine = FeatureEngine::new(&args.root);
             match engine.rollback_to_generation(&package, generation) {
@@ -370,7 +370,7 @@ async fn main() {
             }
         }
 
-        // -- Delta --
+        
         Commands::Delta { old_xcs, delta_xcd, output } => {
             match FeatureEngine::reconstruct_delta(
                 PathBuf::from(&old_xcs).as_path(),
@@ -382,7 +382,7 @@ async fn main() {
             }
         }
 
-        // -- Memory Snapshot --
+        
         Commands::Checkpoint { package, pid } => {
             let engine = FeatureEngine::new(&args.root);
             match engine.checkpoint_process(&package, pid) {
@@ -401,7 +401,7 @@ async fn main() {
             }
         }
 
-        // -- Cloud Stream --
+        
         Commands::StreamMount { package, url, mount_point } => {
             let engine = FeatureEngine::new(&args.root);
             let meta = db.get_package_manifest(&package)
@@ -419,7 +419,7 @@ async fn main() {
             }
         }
 
-        // -- Isolated Overlay --
+        
         Commands::OverlayCreate { package, target_path } => {
             let engine = FeatureEngine::new(&args.root);
             match engine.create_isolated_overlay(&package, &target_path) {
@@ -435,7 +435,7 @@ async fn main() {
             }
         }
 
-        // -- P2P Swarm --
+        
         Commands::SwarmHash { package, hash } => {
             let engine = FeatureEngine::new(&args.root);
             let meta = db.get_package_manifest(&package)
@@ -474,7 +474,7 @@ async fn main() {
             }
         }
 
-        // -- Resource Throttle --
+        
         Commands::ThrottleSet { package, max_memory_mb, max_cpu_pct } => {
             let engine = FeatureEngine::new(&args.root);
             match engine.enforce_resource_limits(&package, max_memory_mb, max_cpu_pct) {

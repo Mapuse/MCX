@@ -2,7 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use anyhow::{Result, anyhow};
-use crate::core::db::Database;
+use crate::core::database::Database;
 use crate::core::database::PackageMetadata;
 
 #[derive()]
@@ -31,18 +31,18 @@ impl AddLocalCommand {
         }
         fs::create_dir_all(&stage_dir)?;
 
-        // Extract from .xcs (zstd tar archive)
-        // First try as zstd, then as plain tar
+        
+        
         let file = fs::File::open(package_path)?;
         let decoder = zstd::stream::Decoder::new(file)?;
         let mut archive = tar::Archive::new(decoder);
         archive.unpack(&stage_dir)?;
 
-        // Collect relative file paths
+        
         let mut installed_files = Vec::new();
         Self::collect_relative_files(&stage_dir, &stage_dir, &mut installed_files)?;
 
-        // Copy files to system root
+        
         for rel_path in &installed_files {
             let src = stage_dir.join(rel_path);
             let dest = self.root.join(rel_path);
@@ -56,7 +56,7 @@ impl AddLocalCommand {
             }
         }
 
-        // Try to read metadata.json for proper metadata
+        
         let metadata_file = stage_dir.join("metadata.json");
         let (pkg_name, version, license, checksum_kind, checksum_value) = if metadata_file.exists() {
             let content = fs::read_to_string(&metadata_file)?;

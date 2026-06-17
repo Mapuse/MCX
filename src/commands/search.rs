@@ -1,6 +1,6 @@
 use std::sync::Arc;
 use anyhow::{Result, Context};
-use crate::core::db::Database;
+use crate::core::database::Database;
 use crate::utils::ui::UserInterface;
 
 pub struct SearchCommand {

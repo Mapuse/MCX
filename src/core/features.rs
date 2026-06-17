@@ -10,19 +10,19 @@ use walkdir::WalkDir;
 
 use crate::core::database::PackageMetadata;
 
-/// Feature engine implementing all runtime capabilities that MCX reads
-/// from package metadata `features` and `optimization_features` fields.
-///
-/// ## Feature List
-/// - `lazy-mount`        — dinit-based on-demand mount scripts
-/// - `cas-deduplication`  — content-addressable shared library dedup
-/// - `atomic-rollback`    — symlink-switchable generation snapshots
-/// - `delta-reconstruct`  — .xcd micro-diff -> full .xcs reconstruction
-/// - `memory-snapshot`    — CRIU-like checkpoint/restore for instant app boot
-/// - `cloud-streamable`   — SquashFS over HTTPS range-request streaming mount
-/// - `isolated-state-overlay` — ephemeral per-package config overlay in /home
-/// - `p2p-swarm`          — distributed peer-to-peer block exchange
-/// - `resource-throttle`  — adaptive cgroup-level resource policing
+
+
+
+
+
+
+
+
+
+
+
+
+
 pub struct FeatureEngine {
     root: PathBuf,
 }
@@ -34,11 +34,11 @@ impl FeatureEngine {
         }
     }
 
-    // =====================================================================
-    // 1. LAZY-MOUNT
-    // =====================================================================
+    
+    
+    
 
-    pub fn generate_lazy_mount_service(
+    pub fn generate_mount_service(
         &self,
         meta: &PackageMetadata,
         mount_point: &str,
@@ -65,7 +65,7 @@ command = /bin/mount {mount} 2>/dev/null || true
         Ok(service_file)
     }
 
-    pub fn remove_lazy_mount_service(&self, pkg_name: &str) -> Result<()> {
+    pub fn remove_mount_service(&self, pkg_name: &str) -> Result<()> {
         let service_file = self.root.join(format!("etc/dinit.d/mount-{}.dinit", pkg_name));
         if service_file.exists() {
             fs::remove_file(&service_file)
@@ -74,9 +74,9 @@ command = /bin/mount {mount} 2>/dev/null || true
         Ok(())
     }
 
-    // =====================================================================
-    // 2. CAS DEDUPLICATION
-    // =====================================================================
+    
+    
+    
 
     pub fn deduplicate_libraries(&self, pkg_staging: &Path, _meta: &PackageMetadata) -> Result<u64> {
         let cas_root = self.root.join("var/lib/mcx/cas");
@@ -143,9 +143,9 @@ command = /bin/mount {mount} 2>/dev/null || true
         Ok((total_files, total_bytes))
     }
 
-    // =====================================================================
-    // 3. ATOMIC ROLLBACK
-    // =====================================================================
+    
+    
+    
 
     pub fn enable_atomic_rollback(&self, meta: &PackageMetadata, pkg_installed_root: &Path) -> Result<()> {
         let gen_dir = self
@@ -227,9 +227,9 @@ command = /bin/mount {mount} 2>/dev/null || true
             .ok_or_else(|| anyhow::anyhow!("Corrupted active symlink for {}", pkg_name))
     }
 
-    // =====================================================================
-    // 4. DELTA RECONSTRUCT
-    // =====================================================================
+    
+    
+    
 
     pub fn reconstruct_delta(
         old_xcs: &Path,
@@ -307,15 +307,15 @@ command = /bin/mount {mount} 2>/dev/null || true
         Ok(())
     }
 
-    // =====================================================================
-    // 5. MEMORY SNAPSHOT (checkpoint / restore)
-    // =====================================================================
+    
+    
+    
 
-    /// Takes a memory snapshot of a running process identified by `pid`
-    /// and stores it compressed under `var/lib/mcx/snapshots/<pkg_name>/`.
-    ///
-    /// This simulates CRIU-like behaviour: the process memory map is dumped
-    /// to `/proc/<pid>/mem` snapshots, compressed with zstd, and indexed.
+    
+    
+    
+    
+    
     pub fn checkpoint_process(&self, pkg_name: &str, pid: u32) -> Result<PathBuf> {
         let snap_dir = self.root.join("var/lib/mcx/snapshots").join(pkg_name);
         fs::create_dir_all(&snap_dir)
@@ -327,10 +327,10 @@ command = /bin/mount {mount} 2>/dev/null || true
             .as_secs();
         let snap_file = snap_dir.join(format!("snap-{}.mem", timestamp));
 
-        // Read process memory via /proc/pid/mem (requires CAP_SYS_PTRACE)
+        
         let mem_path = PathBuf::from(format!("/proc/{}/mem", pid));
         if !mem_path.exists() {
-            // Graceful fallback: simulate by reading /proc/pid/maps
+            
             let maps_path = format!("/proc/{}/maps", pid);
             if let Ok(maps) = fs::read_to_string(&maps_path) {
                 let out_file = fs::File::create(&snap_file)?;
@@ -351,7 +351,7 @@ command = /bin/mount {mount} 2>/dev/null || true
         Ok(snap_file)
     }
 
-    /// Lists available snapshots for a package
+    
     pub fn list_snapshots(&self, pkg_name: &str) -> Result<Vec<PathBuf>> {
         let snap_dir = self.root.join("var/lib/mcx/snapshots").join(pkg_name);
         if !snap_dir.exists() {
@@ -367,15 +367,15 @@ command = /bin/mount {mount} 2>/dev/null || true
         Ok(snaps)
     }
 
-    // =====================================================================
-    // 6. CLOUD-STREAMABLE
-    // =====================================================================
+    
+    
+    
 
-    /// Generates a SquashFS mount helper script that mounts a remote .xcs
-    /// package via HTTP range-requests using `squashfuse` + `curl`.
-    ///
-    /// The script is placed at `var/lib/mcx/stream/<pkg_name>.sh` and can
-    /// be called to lazily mount the remote filesystem.
+    
+    
+    
+    
+    
     pub fn generate_stream_mount_script(
         &self,
         meta: &PackageMetadata,
@@ -412,14 +412,14 @@ fi
         fs::write(&script_path, &script)
             .with_context(|| format!("Failed to write stream mount script for {}", meta.pkg_name))?;
 
-        // Make executable
+        
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(&script_path, fs::Permissions::from_mode(0o755))?;
 
         Ok(script_path)
     }
 
-    /// Removes the stream mount script
+    
     pub fn remove_stream_script(&self, pkg_name: &str) -> Result<()> {
         let script_path = self.root.join("var/lib/mcx/stream").join(format!("{}.sh", pkg_name));
         if script_path.exists() {
@@ -428,16 +428,16 @@ fi
         Ok(())
     }
 
-    // =====================================================================
-    // 7. ISOLATED-STATE-OVERLAY
-    // =====================================================================
+    
+    
+    
 
-    /// Creates an ephemeral overlay directory in the user's home for a
-    /// package's configuration files.  The overlay is stored under
-    /// `~/.mcx/overlays/<pkg_name>/` and bind-mounted over the real
-    /// `~/.config/<app>` or `~/.<app>` path when the package runs.
-    ///
-    /// Returns the overlay root path.
+    
+    
+    
+    
+    
+    
     pub fn create_isolated_overlay(&self, pkg_name: &str, home_overlay_path: &str) -> Result<PathBuf> {
         let home = std::env::var("HOME").unwrap_or_else(|_| "/root".into());
         let overlay_root = PathBuf::from(&home).join(".mcx/overlays").join(pkg_name);
@@ -452,7 +452,7 @@ fi
         fs::create_dir_all(&merged)
             .context("Failed to create overlay merged directory")?;
 
-        // Write a mount helper script
+        
         let mount_script = overlay_root.join("mount-overlay.sh");
         let script = format!(
             r#"#!/bin/sh
@@ -480,7 +480,7 @@ mount -t overlay overlay -o lowerdir="$LOWER",upperdir="$UPPER",workdir="$WORK" 
         Ok(overlay_root)
     }
 
-    /// Removes a package's isolated overlay (cleanup on uninstall)
+    
     pub fn remove_isolated_overlay(&self, pkg_name: &str) -> Result<()> {
         let home = std::env::var("HOME").unwrap_or_else(|_| "/root".into());
         let overlay_root = PathBuf::from(&home).join(".mcx/overlays").join(pkg_name);
@@ -491,17 +491,17 @@ mount -t overlay overlay -o lowerdir="$LOWER",upperdir="$UPPER",workdir="$WORK" 
         Ok(())
     }
 
-    // =====================================================================
-    // 8. P2P SWARM
-    // =====================================================================
+    
+    
+    
 
-    /// The P2P swarm register stores known peers and block hashes.
-    /// On installation, MCX broadcasts a `want` message for the swarm hash.
-    /// Peers respond with `have` blocks; MCX assembles them into the .xcs.
-    ///
-    /// Since we cannot embed a full BitTorrent DHT, we implement a
-    /// lightweight trackerless peer exchange via a local SwarmDb and
-    /// direct TCP connections for block exchange.
+    
+    
+    
+    
+    
+    
+    
     pub fn register_swarm_hash(&self, meta: &PackageMetadata, swarm_hash: &str) -> Result<()> {
         let swarm_dir = self.root.join("var/lib/mcx/swarm");
         fs::create_dir_all(&swarm_dir)?;
@@ -523,7 +523,7 @@ mount -t overlay overlay -o lowerdir="$LOWER",upperdir="$UPPER",workdir="$WORK" 
         Ok(())
     }
 
-    /// Returns the swarm hash for a package if registered
+    
     pub fn get_swarm_hash(&self, pkg_name: &str) -> Result<Option<String>> {
         let entry_path = self.root.join("var/lib/mcx/swarm").join(format!("{}.json", pkg_name));
         if !entry_path.exists() {
@@ -534,7 +534,7 @@ mount -t overlay overlay -o lowerdir="$LOWER",upperdir="$UPPER",workdir="$WORK" 
         Ok(Some(entry.swarm_hash))
     }
 
-    /// Lists all locally known swarm peers
+    
     pub fn list_swarm_peers(&self) -> Result<Vec<SwarmPeer>> {
         let peer_path = self.root.join("var/lib/mcx/swarm/peers.json");
         if !peer_path.exists() {
@@ -545,7 +545,7 @@ mount -t overlay overlay -o lowerdir="$LOWER",upperdir="$UPPER",workdir="$WORK" 
         Ok(peers)
     }
 
-    /// Registers or updates a known peer
+    
     pub fn register_swarm_peer(&self, peer: SwarmPeer) -> Result<()> {
         let swarm_dir = self.root.join("var/lib/mcx/swarm");
         fs::create_dir_all(&swarm_dir)?;
@@ -558,7 +558,7 @@ mount -t overlay overlay -o lowerdir="$LOWER",upperdir="$UPPER",workdir="$WORK" 
             Vec::new()
         };
 
-        // Replace if same address, else add
+        
         if let Some(pos) = peers.iter().position(|p| p.address == peer.address) {
             peers[pos] = peer;
         } else {
@@ -569,9 +569,9 @@ mount -t overlay overlay -o lowerdir="$LOWER",upperdir="$UPPER",workdir="$WORK" 
         Ok(())
     }
 
-    // =====================================================================
-    // 9. RESOURCE THROTTLE
-    // =====================================================================
+    
+    
+    
 
     pub fn enforce_resource_limits(
         &self,
@@ -582,21 +582,21 @@ mount -t overlay overlay -o lowerdir="$LOWER",upperdir="$UPPER",workdir="$WORK" 
         let cg_dir = PathBuf::from("/sys/fs/cgroup/mcx");
         let pkg_cg = cg_dir.join(sanitize_cgroup_name(pkg_name));
 
-        // Create cgroup for this package
+        
         fs::create_dir_all(&pkg_cg)
             .with_context(|| format!("Failed to create cgroup for {}", pkg_name))?;
 
-        // Set memory limit
+        
         let mem_max = pkg_cg.join("memory.max");
         if mem_max.exists() {
             fs::write(&mem_max, format!("{}", max_memory_mb * 1024 * 1024))
                 .with_context(|| format!("Failed to set memory limit for {}", pkg_name))?;
         }
 
-        // Set CPU quota
+        
         let cpu_max = pkg_cg.join("cpu.max");
         if cpu_max.exists() {
-            let quota = (max_cpu_percent * 100) / 100; // convert percent to quota
+            let quota = (max_cpu_percent * 100) / 100; 
             fs::write(&cpu_max, format!("{} 100000", quota))
                 .with_context(|| format!("Failed to set CPU quota for {}", pkg_name))?;
         }
@@ -614,9 +614,9 @@ mount -t overlay overlay -o lowerdir="$LOWER",upperdir="$UPPER",workdir="$WORK" 
         Ok(())
     }
 
-    // =====================================================================
-    // helpers
-    // =====================================================================
+    
+    
+    
 
     fn sha256_file(path: &Path) -> Result<String> {
         let data = fs::read(path)
@@ -659,9 +659,9 @@ mount -t overlay overlay -o lowerdir="$LOWER",upperdir="$UPPER",workdir="$WORK" 
     }
 }
 
-// ---------------------------------------------------------------------------
-// Supporting data structures
-// ---------------------------------------------------------------------------
+
+
+
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeltaMetadata {
@@ -682,7 +682,7 @@ pub struct SwarmEntry {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SwarmPeer {
-    pub address: String,      // ip:port
+    pub address: String,      
     pub peer_id: String,
     pub last_seen: u64,
     pub advertised_hashes: Vec<String>,
