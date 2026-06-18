@@ -38,12 +38,12 @@ impl DeltaReconstructor {
         &self,
         old_xcs: &Path,
         delta_xcd: &Path,
-        output_xcs: &Path,
+        output_xcd: &Path,
     ) -> Result<()> {
         eprintln!("MCX: Starting delta reconstruction...");
         eprintln!("  Old package: {:?}", old_xcs);
         eprintln!("  Delta patch: {:?}", delta_xcd);
-        eprintln!("  Output: {:?}", output_xcs);
+        eprintln!("  Output: {:?}", output_xcd);
 
         
         let temp_dir = tempfile::tempdir()
@@ -80,10 +80,10 @@ impl DeltaReconstructor {
 
         
         eprintln!("MCX: Repackaging into new .xcs...");
-        self.create_xcs(&old_staging, output_xcs)?;
+        self.create_xcs(&old_staging, output_xcd)?;
 
         eprintln!("MCX: Delta reconstruction complete!");
-        eprintln!("  Output: {:?}", output_xcs);
+        eprintln!("  Output: {:?}", output_xcd);
 
         Ok(())
     }

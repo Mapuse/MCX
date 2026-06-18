@@ -18,7 +18,6 @@
   - [[Runtime Features]](#runtime-features)
 - [[System Integration]](#system-integration)
   - [[Directory Structure]](#directory-structure)
-- [[Performance]](#performance)
 - [[Development]](#development)
   - [[Project Structure]](#project-structure)
   - [[Building]](#building)
@@ -339,7 +338,7 @@ Bandwidth-saving delta updates using `.xcs` patch files.
 2. **Read delta metadata**: Parse `delta.meta` from `.xcs` file
 3. **Apply patches**: Merge changed blocks from delta
 4. **Handle removals**: Delete files marked as removed
-5. **Repackage**: Create new `.xcs` with mksquashfs
+5. **Repackage**: Create new `.xcd` with mksquashfs
 
 ### Delta Usage
 
@@ -349,8 +348,8 @@ use mcx::core::delta::DeltaReconstructor;
 let reconstructor = DeltaReconstructor::new("/");
 reconstructor.reconstruct(
     Path::new("hello-1.0.xcs"),
-    Path::new("hello-1.0-to-1.1.xcs"),
-    Path::new("hello-1.1.xcs")
+    Path::new("hello-1.0-to-1.1.xcd"),
+    Path::new("hello-1.1.xcd")
 )?;
 ```
 
@@ -420,8 +419,8 @@ manager.update_from_source(&UpdateSource {
 // Delta update
 manager.update_from_source(&UpdateSource {
     source_type: "delta".to_string(),
-    url: Some("https://updates.example.com/hello-1.0-to-1.1.xcs".to_string()),
-    local_path: Some("/tmp/hello-1.1.xcs".to_string()),
+    url: Some("https://updates.example.com/hello-1.0-to-1.1.xcd".to_string()),
+    local_path: Some("/tmp/hello-1.1.xcd".to_string()),
     package_name: Some("hello".to_string()),
 }).await?;
 
@@ -482,11 +481,11 @@ manager.sync_repositories().await?;
 | Command | Aliases | Description |
 | --------- | --------- | ------------- |
 | `lazy-mount` | `L`, `mount` | Enable lazy mounting for package |
-| `lazy-umount` | - | Disable lazy mounting |
-| `dedup` | `D`, `cas`, `dedup` | Run CAS deduplication |
+| `lazy-umount` | `N`, `unmount` | Disable lazy mounting |
+| `dedup` | `D`, `cas`, `overlay` | Run CAS deduplication |
 | `rollback` | `R`, `rb` | Rollback to previous generation |
 | `generations` | `gens` | List package generations |
-| `delta` | `d`, `reconstruct`, `xcs` | Reconstruct package from delta |
+| `delta` | `d`, `reconstruct`, `xcd` | Reconstruct package from delta |
 | `checkpoint` | `snap` | Create process snapshot |
 | `snapshots` | `snaps` | List process snapshots |
 | `stream-mount` | `sm` | Mount remote package stream |
@@ -529,18 +528,6 @@ manager.sync_repositories().await?;
             ├── snapshots/     # Memory snapshots
             └── swarm/         # P2P swarm data
 ```
-
----
-
-## Performance
-
-| Operation | Time | Notes |
-| ----------- | ------ | ------- |
-| Install | ~100ms | Copy + Symlink + Metadata |
-| Rollback | <1ms | Symlink flip only |
-| Lazy mount | ~10μs | SquashFS mount |
-| Delta update | ~50ms | Local reconstruction |
-| CAS dedup | ~5ms per library | SHA-256 + hard-link |
 
 ---
 

@@ -44,10 +44,10 @@ pub enum Commands {
     Search { query: String },
 
     #[command(short_flag = 'u', long_flag = "update", aliases = ["refresh", "sync"])]
-    Update,
+    Update { packages: Option<Vec<String>> },
 
     #[command(short_flag = 'U', long_flag = "upgrade", aliases = ["up", "dist-upgrade"])]
-    Upgrade,
+    Upgrade { packages: Option<Vec<String>> },
 
     #[command(short_flag = 'q', long_flag = "query", aliases = ["info", "show"])]
     Query { package: String },
@@ -87,11 +87,11 @@ pub enum Commands {
     #[command(short_flag = 'L', long_flag = "lazy-mount", aliases = ["mount"])]
     LazyMount { package: String, mount_point: String },
 
-    #[command(long_flag = "lazy-umount", aliases = ["umount"])]
+    #[command(short_flag = 'N', long_flag = "lazy-umount", aliases = ["umount"])]
     LazyUmount { package: String },
 
     
-    #[command(short_flag = 'D', long_flag = "dedup", aliases = ["cas", "dedup"])]
+    #[command(short_flag = 'D', long_flag = "dedup", aliases = ["cas", "overlay"])]
     Cas {
         #[command(subcommand)]
         action: CasAction,
@@ -225,22 +225,40 @@ async fn main() {
             let cmd = SearchCommand::new(Arc::clone(&db));
             if let Err(e) = cmd.execute(&query) { eprintln!("{}", e); process::exit(1); }
         }
-        Commands::Update => {
-            UserInterface::display_info("Syncing repositories in parallel...");
-            let cmd = SyncCommand::new(args.root.clone(), Arc::clone(&db));
-            match cmd.execute().await {
-                Ok(_) => UserInterface::display_success("Repositories synced."),
-                Err(e) => { eprintln!("{}", e); process::exit(1); }
+        Commands::Update { packages } => {
+            if let Some(pkgs) = packages {
+                UserInterface::display_info(&format!("Updating specific packages: {:?}", pkgs));
+                let cmd = InstallCommand::new(args.root.clone(), Arc::clone(&db));
+                match cmd.execute(&pkgs).await {
+                    Ok(_) => UserInterface::display_success("Packages updated."),
+                    Err(e) => { eprintln!("{}", e); process::exit(1); }
+                }
+            } else {
+                UserInterface::display_info("Syncing repositories in parallel...");
+                let cmd = SyncCommand::new(args.root.clone(), Arc::clone(&db));
+                match cmd.execute().await {
+                    Ok(_) => UserInterface::display_success("Repositories synced."),
+                    Err(e) => { eprintln!("{}", e); process::exit(1); }
+                }
             }
         }
-        Commands::Upgrade => {
-            UserInterface::display_info("Upgrading all packages...");
-            let cmd = InstallCommand::new(args.root.clone(), Arc::clone(&db));
-            let installed = db.get_all_installed_packages()
-                .unwrap_or_default().into_iter().map(|p| p.pkg_name).collect::<Vec<_>>();
-            match cmd.execute(&installed).await {
-                Ok(_) => UserInterface::display_success("Upgrade complete."),
-                Err(e) => { eprintln!("{}", e); process::exit(1); }
+        Commands::Upgrade { packages } => {
+            if let Some(pkgs) = packages {
+                UserInterface::display_info(&format!("Upgrading specific packages: {:?}", pkgs));
+                let cmd = InstallCommand::new(args.root.clone(), Arc::clone(&db));
+                match cmd.execute(&pkgs).await {
+                    Ok(_) => UserInterface::display_success("Packages upgraded."),
+                    Err(e) => { eprintln!("{}", e); process::exit(1); }
+                }
+            } else {
+                UserInterface::display_info("Upgrading all packages...");
+                let cmd = InstallCommand::new(args.root.clone(), Arc::clone(&db));
+                let installed = db.get_all_installed_packages()
+                    .unwrap_or_default().into_iter().map(|p| p.pkg_name).collect::<Vec<_>>();
+                match cmd.execute(&installed).await {
+                    Ok(_) => UserInterface::display_success("Upgrade complete."),
+                    Err(e) => { eprintln!("{}", e); process::exit(1); }
+                }
             }
         }
         Commands::Query { package } => {
