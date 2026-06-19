@@ -633,13 +633,13 @@ The Unlicebse - see [[**`LICENSE`**](github.com/Cudane/MCX/LICENSE)] file for de
 
 ##
 
-`▐▀` `-` `▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▌`
+`▐▀` `-` `▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▌`
 
 - **`MCX`** is the official package manager for **`Cudane`**, completely written as a **`Runtime Package Manager`** to achieve 100% compatibility with the **`rLine`** build engine.
   
 `▐▄` `-` `▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▌`
 
-`▐▀` `-` `▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▌`
+`▐▀` `-` `▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▌`
 
 - **`Version`:** **`2.7.5`**.
 - **`Engine`:** **`rLine 0.2.0`**.
