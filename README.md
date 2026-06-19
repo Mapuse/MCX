@@ -16,31 +16,11 @@
 ╚═╝     ╚═╝╚═╝  ╚═╝╚═╝  ╚═══╝╚═╝  ╚═╝ ╚═════╝ ╚══════╝╚═╝  ╚═╝                          
 ```
 
-- ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▌
+`-` `▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▌`
 
-**`MCX`** is the official package manager for **`Cudane`**, completely written as a **`Runtime Package Manager`** to achieve 100% compatibility with the **`rLine`** build engine.
+- **`MCX`** is the official package manager for **`Cudane`**, completely written as a **`Runtime Package Manager`** to achieve 100% compatibility with the **`rLine`** build engine.
   
-- ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▌
-
----
-
-- ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▌
-
-**`Version`:** **`2.7.5`**.
-
-**`Engine`:** **`rLine 0.2.0`**.
-
-**`Architecture`:** **`x86_64-unknown-linux-musl`** (**`x86_64-pc-linux-musl`**).
-
-**`Isolation`:** **`Linux NameSpaces`** **+** **`CGroups`**.
-
-**`Compression`:** **`SquashFS`** **+** **`Zstd`**.
-
-**`Updates`:** **`Delta Reconstruction`** **+** **`Multi-Source`**.
-
-**`Deduplication`:** **`Content-Addressable Storage`** **(`CAS`)**.
-
-- ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▌
+`-` `▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▌`
 
 ---
 
@@ -652,3 +632,17 @@ cargo check
 The Unlicebse - see [[**`LICENSE`**](github.com/Cudane/MCX/LICENSE)] file for details.
 
 </details>
+
+---
+
+`-` `▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▌`
+
+- **`Version`:** **`2.7.5`**.
+- **`Engine`:** **`rLine 0.2.0`**.
+- **`Architecture`:** **`x86_64-unknown-linux-musl`** (**`x86_64-pc-linux-musl`**).
+- **`Isolation`:** **`Linux NameSpaces`** **+** **`CGroups`**.
+- **`Compression`:** **`SquashFS`** **+** **`Zstd`**.
+- **`Updates`:** **`Delta Reconstruction`** **+** **`Multi-Source`**.
+- **`Deduplication`:** **`Content-Addressable Storage`** **(`CAS`)**.
+
+`-` `▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▌`
