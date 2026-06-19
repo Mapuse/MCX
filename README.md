@@ -56,7 +56,7 @@ Unlike traditional package managers that simply "unzip and transfer files," MCX 
 
 **Location:** `src/core/metadata.rs`
 
-Reads `metadata.json` directly from SquashFS packages without extraction using `unsquashfs -cat`.
+Reads `metadata.json` directly from `.xcs` packages without extraction using `unsquashfs -cat`.
 
 ### Features
 
@@ -81,22 +81,15 @@ The `RLineMetadata` struct matches rLine 0.2.0+ output exactly:
 
 | Field | Type | Description |
 | ------- | ------ | ------------- |
-| `pkg_name` | String | Package identifier |
-| `version` | String | Package version |
-| `source` | String | Source URL or path |
-| `license` | String | Detected license (MIT, GPL, etc.) |
-| `build_type` | String | Build system (rust, make, meson, custom) |
-| `build_date` | String | ISO 8601 UTC timestamp |
-| `checksum` | String | SHA-256 of package contents |
-| `pkg_type` | String | "plain" or "bundle" |
-| `components` | Option<`Vec<RLineMetadata>`> | Nested sub-packages |
-| `services` | Option<`Vec<String>`> | Dinit service filenames |
-| `profile` | ``Vec<String>`` | SandBox capabilities |
-| `features` | `Vec<String>` | Optimization features |
-| `externals` | Option<`Vec<String>`> | External library dependencies |
-| `bundled` | Option<`Vec<String>`> | Bundled library dependencies |
-| `depsig` | Option<`String`> | SHA-256 dependency signature |
-| `prefix` | `String` | Installation prefix path |
+| `pkg_name` | `String` | Package identifier |
+| `version` | `String` | Package version |
+| `source` | `String` | Source URL or local path |
+| `license` | `String` | Detected license (MIT, GPL, etc.) |
+| `build_type` | `String` | Build system (rust, make, meson, custom) |
+| `build_date` | `String` | ISO 8601 UTC timestamp |
+| `checksum` | `String` | SHA-256 of package contents |
+| `services` |  `Option<Vec<String>>` | Dinit service filenames |
+| `dependencies` | `Vec<Dependency>` | Dinit service filenames |
 
 > [!TIP]
 > The `prefix` field is crucial - it tells MCX where binaries and libraries are located within the capsule (e.g., "system" means `/system/bin` and `/system/lib`)
@@ -160,7 +153,7 @@ println!("Generations: {:?}", gens);
 
 ---
 
-## 3. CAS & OverlayFS Layer
+## 2. CAS & OverlayFS Layer
 
 **Location:** `src/core/overlay.rs`
 
@@ -182,7 +175,7 @@ system/storage/
 
 When a package runs, MCX creates an OverlayFS mount:
 
-- **LowerDir**: Read-only SquashFS capsule (the package itself)
+- **LowerDir**: Zstd archive (the package itself)
 - **UpperDir**: tmpfs for temporary writes (disappears on unmount)
 - **WorkDir**: OverlayFS work directory
 
@@ -227,118 +220,7 @@ let mount = engine.create_overlay_mount(
 
 ---
 
-## 4. Lazy-Mount & Dinit Integrator
-
-**Location:** `src/core/mount.rs`
-
-Zero RAM consumption for idle programs via on-demand mounting.
-
-### Lazy-Mount Structure
-
-```shell
-/etc/dinit.d/
-├── mcx-mount-hello.dinit      # Main mount service
-└── hello.service.socket        # Socket activation
-
-/system/bin/
-├── mcx-mount-runner           # Mount + exec + unmount
-└── mcx-mount                  # Fast SquashFS mount
-```
-
-### Lazy-Mount Workflow
-
-1. **Dormant State**: Capsule remains closed on disk (zero RAM)
-2. **Trigger**: dinit wakes MCX on service request or socket activation
-3. **Mount**: MCX mounts SquashFS capsule (microseconds)
-4. **Execute**: Program runs normally
-5. **Unmount**: Automatic unmount when program exits
-
-### Lazy-Mount Usage
-
-```rust
-use mcx::core::mount::LazyMountEngine;
-
-let engine = LazyMountEngine::new("/");
-engine.generate_mount_service(&meta, "/system/hello")?;
-engine.generate_mount_runner()?;
-```
-
-### Lazy-Mount Features
-
-- **Zero RAM for idle programs** - packages consume no memory when not running
-- **Socket activation** - Instant response via dinit socket activation
-- **Microsecond mounting** - SquashFS mounts in microseconds
-- **Automatic cleanup** - Unmounts when program exits
-
-> [!WARNING]
-> Lazy-mount requires dinit init system. The capsule must remain accessible at its path for mounting to work.
-
--
-
-> [!TIP]
-> Use lazy-mount for services that are rarely used but need to be available on-demand (e.g., print services, backup daemons)
-
----
-
-## 5. Automated SandBox Enforcer
-
-**Location:** `src/core/sandbox.rs`
-
-Military-grade isolation using Linux namespaces and cgroups.
-
-### Isolation
-
-The sandbox reads `profile` from rLine metadata and applies:
-
-- **CLONE_NEWNET**: Network isolation (if "network" not in profile)
-- **CLONE_NEWNS**: Filesystem isolation via pivot_root
-- **Display blocking**: If "wayland" not in profile
-- **cgroups**: Memory, CPU, and process limits
-
-### SandBox Profile Example
-
-```json
-{
-  "profile": [[
-    "isolated-rootfs",
-    "wayland",
-    "network"
-  ]]
-}
-```
-
-### SB Manager Usage
-
-```rust
-use mcx::core::sandbox::SandboxEnforcer;
-
-let enforcer = SandboxEnforcer::new("/");
-let process = enforcer.execute_sandboxed(
-    Path::new("package.xcs"),
-    &meta,
-    "/system/bin/app",
-    &[]
-)?;
-```
-
-### SB Manager Features
-
-- **Automatic namespace configuration** - Reads profile and applies appropriate namespaces
-- **cgroup-based resource policing** - Memory, CPU, and process limits
-- **Root filesystem isolation** - Program sees only its capsule contents
-- **No heavy tools** - No Docker or Flatpak required
-
-> [!WARNING]
-> SandBox execution requires root privileges for namespace creation. The `unshare` command must be available.
-
--
-
-> [!NOTE]
-> The sandbox automatically creates isolated rootfs by mounting the capsule's prefix directory as the program's root filesystem
-
----
-
-## 6. Delta Reconstructor Engine
+## 3. Delta Reconstructor Engine
 
 **Location:** `src/core/delta.rs`
 
@@ -390,7 +272,7 @@ reconstructor.reconstruct(
 
 ---
 
-## 7. Update Manager
+## 4. Update Manager
 
 **Location:** `src/core/update.rs`
 
@@ -537,10 +419,6 @@ manager.sync_repositories().await?;
 ├── etc/
 │   └── dinit.d/              # Lazy-mount services
 ├── system/
-│   └── bin/
-│       ├── mcx               # Package manager
-│       ├── mcx-mount         # Fast SquashFS mount
-│       └── mcx-mount-runner  # Mount + exec + unmount
 └── var/
     └── lib/
         └── mcx/
@@ -552,32 +430,6 @@ manager.sync_repositories().await?;
 ---
 
 ## Development
-
-### Project Structure
-
-```shell
-MCX/
-├── src/
-│   ├── main.rs              # CLI entry point
-│   ├── lib.rs               # Library root
-│   ├── core/
-│   │   ├── metadata.rs      # rLine metadata ingestion
-│   │   ├── atomic.rs # Atomic installation layer
-│   │   ├── overlay.rs   # CAS + OverlayFS
-│   │   ├── mount.rs    # dinit integration
-│   │   ├── sandbox.rs       # Namespace/cgroup sandbox
-│   │   ├── delta.rs         # Delta reconstruction
-│   │   ├── update.rs        # Update manager
-│   │   ├── database.rs      # Legacy database
-│   │   ├── features.rs      # Feature engine
-│   │   └── ...              # Other core modules
-│   ├── commands/            # CLI commands
-│   ├── network/             # Download/sync
-│   ├── archive/             # Extraction/verification
-│   └── utils/               # UI utilities
-├── Cargo.toml
-└── README.md
-```
 
 ### Building
 
@@ -644,9 +496,6 @@ The Unlicebse - see [[**`LICENSE`**](github.com/Cudane/MCX/LICENSE)] file for de
 - **`Version`:** **`2.7.5`**.
 - **`Engine`:** **`rLine 0.2.0`**.
 - **`Architecture`:** **`x86_64-unknown-linux-musl`** (**`x86_64-pc-linux-musl`**).
-- **`Isolation`:** **`Linux NameSpaces`** **+** **`CGroups`**.
-- **`Compression`:** **`SquashFS`** **+** **`Zstd`**.
-- **`Updates`:** **`Delta Reconstruction`** **+** **`Multi-Source`**.
-- **`Deduplication`:** **`Content-Addressable Storage`** **(`CAS`)**.
+- **`Compression`:** **`Zstd`**.
 
 `▐▄` `-` `▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▌`
