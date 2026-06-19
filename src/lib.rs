@@ -24,7 +24,6 @@ pub use core::history::HistoryEngine;
 pub use core::manifest::ManifestParser;
 pub use core::package::PackageEntity;
 pub use core::repo::RepositoryManager;
-pub use core::update::UpdateManager;
 pub use core::solver::DependencySolver;
 pub use core::transaction::PackageTransaction;
 pub use core::vendor::VendorManager;

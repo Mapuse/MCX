@@ -10,7 +10,6 @@ use std::process;
 use std::sync::Arc;
 use crate::utils::ui::UserInterface;
 use crate::core::database::Database;
-use crate::core::features::{FeatureEngine, SwarmPeer};
 use crate::commands::add::AddLocalCommand;
 use crate::commands::clean::CleanCommand;
 use crate::commands::install::InstallCommand;
@@ -83,71 +82,6 @@ pub enum Commands {
     #[command(long_flag = "repo-list", aliases = ["rl"])]
     RepoList,
 
-    
-    #[command(short_flag = 'L', long_flag = "lazy-mount", aliases = ["mount"])]
-    LazyMount { package: String, mount_point: String },
-
-    #[command(short_flag = 'N', long_flag = "lazy-umount", aliases = ["umount"])]
-    LazyUmount { package: String },
-
-    
-    #[command(short_flag = 'D', long_flag = "dedup", aliases = ["cas", "overlay"])]
-    Cas {
-        #[command(subcommand)]
-        action: CasAction,
-    },
-
-    
-    #[command(short_flag = 'R', long_flag = "rollback", aliases = ["rb"])]
-    Rollback { package: String, generation: u64 },
-
-    #[command(long_flag = "generations", aliases = ["gens"])]
-    Generations { package: String },
-
-    
-    #[command(short_flag = 'd', long_flag = "delta", aliases = ["reconstruct", "xcd"])]
-    Delta { old_xcs: String, delta_xcd: String, output: String },
-
-    
-    #[command(long_flag = "checkpoint", aliases = ["snap"])]
-    Checkpoint { package: String, pid: u32 },
-
-    #[command(long_flag = "snapshots", aliases = ["snaps"])]
-    Snapshots { package: String },
-
-    
-    #[command(long_flag = "stream-mount", aliases = ["sm"])]
-    StreamMount { package: String, url: String, mount_point: String },
-
-    #[command(long_flag = "stream-umount", aliases = ["sum"])]
-    StreamUmount { package: String },
-
-    
-    #[command(long_flag = "overlay-create", aliases = ["oc"])]
-    OverlayCreate { package: String, target_path: String },
-
-    #[command(long_flag = "overlay-remove", aliases = ["or"])]
-    OverlayRemove { package: String },
-
-    
-    #[command(long_flag = "swarm-hash", aliases = ["sh"])]
-    SwarmHash { package: String, hash: String },
-
-    #[command(long_flag = "swarm-get", aliases = ["sg"])]
-    SwarmGet { package: String },
-
-    #[command(long_flag = "swarm-peers", aliases = ["sp"])]
-    SwarmPeers,
-
-    #[command(long_flag = "swarm-peer-add", aliases = ["spa"])]
-    SwarmPeerAdd { address: String, peer_id: String },
-
-    
-    #[command(long_flag = "throttle-set", aliases = ["ts"])]
-    ThrottleSet { package: String, max_memory_mb: u64, max_cpu_pct: u64 },
-
-    #[command(long_flag = "throttle-remove", aliases = ["tr"])]
-    ThrottleRemove { package: String },
 }
 
 #[derive(Subcommand)]
@@ -196,7 +130,6 @@ async fn main() {
         }
         Commands::AddLocal { file } => {
             UserInterface::display_info(&format!("Installing local: {}", file));
-            let engine = FeatureEngine::new(&args.root);
             let cmd = AddLocalCommand::new(args.root.clone(), Arc::clone(&db));
             match cmd.execute(&file) {
                 Ok(_) => {
@@ -204,17 +137,17 @@ async fn main() {
                     let installed_root = PathBuf::from(&args.root).join("var/lib/mcx/active");
                     if let Ok(pkgs) = db.get_all_installed_packages() {
                         if let Some(last) = pkgs.last() {
-                            if last.features.iter().any(|f| f == "lazy-mount") {
-                                let _ = engine.generate_mount_service(last, &format!("/system/{}", last.pkg_name));
+                            let pkg_path = staging.join(&last.pkg_name);
+                            if pkg_path.exists() {
+                                if let Err(e) = std::fs::rename(&pkg_path, installed_root.join(&last.pkg_name)) {
+                                    eprintln!("Failed to move package from staging: {}", e);
+                                    process::exit(1);
+                                }
+                            } else {
+                                eprintln!("Staged package not found: {}", pkg_path.display());
+                                process::exit(1);
                             }
-                            if staging.exists() {
-                                let _ = engine.deduplicate_libraries(&staging, last);
-                            }
-                            let pkg_active = installed_root.join(&last.pkg_name);
-                            if pkg_active.exists() {
-                                let _ = engine.enable_atomic_rollback(last, &pkg_active);
-                            }
-                        }
+                        }    
                     }
                     UserInterface::display_success("Local package installed.");
                 }
@@ -317,193 +250,6 @@ async fn main() {
                         println!("  {} -> {}", r.name, r.url);
                     }
                 }
-                Err(e) => { eprintln!("{}", e); process::exit(1); }
-            }
-        }
-
-        
-        Commands::LazyMount { package, mount_point } => {
-            let engine = FeatureEngine::new(&args.root);
-            let meta = db.get_package_manifest(&package)
-                .unwrap_or_else(|_| {
-                    eprintln!("Package not found: {}", package);
-                    process::exit(1);
-                });
-            match engine.generate_mount_service(&meta, &mount_point) {
-                Ok(p) => UserInterface::display_success(&format!("Created: {:?}", p)),
-                Err(e) => { eprintln!("{}", e); process::exit(1); }
-            }
-        }
-        Commands::LazyUmount { package } => {
-            let engine = FeatureEngine::new(&args.root);
-            match engine.remove_mount_service(&package) {
-                Ok(_) => UserInterface::display_success("Removed."),
-                Err(e) => { eprintln!("{}", e); process::exit(1); }
-            }
-        }
-
-        
-        Commands::Cas { action } => {
-            let engine = FeatureEngine::new(&args.root);
-            match action {
-                CasAction::Run { pkg_staging } => {
-                    let staging = PathBuf::from(&pkg_staging);
-                    let dummy_meta = crate::core::database::PackageMetadata {
-                        pkg_name: "unknown".into(), version: String::new(), license: String::new(),
-                        source: String::new(), checksum: crate::core::database::ChecksumData { kind: "sha256".into(), value: String::new() },
-                        dependencies: vec![], files: vec![], provides: None, conflicts: None, features: vec![],
-                    };
-                    match engine.deduplicate_libraries(&staging, &dummy_meta) {
-                        Ok(saved) => UserInterface::display_success(&format!("Saved {} bytes.", saved)),
-                        Err(e) => { eprintln!("{}", e); process::exit(1); }
-                    }
-                }
-                CasAction::Stats => match engine.cas_stats() {
-                    Ok((f, b)) => println!("CAS: {} files, {} bytes", f, b),
-                    Err(e) => { eprintln!("{}", e); process::exit(1); }
-                },
-            }
-        }
-
-        
-        Commands::Rollback { package, generation } => {
-            let engine = FeatureEngine::new(&args.root);
-            match engine.rollback_to_generation(&package, generation) {
-                Ok(_) => UserInterface::display_success(&format!("Rolled back to gen {}", generation)),
-                Err(e) => { eprintln!("{}", e); process::exit(1); }
-            }
-        }
-        Commands::Generations { package } => {
-            let engine = FeatureEngine::new(&args.root);
-            match engine.list_generations(&package) {
-                Ok(gens) => {
-                    let current = engine.current_generation(&package).ok().flatten();
-                    println!("Generations for '{}':", package);
-                    for g in &gens {
-                        let m = if Some(*g) == current { " [active]" } else { "" };
-                        println!("  Gen {}{}", g, m);
-                    }
-                }
-                Err(e) => { eprintln!("{}", e); process::exit(1); }
-            }
-        }
-
-        
-        Commands::Delta { old_xcs, delta_xcd, output } => {
-            match FeatureEngine::reconstruct_delta(
-                PathBuf::from(&old_xcs).as_path(),
-                PathBuf::from(&delta_xcd).as_path(),
-                PathBuf::from(&output).as_path(),
-            ) {
-                Ok(_) => UserInterface::display_success("Delta reconstruction done."),
-                Err(e) => { eprintln!("{}", e); process::exit(1); }
-            }
-        }
-
-        
-        Commands::Checkpoint { package, pid } => {
-            let engine = FeatureEngine::new(&args.root);
-            match engine.checkpoint_process(&package, pid) {
-                Ok(p) => UserInterface::display_success(&format!("Snapshot: {:?}", p)),
-                Err(e) => { eprintln!("{}", e); process::exit(1); }
-            }
-        }
-        Commands::Snapshots { package } => {
-            let engine = FeatureEngine::new(&args.root);
-            match engine.list_snapshots(&package) {
-                Ok(snaps) => {
-                    for s in &snaps { println!("  {:?}", s); }
-                    if snaps.is_empty() { println!("  (none)"); }
-                }
-                Err(e) => { eprintln!("{}", e); process::exit(1); }
-            }
-        }
-
-        
-        Commands::StreamMount { package, url, mount_point } => {
-            let engine = FeatureEngine::new(&args.root);
-            let meta = db.get_package_manifest(&package)
-                .unwrap_or_else(|_| { eprintln!("Not found: {}", package); process::exit(1); });
-            match engine.generate_stream_mount_script(&meta, &url, &mount_point) {
-                Ok(p) => UserInterface::display_success(&format!("Stream script: {:?}", p)),
-                Err(e) => { eprintln!("{}", e); process::exit(1); }
-            }
-        }
-        Commands::StreamUmount { package } => {
-            let engine = FeatureEngine::new(&args.root);
-            match engine.remove_stream_script(&package) {
-                Ok(_) => UserInterface::display_success("Stream script removed."),
-                Err(e) => { eprintln!("{}", e); process::exit(1); }
-            }
-        }
-
-        
-        Commands::OverlayCreate { package, target_path } => {
-            let engine = FeatureEngine::new(&args.root);
-            match engine.create_isolated_overlay(&package, &target_path) {
-                Ok(p) => UserInterface::display_success(&format!("Overlay: {:?}", p)),
-                Err(e) => { eprintln!("{}", e); process::exit(1); }
-            }
-        }
-        Commands::OverlayRemove { package } => {
-            let engine = FeatureEngine::new(&args.root);
-            match engine.remove_isolated_overlay(&package) {
-                Ok(_) => UserInterface::display_success("Overlay removed."),
-                Err(e) => { eprintln!("{}", e); process::exit(1); }
-            }
-        }
-
-        
-        Commands::SwarmHash { package, hash } => {
-            let engine = FeatureEngine::new(&args.root);
-            let meta = db.get_package_manifest(&package)
-                .unwrap_or_else(|_| { eprintln!("Not found: {}", package); process::exit(1); });
-            match engine.register_swarm_hash(&meta, &hash) {
-                Ok(_) => UserInterface::display_success("Swarm hash registered."),
-                Err(e) => { eprintln!("{}", e); process::exit(1); }
-            }
-        }
-        Commands::SwarmGet { package } => {
-            let engine = FeatureEngine::new(&args.root);
-            match engine.get_swarm_hash(&package) {
-                Ok(Some(h)) => println!("Swarm hash: {}", h),
-                Ok(None) => println!("No swarm hash registered."),
-                Err(e) => { eprintln!("{}", e); process::exit(1); }
-            }
-        }
-        Commands::SwarmPeers => {
-            let engine = FeatureEngine::new(&args.root);
-            match engine.list_swarm_peers() {
-                Ok(peers) => {
-                    for p in &peers { println!("  {} [{}]", p.address, p.peer_id); }
-                    if peers.is_empty() { println!("  (no peers)"); }
-                }
-                Err(e) => { eprintln!("{}", e); process::exit(1); }
-            }
-        }
-        Commands::SwarmPeerAdd { address, peer_id } => {
-            let engine = FeatureEngine::new(&args.root);
-            let peer = SwarmPeer {
-                address, peer_id, last_seen: 0, advertised_hashes: vec![],
-            };
-            match engine.register_swarm_peer(peer) {
-                Ok(_) => UserInterface::display_success("Peer added."),
-                Err(e) => { eprintln!("{}", e); process::exit(1); }
-            }
-        }
-
-        
-        Commands::ThrottleSet { package, max_memory_mb, max_cpu_pct } => {
-            let engine = FeatureEngine::new(&args.root);
-            match engine.enforce_resource_limits(&package, max_memory_mb, max_cpu_pct) {
-                Ok(_) => UserInterface::display_success("Limits applied."),
-                Err(e) => { eprintln!("{}", e); process::exit(1); }
-            }
-        }
-        Commands::ThrottleRemove { package } => {
-            let engine = FeatureEngine::new(&args.root);
-            match engine.remove_resource_limits(&package) {
-                Ok(_) => UserInterface::display_success("Limits removed."),
                 Err(e) => { eprintln!("{}", e); process::exit(1); }
             }
         }
