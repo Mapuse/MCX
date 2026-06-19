@@ -1,5 +1,7 @@
 #
 
+`▐▀` `-` `▀▀▀▀▀▀▀▀▌`
+
 ```shell
 ███╗   ███╗  ██████╗██╗    ██╗    ██████╗  █████╗  ██████╗██╗  ██╗ █████╗  ██████╗ ███████╗
 ████╗ ████║██╔════╝ ╚██╗  ██╔╝     ██╔══██╗██╔══██╗██╔════╝██║ ██╔╝██╔══██╗██╔════╝ ██╔════╝
@@ -16,13 +18,7 @@
 ╚═╝     ╚═╝╚═╝  ╚═╝╚═╝  ╚═══╝╚═╝  ╚═╝ ╚═════╝ ╚══════╝╚═╝  ╚═╝                          
 ```
 
-`-` `▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▌`
-
-- **`MCX`** is the official package manager for **`Cudane`**, completely written as a **`Runtime Package Manager`** to achieve 100% compatibility with the **`rLine`** build engine.
-  
-`-` `▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▌`
-
----
+`▀` `-` `▀▀▀▀▀▀▀▀`
 
 <details><summary id="contents">Contents</summary>
   
@@ -633,9 +629,17 @@ The Unlicebse - see [[**`LICENSE`**](github.com/Cudane/MCX/LICENSE)] file for de
 
 </details>
 
----
+`-` `▄▄▄▄▄▄▄▄▌`
 
-`-` `▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▌`
+##
+
+`▐▀` `-` `▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▌`
+
+- **`MCX`** is the official package manager for **`Cudane`**, completely written as a **`Runtime Package Manager`** to achieve 100% compatibility with the **`rLine`** build engine.
+  
+`▐▄` `-` `▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▌`
+
+`▐▀` `-` `▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▌`
 
 - **`Version`:** **`2.7.5`**.
 - **`Engine`:** **`rLine 0.2.0`**.
@@ -645,4 +649,4 @@ The Unlicebse - see [[**`LICENSE`**](github.com/Cudane/MCX/LICENSE)] file for de
 - **`Updates`:** **`Delta Reconstruction`** **+** **`Multi-Source`**.
 - **`Deduplication`:** **`Content-Addressable Storage`** **(`CAS`)**.
 
-`-` `▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▌`
+`▐▄` `-` `▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▌`
