@@ -88,18 +88,6 @@ cargo check
 
 <details><summary id="comptibility">Compatibility</summary>
 
-### rLine 0.2.0+ Features Supported
-
-- **`Metadata Ingestion`** - Reads all rLine metadata fields.
-- **`Atomical Rollback`** - Symlink-based instant rollback.
-- **`CAS Deduplication`** - Content-addressable shared libraries.
-- **`Lazy-Mount`** - Zero RAM for idle programs.
-- **`SandBox Profile`** - Automated namespace/cgroup isolation.
-- **`Delta Reconstruct`** - Bandwidth-saving updates.
-- **`Bundle Packages`** - Composite package support.
-- **`Dependency Signature`** - Cryptographic integrity.
-- **`Update Manager`** - Multi-source update system.
-
 </details>
 
 <details><summary id="credits">Credits</summary>
