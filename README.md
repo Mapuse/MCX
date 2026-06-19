@@ -18,7 +18,7 @@
 
 - ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▌
 
-**`MCX`** is the official package manager for **`Cudane`**, completely written as a **Runtime Package Manager** to achieve 100% compatibility with the **`rLine`** build engine.
+**`MCX`** is the official package manager for **`Cudane`**, completely written as a **`Runtime Package Manager`** to achieve 100% compatibility with the **`rLine`** build engine.
   
 - ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▌
 
