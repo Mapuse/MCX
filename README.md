@@ -1,10 +1,30 @@
-# MCX Package Manager
+#
 
-**MCX** is the official package manager for **Cudane Linux**, completely written as a **Runtime Package Manager** to achieve 100% compatibility with the **rLine** build engine.
+```shell
+▐▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▌
+▐                                                                                                        ▌
+▐  ███╗   ███╗ ██████╗██╗  ██╗    ██████╗  █████╗  ██████╗██╗  ██╗ █████╗  ██████╗ ███████╗              ▌
+▐  ████╗ ████║██╔════╝╚██╗██╔╝    ██╔══██╗██╔══██╗██╔════╝██║ ██╔╝██╔══██╗██╔════╝ ██╔════╝              ▌
+▐  ██╔████╔██║██║      ╚███╔╝     ██████╔╝███████║██║     █████╔╝ ███████║██║  ███╗█████╗                ▌
+▐  ██║╚██╔╝██║██║      ██╔██╗     ██╔═══╝ ██╔══██║██║     ██╔═██╗ ██╔══██║██║   ██║██╔══╝                ▌
+▐  ██║ ╚═╝ ██║╚██████╗██╔╝ ██╗    ██║     ██║  ██║╚██████╗██║  ██╗██║  ██║╚██████╔╝███████╗              ▌
+▐  ╚═╝     ╚═╝ ╚═════╝╚═╝  ╚═╝    ╚═╝     ╚═╝  ╚═╝ ╚═════╝╚═╝  ╚═╝╚═╝  ╚═╝ ╚═════╝ ╚══════╝              ▌
+▐                                                                                                        ▌
+▐  ███╗   ███╗ █████╗ ███╗   ██╗ █████╗  ██████╗ ███████╗██████╗     ██╗   ██╗██████╗ ███████╗ ███████╗  ▌
+▐  ████╗ ████║██╔══██╗████╗  ██║██╔══██╗██╔════╝ ██╔════╝██╔══██╗    ██║   ██║╚════██╗╚════██║ ██╔════╝  ▌
+▐  ██╔████╔██║███████║██╔██╗ ██║███████║██║  ███╗█████╗  ██████╔╝    ██║   ██║ █████╔╝    ██╔╝ ███████╗  ▌
+▐  ██║╚██╔╝██║██╔══██║██║╚██╗██║██╔══██║██║   ██║██╔══╝  ██╔══██╗    ╚██╗ ██╔╝██╔═══╝    ██╔╝  ╚════██║  ▌
+▐  ██║ ╚═╝ ██║██║  ██║██║ ╚████║██║  ██║╚██████╔╝███████╗██║  ██║     ╚████╔╝ ███████╗██╗██║██╗███████║  ▌
+▐  ╚═╝     ╚═╝╚═╝  ╚═╝╚═╝  ╚═══╝╚═╝  ╚═╝ ╚═════╝ ╚══════╝╚═╝  ╚═╝      ╚═══╝  ╚══════╝╚═╝╚═╝╚═╝╚══════╝  ▌
+▐                                                                                                        ▌
+▐▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▌
+```
 
-## Table of Contents
+**`MCX`** is the official package manager for **`Cudane` Linux**, completely written as a **Runtime Package Manager** to achieve 100% compatibility with the **`rLine`** build engine.
 
-- [[Architecture]](#architecture)
+<details><summary id="contents">Contents</summary>
+  
+- [[Architecture]](#arch)
 - [[1. Metadata Engine]](#1-metadata-engine)
 - [[2. Atomical Layer]](#2-atomical-layer)
 - [[3. CAS & OverlayFS Layer]](#3-cas--overlayfs-layer)
@@ -12,11 +32,11 @@
 - [[5. Automated SandBox Enforcer]](#5-automated-sandbox-enforcer)
 - [[6. Delta Reconstructor Engine]](#6-delta-reconstructor-engine)
 - [[7. Update Manager]](#7-update-manager)
-- [[Command Reference]](#command-reference)
+- [[Commands]](#commands-list)
   - [[Package Management]](#package-management)
   - [[Repository Management]](#repository-management)
   - [[Runtime Features]](#runtime-features)
-- [[System Integration]](#system-integration)
+- [[Integration]](#integration)
   - [[Directory Structure]](#directory-structure)
 - [[Development]](#development)
   - [[Project Structure]](#project-structure)
@@ -26,7 +46,9 @@
 - [[Credits]](#credits)
 - [[License]](#license)
 
-## Architecture
+</details>
+
+<details><summary id="arch">Architexture</summary>
 
 Unlike traditional package managers that simply "unzip and transfer files," MCX treats `.xcs` packages as **isolated and protected live file systems**. MCX never decompresses packages on disk; instead, it orchestrates their lifecycle through six core engines:
 
@@ -446,9 +468,9 @@ manager.sync_repositories().await?;
 > [!WARNING]
 > Delta updates require the old package to exist in `/system/storage/packages/`
 
----
+</details>
 
-## Command Reference
+<details><summary id="commands">Commands</summary>
 
 ### Package Management
 
@@ -499,9 +521,9 @@ manager.sync_repositories().await?;
 | `throttle-set` | `ts` | Set resource limits |
 | `throttle-remove` | `tr` | Remove resource limits |
 
----
+</details>
 
-## System Integration
+<details><summary id="integration">Integration</summary>
 
 ### Directory Structure
 
@@ -575,43 +597,46 @@ cargo test
 cargo check
 ```
 
----
+</details>
 
-## Compatibility
+<details><summary id="comptibility">Compatibility</summary>
 
 ### rLine 0.2.0+ Features Supported
 
-✅ **Metadata Ingestion** - Reads all rLine metadata fields  
-✅ **Atomical Rollback** - Symlink-based instant rollback  
-✅ **CAS Deduplication** - Content-addressable shared libraries  
-✅ **Lazy-Mount** - Zero RAM for idle programs  
-✅ **SandBox Profile** - Automated namespace/cgroup isolation  
-✅ **Delta Reconstruct** - Bandwidth-saving updates  
-✅ **Prefix Support** - "system", "system", "system/local"  
-✅ **Meta Packages** - Composite package support  
-✅ **Dependency Signature** - Cryptographic integrity  
-✅ **Update Manager** - Multi-source update system  
+- **`Metadata Ingestion`** - Reads all rLine metadata fields.
+- **`Atomical Rollback`** - Symlink-based instant rollback.
+- **`CAS Deduplication`** - Content-addressable shared libraries.
+- **`Lazy-Mount`** - Zero RAM for idle programs.
+- **`SandBox Profile`** - Automated namespace/cgroup isolation.
+- **`Delta Reconstruct`** - Bandwidth-saving updates.
+- **`Bundle Packages`** - Composite package support.
+- **`Dependency Signature`** - Cryptographic integrity.
+- **`Update Manager`** - Multi-source update system.
 
----
+</details>
 
-## Credits
+<details><summary id="credits">Credits</summary>
 
-**MCX** is part of the **Cudane Linux** ecosystem, designed to work seamlessly with **rLine** build engine.
+**`MCX`** is part of the **`Cudane` Linux** ecosystem, designed to work seamlessly with **`rLine`** build engine.
 
-- **Cudane** - Linux distribution
-- **rLine** - Source-to-archive build engine
-- **MCX** - Runtime package manager
+- **`Cudane`** - The Linux Distribution.
+- **`rLine`** - Source-To-Archive Build Engine.
+- **`MCX`** - Runtime Package Manager.
 
-## License
+</details>
 
-See LICENSE file for details.
+<details><summary id="license">License</summary>
 
----
+The Unlicebse - see [[**`LICENSE`**](github.com/Cudane/MCX/LICENSE)] file for details.
 
-**Version:** 3.0.0  
-**Engine Compatibility:** rLine 0.2.0+  
-**Architecture:** x86_64-unknown-linux-musl  
-**Isolation:** Linux Namespaces + cgroups  
-**Compression:** SquashFS + Zstd  
-**Updates:** Delta reconstruction + Multi-source  
-**Deduplication:** Content-Addressable Storage
+</details>
+
+##
+
+- **`Version`:** **`2.7.5`**.
+- **`Engine`:** **`rLine 0.2.0`**.
+- **`Architecture`:** **`x86_64-unknown-linux-musl`** (**`x86_64-pc-linux-musl`**).
+- **`Isolation`:** **`Linux NameSpaces`** **+** **`CGroups`**.
+- **`Compression`:** **`SquashFS`** **+** **`Zstd`**.
+- **`Updates`:** **`Delta Reconstruction`** **+** **`Multi-Source`**.
+- **`Deduplication`:** **`Content-Addressable Storage`** **(`CAS`)**.
