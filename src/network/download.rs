@@ -3,7 +3,7 @@ use std::io::{Seek, SeekFrom, Write};
 use std::path::Path;
 use std::sync::Arc;
 use anyhow::{Result, anyhow};
-use futures_util::future::join_all;
+use futures::future::join_all;
 use reqwest::header::{ACCEPT_RANGES, CONTENT_LENGTH, RANGE};
 use reqwest::Client;
 use tokio::sync::Mutex;

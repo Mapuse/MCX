@@ -1,7 +1,7 @@
 use std::path::Path;
 use anyhow::{Result, anyhow};
 use crate::core::changelog::{ChangelogManager, ActionKind, RegistryTransactionRecord};
-use crate::core::database::Database;
+use crate::core::db::Database;
 
 #[allow(dead_code)]
 pub struct HistoryEngine {

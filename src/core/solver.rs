@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use anyhow::{Result, anyhow};
-use crate::core::database::Database;
+use crate::core::db::Database;
 use crate::core::database::{PackageMetadata, Dependency};
 use crate::core::graph::DepGraph;
 

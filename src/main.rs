@@ -109,7 +109,7 @@ async fn main() {
             let cmd = InstallCommand::new(args.root.clone(), Arc::clone(&db));
             match cmd.execute(&packages).await {
                 Ok(_) => UserInterface::display_success("Installation committed."),
-                Err(e) => { eprintln!("{}", e); process::exit(1); }
+                Err(e) => { UserInterface::display_error(&format!("{e}")); process::exit(1); }
             }
         }
         Commands::Remove { packages } => {
@@ -117,7 +117,7 @@ async fn main() {
             let cmd = RemoveCommand::new(args.root.clone(), Arc::clone(&db));
             match cmd.execute(&packages) {
                 Ok(_) => UserInterface::display_success("Packages removed."),
-                Err(e) => { eprintln!("{}", e); process::exit(1); }
+                Err(e) => { UserInterface::display_error(&format!("{e}")); process::exit(1); }
             }
         }
         Commands::Build { config } => {
@@ -125,7 +125,7 @@ async fn main() {
             let cmd = SystemCommand::new(args.root.clone(), Arc::clone(&db));
             match cmd.rebuild(&config).await {
                 Ok(_) => UserInterface::display_success("System aligned."),
-                Err(e) => { eprintln!("{}", e); process::exit(1); }
+                Err(e) => { UserInterface::display_error(&format!("{e}")); process::exit(1); }
             }
         }
         Commands::AddLocal { file } => {
@@ -140,18 +140,18 @@ async fn main() {
                             let pkg_path = staging.join(&last.pkg_name);
                             if pkg_path.exists() {
                                 if let Err(e) = std::fs::rename(&pkg_path, installed_root.join(&last.pkg_name)) {
-                                    eprintln!("Failed to move package from staging: {}", e);
+                                    UserInterface::display_error(&format!("Failed to move package from staging: {e}"));
                                     process::exit(1);
                                 }
                             } else {
-                                eprintln!("Staged package not found: {}", pkg_path.display());
+                                UserInterface::display_error(&format!("Staged package not found: {}", pkg_path.display()));
                                 process::exit(1);
                             }
-                        }    
+                        }
                     }
                     UserInterface::display_success("Local package installed.");
                 }
-                Err(e) => { eprintln!("{}", e); process::exit(1); }
+                Err(e) => { UserInterface::display_error(&format!("{e}")); process::exit(1); }
             }
         }
         Commands::Search { query } => {
@@ -197,13 +197,19 @@ async fn main() {
         Commands::Query { package } => {
             match db.get_package_manifest(&package) {
                 Ok(meta) => {
-                    println!("Package: {}", meta.pkg_name);
-                    println!("Version: {}", meta.version);
-                    println!("License: {}", meta.license);
-                    println!("Source: {}", meta.source);
-                    println!("Files: {}", meta.files.len());
-                    println!("Dependencies: {}", meta.dependencies.len());
-                    println!("Features: {:?}", meta.features);
+                    // build key/value slices without holding temporary Strings across the call
+                    let file_count = meta.files.len().to_string();
+                    let dep_count = meta.dependencies.len().to_string();
+                    let pairs2 = [
+                        ("Package", meta.pkg_name.as_str()),
+                        ("Version", meta.version.as_str()),
+                        ("License", meta.license.as_str()),
+                        ("Source", meta.source.as_str()),
+                        ("Files", file_count.as_str()),
+                        ("Dependencies", dep_count.as_str()),
+                    ];
+
+                    UserInterface::render_key_values("Installed package", &pairs2);
                 }
                 Err(_) => UserInterface::display_success("Not installed."),
             }
@@ -246,11 +252,13 @@ async fn main() {
             let mgr = crate::core::repo::RepositoryManager::new(&args.root);
             match mgr.load_repositories() {
                 Ok(repos) => {
-                    for r in repos {
-                        println!("  {} -> {}", r.name, r.url);
-                    }
+                    let items = repos
+                        .into_iter()
+                        .map(|r| format!("{} -> {}", r.name, r.url))
+                        .collect::<Vec<_>>();
+                    UserInterface::render_list("Repositories", &items);
                 }
-                Err(e) => { eprintln!("{}", e); process::exit(1); }
+                Err(e) => { UserInterface::display_error(&format!("{e}")); process::exit(1); }
             }
         }
     }

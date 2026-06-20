@@ -97,7 +97,6 @@ impl AddLocalCommand {
             checksum: crate::core::database::ChecksumData { kind: checksum_kind, value: checksum_value },
             provides: Some(Vec::new()),
             conflicts: Some(Vec::new()),
-            features: Vec::new(),
         };
 
         db_tx.register_package_placement(&db_metadata)?;
