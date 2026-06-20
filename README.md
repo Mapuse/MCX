@@ -86,10 +86,6 @@ cargo check
 
 </details>
 
-<details><summary id="comptibility">Compatibility</summary>
-
-</details>
-
 <details><summary id="credits">Credits</summary>
 
 **`MCX`** is part of the **`Cudane` Linux** ecosystem, designed to work seamlessly with **`rLine`** build engine.
