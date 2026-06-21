@@ -19,7 +19,7 @@ use crate::commands::sync::SyncCommand;
 use crate::commands::system::SystemCommand;
 
 #[derive(Parser)]
-#[command(name = "mcx", version = "2.7.5")]
+#[command(name = "mcx", version = "2.7.6")]
 struct Cli {
     #[arg(long, global = true, default_value = "/")]
     root: String,
@@ -63,7 +63,7 @@ pub enum Commands {
     #[command(short_flag = 'C', long_flag = "config", aliases = ["cfg", "settings"])]
     Config,
 
-    #[command(short_flag = 'h', long_flag = "history", aliases = ["log", "record"])]
+    #[command(short_flag = 'H', long_flag = "history", aliases = ["log", "record"])]
     History {
         #[arg(long)]
         rollback: Option<String>,
@@ -82,14 +82,6 @@ pub enum Commands {
     #[command(long_flag = "repo-list", aliases = ["rl"])]
     RepoList,
 
-}
-
-#[derive(Subcommand)]
-pub enum CasAction {
-    #[command(long_flag = "run", aliases = ["r"])]
-    Run { pkg_staging: String },
-    #[command(long_flag = "stats", aliases = ["s"])]
-    Stats,
 }
 
 #[tokio::main]
@@ -223,7 +215,7 @@ async fn main() {
         }
         Commands::Verify => UserInterface::display_success("Verification passed."),
         Commands::FixDeps => UserInterface::display_success("Dependencies fixed."),
-        Commands::Config => UserInterface::display_success("Config OK."),
+        Commands::Config => UserInterface::display_success("Configuration saved."),
         Commands::History { rollback } => {
             let msg = rollback.map(|id| format!("Rollback to transaction {}", id))
                 .unwrap_or_else(|| "Fetching history...".into());

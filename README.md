@@ -53,7 +53,7 @@
 | `verify` | `v`, `check`, `certify` | Validate package integrity |
 | `fix` | `f`, `fix-deps`, `repair` | Fix dependency issues |
 | `config` | `C`, `cfg`, `settings` | Manage MCX configuration |
-| `history` | `h`, `log`, `record` | Show installation history (optional rollback id) |
+| `history` | `H`, `log`, `record` | Show installation history (optional rollback id) |
 | `build` | `b`, `make`, `create` | Rebuild system from a blueprint/config |
 
 ## Repository Management
@@ -254,9 +254,9 @@ The Unlicebse - see [[**`LICENSE`**](github.com/Cudane/MCX/LICENSE)] file for de
 
 `▐▀` `-` `▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▌`
 
-- **`Version`:** **`2.7.5`**.
+- **`Version`:** **`2.7.6`**.
 - **`Engine`:** **`rLine 0.2.0`**.
 - **`Architecture`:** **`x86_64-unknown-linux-musl`** (**`x86_64-pc-linux-musl`**).
-- **`Compression`:** **`Zstd`**.
+- **`Compression`:** **`Zstd Level 3 (.xcs)`**.
 
 `▐▄` `-` `▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▌`
