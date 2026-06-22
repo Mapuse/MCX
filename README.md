@@ -20,7 +20,7 @@
 
 `▀` `-` `▀▀▀▀▀▀`
 
-<html><details><summary id="contents">Contents</summary>
+<details><summary id="contents">Contents</summary>
 
 - [[Commands]](#commands)
 - [[Architecture]](#architecture)
@@ -34,7 +34,6 @@
 - [[License]](#license)
 
 </details>
-</html>
 
 <details><summary id="commands">Commands</summary>
 
