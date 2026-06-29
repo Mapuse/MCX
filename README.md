@@ -96,7 +96,7 @@ CLI parsing is handled by `clap` derive macros in `src/main.rs`. The `Cli` struc
 | `-U` | `--upgrade` | `up`, `dist-upgrade` | `InstallCommand` | `commands::install` |
 | `-q` | `--query` | `info`, `show` | inline in `main.rs` | — |
 | `-c` | `--clean` | `wipe`, `clear` | `CleanCommand` | `commands::clean` |
-| `-v` | `--verify` | `check`, `certify` | inline stub | — |
+| `-V` | `--verify` | `check`, `certify` | inline stub | — |
 | `-f` | `--fix` | `fix-deps`, `repair` | inline stub | — |
 | `-C` | `--config` | `cfg`, `settings` | `ConfigEditorCommand` | `commands::configuration` |
 | `-H` | `--history` | `log`, `record` | inline in `main.rs` | — |
@@ -214,10 +214,10 @@ mcx wipe
 
 Calls `CleanCommand::execute(true, true)` to purge both the cache directory (`var/cache/mcx/`) and staging area (`var/tmp/mcx/stage/`).
 
-### `-v` / `--verify`
+### `-V` / `--verify`
 
 ```
-mcx -v
+mcx -V
 mcx --verify
 ```
 
