@@ -20,7 +20,7 @@
 
 `▐▀` `-` `▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▌`
 
-- The official package manager of **`Cudane Linux`**.
+- The package manager of **`Cudane Linux`**.
 
 `▐▄` `-` `▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▌`
 
@@ -80,7 +80,7 @@
 
 <details><summary id="commands">Commands</summary>
 
-## Dispatch architecture
+## Dispatch
 
 CLI parsing is handled by `clap` derive macros in `src/main.rs`. The `Cli` struct defines the `--root` global flag; the `Commands` enum defines every subcommand with its arguments, aliases, and short-flag mappings. Each variant dispatches to a dedicated command struct in `src/commands/`.
 
@@ -226,7 +226,9 @@ Stub — prints "Dependencies fixed." No-op.
 mcx config
 ```
 
-Opens the full-screen TUI editor (`ConfigEditorCommand` in `commands::configuration.rs`). The editor targets `etc/mcx/config.ini`. Key bindings:
+Opens the full-screen TUI editor (`ConfigEditorCommand` in `commands::configuration.rs`). The editor targets `etc/mcx/config.ini`.
+
+Key bindings:
 
 | Key | Action |
 | --- | ------ |
@@ -317,7 +319,7 @@ Enumerates all configured repositories from `etc/mcx/repo.json` in `name -> url`
                                │
                                ▼
                       ┌──────────────────┐
-                      │  src/core/        │  Domain logic & persistence
+                      │  src/core/       │  Domain logic & persistence
                       │  ┌─ config.rs    │  mmap INI, lifetime-tracked MappedConfig
                       │  ├─ database.rs  │  LedgerState, DbTransaction
                       │  ├─ solver.rs    │  DependencySolver, UpgradePath
@@ -331,11 +333,11 @@ Enumerates all configured repositories from `etc/mcx/repo.json` in `name -> url`
                       │  ├─ transaction  │  PackageTransaction
                       │  ├─ cache.rs     │  CacheManager
                       │  ├─ delta.rs     │  DeltaEngine
-                      │  ├─ …           │  changelog, completion, declarative,
-                      │  │              │  package, sudo, update, vendor,
-                      │  │              │  workspace
-                      │  └──────────────┘
-                      └────────┬─────────┘
+                      │  ├─ …            │  changelog, completion, declarative,
+                      │  │               │  package, sudo, update, vendor,
+                      │  │               │  workspace
+                      │  └───────────────┘
+                      └────────┬───────────┘
                                │
           ┌────────────────────┼────────────────────┐
           ▼                    ▼                    ▼
@@ -382,9 +384,9 @@ Enumerates all configured repositories from `etc/mcx/repo.json` in `name -> url`
 ## Execution flow — phases
 
 ```
-  ╔══════════════════════════════════════════════════════════════╗
-  ║  PHASE 0: BOOTSTRAP (main.rs → EngineContext::new())        ║
-  ╚══════════════════════════════════════════════════════════════╝
+  ╔══════════════════════════════════════════════╗
+  ║  BOOTSTRAP (main.rs → EngineContext::new())  ║
+  ╚══════════════════════════════════════════════╝
   1. clap::Parser::parse() → Cli { root, Commands::Install(…) }
   2. EngineContext::new(root):
      a. SystemProfile::probe() — read /proc/cpuinfo, /proc/meminfo
@@ -399,9 +401,9 @@ Enumerates all configured repositories from `etc/mcx/repo.json` in `name -> url`
      g. NetworkProber::probe() — ICMP/HTTP latency test (5 s timeout)
      h. CalibratedParams baked from config values + host probe
 
-  ╔══════════════════════════════════════════════════════════════╗
-  ║  PHASE 1: RESOLVE (per-command dispatch)                    ║
-  ╚══════════════════════════════════════════════════════════════╝
+  ╔══════════════════════════════════╗
+  ║  RESOLVE (per-command dispatch)  ║
+  ╚══════════════════════════════════╝
   match command {
       Commands::Install(pkgs) => {
           solver.solve_with_analysis(&pkgs)
@@ -417,9 +419,9 @@ Enumerates all configured repositories from `etc/mcx/repo.json` in `name -> url`
       …
   }
 
-  ╔══════════════════════════════════════════════════════════════╗
-  ║  PHASE 2: EXECUTE (transaction commit)                      ║
-  ╚══════════════════════════════════════════════════════════════╝
+  ╔════════════════════════════════╗
+  ║  EXECUTE (transaction commit)  ║
+  ╚════════════════════════════════╝
   1. Database::begin_transaction() → DbTransaction
      - Clone LedgerState into staging_state
      - Initialise PackageTransaction log
@@ -430,9 +432,9 @@ Enumerates all configured repositories from `etc/mcx/repo.json` in `name -> url`
      d. Record in PackageTransaction
   3. DbTransaction::commit() → flush JSON, swap Mutex
 
-  ╔══════════════════════════════════════════════════════════════╗
-  ║  PHASE 3: VERIFY / CLEANUP                                  ║
-  ╚══════════════════════════════════════════════════════════════╝
+  ╔═════════════════════╗
+  ║  VERIFY / CLEANUP   ║
+  ╚═════════════════════╝
   - ContentValidator::validate(manifest, root) → Result
   - CacheManager::prune() — evict old .xcs files
   - AutoHealer::diagnose() — check for common misconfigurations
@@ -699,16 +701,16 @@ Default files are written on first `ConfigManager::new()` if absent.
 ## Staging and commit model — transaction flow
 
 ```
-  ┌──────────────────────────────────────────────────────────────────┐
-  │  Database::begin_transaction()                                   │
-  │  1. let staging_state = self.state.lock().clone()               │
-  │  2. let txn_log = PackageTransaction::new()                     │
-  │  3. Return DbTransaction { staging_state, txn_log }              │
-  └──────────────────────┬───────────────────────────────────────────┘
+  ┌─────────────────────────────────────────────────────┐
+  │  Database::begin_transaction()                      │
+  │  1. let staging_state = self.state.lock().clone()   │
+  │  2. let txn_log = PackageTransaction::new()         │
+  │  3. Return DbTransaction { staging_state, txn_log } │
+  └──────────────────────┬──────────────────────────────┘
                          │
                          ▼
   ┌──────────────────────────────────────────────────────────────────┐
-  │  Command execution phase                                        │
+  │  Command execution:                                              │
   │  Each operation mutates staging_state and appends to txn_log:    │
   │                                                                  │
   │  Install:                                                        │
@@ -728,13 +730,13 @@ Default files are written on first `ConfigManager::new()` if absent.
   └──────────────────────┬───────────────────────────────────────────┘
                          │
                          ▼
-  ┌──────────────────────────────────────────────────────────────────┐
-  │  DbTransaction::commit()                                        │
-  │  1. Write txn_log to var/lib/mcx/transactions/<id>.json         │
-  │  2. Serialise staging_state to JSON string                      │
-  │  3. Atomic write: write to .tmp, then rename to local.json      │
-  │  4. Swap state: *self.state.lock() = staging_state              │
-  └──────────────────────────────────────────────────────────────────┘
+  ┌─────────────────────────────────────────────────────────────┐
+  │  DbTransaction::commit()                                    │
+  │  1. Write txn_log to var/lib/mcx/transactions/<id>.json     │
+  │  2. Serialise staging_state to JSON string                  │
+  │  3. Atomic write: write to .tmp, then rename to local.json  │
+  │  4. Swap state: *self.state.lock() = staging_state          │
+  └─────────────────────────────────────────────────────────────┘
 ```
 
 The `.tmp` → `local.json` rename is atomic on Linux (same filesystem, `rename()` syscall). A crash during step 2 or 3 leaves the previous `local.json` intact. The transaction log is written before the state file, enabling crash recovery by replaying `transactions/`.
