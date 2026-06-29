@@ -86,27 +86,28 @@ CLI parsing is handled by `clap` derive macros in `src/main.rs`. The `Cli` struc
 
 ## Package management
 
-| Command | Aliases | Short flag | Struct | Module |
-| ------- | ------- | ---------- | ------ | ------ |
-| `install` | `i`, `in`, `add` | `-i` | `InstallCommand` | `commands::install` |
-| `add-local` | `a`, `local`, `package`, `xcs` | `-a` | `AddLocalCommand` | `commands::add` |
-| `remove` | `r`, `rm`, `uninstall`, `delete` | `-r` | `RemoveCommand` | `commands::remove` |
-| `search` | `s`, `find`, `look` | `-s` | `SearchCommand` | `commands::search` |
-| `update` | `u`, `refresh`, `sync` | `-u` | `SyncCommand` / `InstallCommand` | `commands::sync` / `commands::install` |
-| `upgrade` | `U`, `up`, `dist-upgrade` | `-U` | `InstallCommand` | `commands::install` |
-| `query` | `q`, `info`, `show` | `-q` | inline in `main.rs` | — |
-| `clean` | `c`, `wipe`, `clear` | `-c` | `CleanCommand` | `commands::clean` |
-| `verify` | `v`, `check`, `certify` | `-v` | inline stub | — |
-| `fix` | `f`, `fix-deps`, `repair` | `-f` | inline stub | — |
-| `config` | `C`, `cfg`, `settings` | `-C` | `ConfigEditorCommand` | `commands::configuration` |
-| `history` | `H`, `log`, `record` | `-H` | inline in `main.rs` | — |
-| `build` | `b`, `make`, `create` | `-b` | `SystemCommand` | `commands::system` |
+| Short | Long | Aliases | Struct | Module |
+| ----- | ---- | ------- | ------ | ------ |
+| `-i` | `--install` | `in`, `add` | `InstallCommand` | `commands::install` |
+| `-a` | `--add-local` | `local`, `package`, `xcs` | `AddLocalCommand` | `commands::add` |
+| `-r` | `--remove` | `rm`, `uninstall`, `delete` | `RemoveCommand` | `commands::remove` |
+| `-s` | `--search` | `find`, `look` | `SearchCommand` | `commands::search` |
+| `-u` | `--update` | `refresh`, `sync` | `SyncCommand` / `InstallCommand` | `commands::sync` / `commands::install` |
+| `-U` | `--upgrade` | `up`, `dist-upgrade` | `InstallCommand` | `commands::install` |
+| `-q` | `--query` | `info`, `show` | inline in `main.rs` | — |
+| `-c` | `--clean` | `wipe`, `clear` | `CleanCommand` | `commands::clean` |
+| `-v` | `--verify` | `check`, `certify` | inline stub | — |
+| `-f` | `--fix` | `fix-deps`, `repair` | inline stub | — |
+| `-C` | `--config` | `cfg`, `settings` | `ConfigEditorCommand` | `commands::configuration` |
+| `-H` | `--history` | `log`, `record` | inline in `main.rs` | — |
+| `-b` | `--build` | `make`, `create` | `SystemCommand` | `commands::system` |
 
-### `install`
+### `-i` / `--install`
 
 ```
-mcx install <package>...
-mcx i <package>...
+mcx -i <package>...
+mcx --install <package>...
+mcx in <package>...
 ```
 
 Resolves the dependency graph for the target packages via `DependencySolver`, downloads missing `.xcs` archives into `var/cache/mcx/`, verifies SHA-256 checksums, extracts each package in parallel (≥4 CPUs + ≥1 GB RAM triggers `spawn_blocking` per-package), copies artifacts into both the active root and `var/lib/mcx/active/<pkg>/`, and commits the transaction to `local.json`.
@@ -116,11 +117,12 @@ Resolves the dependency graph for the target packages via `DependencySolver`, do
 | `packages` | `Vec<String>` positional | yes | Package names to install |
 | `--root` | global `-PATH-` | no | MCX root (default `/`) |
 
-### `add-local`
+### `-a` / `--add-local`
 
 ```
-mcx add-local <file.xcs>
-mcx a <file.xcs>
+mcx -a <file.xcs>
+mcx --add-local <file.xcs>
+mcx local <file.xcs>
 ```
 
 Installs a local `.xcs` package file directly — no dependency resolution, no repository lookup. Extracts the archive to `var/tmp/mcx/stage/`, renames the staging directory into `var/lib/mcx/active/`, and updates the ledger.
@@ -129,11 +131,12 @@ Installs a local `.xcs` package file directly — no dependency resolution, no r
 | ----- | ---- | -------- | ----------- |
 | `file` | `String` positional | yes | Path to `.xcs` file |
 
-### `remove`
+### `-r` / `--remove`
 
 ```
-mcx remove <package>...
-mcx r <package>...
+mcx -r <package>...
+mcx --remove <package>...
+mcx rm <package>...
 ```
 
 Performs a self-healing deep-purge removal. Traces the reverse dependency graph via `deep_purge_analysis()` to identify orphaned packages. Removes each target's active directory, all manifest-listed files, scours `etc/mcx/`, `var/lib/mcx/`, `var/tmp/mcx/`, `var/cache/mcx/` for package-keyed residue, cleans dangling symlinks, and commits the transaction.
@@ -142,11 +145,12 @@ Performs a self-healing deep-purge removal. Traces the reverse dependency graph 
 | ----- | ---- | -------- | ----------- |
 | `packages` | `Vec<String>` positional | yes | Package names to remove |
 
-### `search`
+### `-s` / `--search`
 
 ```
-mcx search <query>
-mcx s <query>
+mcx -s <query>
+mcx --search <query>
+mcx find <query>
 ```
 
 Pattern-matches `query` against the `available` index in the current `LedgerState` (populated by the last `update`/sync). Results are printed to stdout via `UserInterface`.
@@ -155,33 +159,38 @@ Pattern-matches `query` against the `available` index in the current `LedgerStat
 | ----- | ---- | -------- | ----------- |
 | `query` | `String` positional | yes | Search pattern |
 
-### `update`
+### `-u` / `--update`
 
 ```
-mcx update                    # sync all repo indexes
-mcx update <package>...       # install latest versions
+mcx -u                         # sync all repo indexes
+mcx -u <package>...            # install latest versions
+mcx --update <package>...
+mcx refresh <package>...
 ```
 
 Without package arguments: triggers `SyncCommand` which calls `NetworkSyncEngine` to download all configured repository indexes in parallel.
 
 With package arguments: delegates to `InstallCommand`, resolving and installing the specified packages.
 
-### `upgrade`
+### `-U` / `--upgrade`
 
 ```
-mcx upgrade                   # upgrade all installed
-mcx upgrade <package>...      # upgrade specific packages
+mcx -U                         # upgrade all installed
+mcx -U <package>...            # upgrade specific packages
+mcx --upgrade <package>...
+mcx up <package>...
 ```
 
 Without arguments: collects all currently installed package names from the ledger, then runs `InstallCommand` over the full set.
 
 With arguments: runs `InstallCommand` on the specified subset.
 
-### `query`
+### `-q` / `--query`
 
 ```
-mcx query <package>
-mcx q <package>
+mcx -q <package>
+mcx --query <package>
+mcx info <package>
 ```
 
 Reads `PackageMetadata` from the `installed` ledger and renders a key-value table:
@@ -195,35 +204,39 @@ Reads `PackageMetadata` from the `installed` ledger and renders a key-value tabl
 | Files | `meta.files.len()` |
 | Dependencies | `meta.dependencies.len()` |
 
-### `clean`
+### `-c` / `--clean`
 
 ```
-mcx clean
-mcx c <package>
+mcx -c
+mcx --clean
+mcx wipe
 ```
 
 Calls `CleanCommand::execute(true, true)` to purge both the cache directory (`var/cache/mcx/`) and staging area (`var/tmp/mcx/stage/`).
 
-### `verify`
+### `-v` / `--verify`
 
 ```
-mcx verify
+mcx -v
+mcx --verify
 ```
 
 Stub — prints "Verification passed." No-op.
 
-### `fix`
+### `-f` / `--fix`
 
 ```
-mcx fix
+mcx -f
+mcx --fix
 ```
 
 Stub — prints "Dependencies fixed." No-op.
 
-### `config`
+### `-C` / `--config`
 
 ```
-mcx config
+mcx -C
+mcx --config
 ```
 
 Opens the full-screen TUI editor (`ConfigEditorCommand` in `commands::configuration.rs`). The editor targets `etc/mcx/config.ini`.
@@ -242,13 +255,14 @@ Key bindings:
 | Backspace/Delete | Character deletion |
 | Enter | Split line |
 
-### `history`
+### `-H` / `--history`
 
 ```
-mcx history
-mcx history --rollback <id>
-mcx history --prune <keep>
-mcx history --current-gen <package>
+mcx -H
+mcx -H --rollback <id>
+mcx -H --prune <keep>
+mcx -H --current-gen <package>
+mcx --history
 ```
 
 Without flags: prints installation transaction history from `HistoryEngine`.
@@ -259,26 +273,89 @@ Without flags: prints installation transaction history from `HistoryEngine`.
 
 `--current-gen <package>`: displays the active generation ID for a package.
 
-### `build`
+### `-b` / `--build`
 
 ```
-mcx build <config>
+mcx -b <config>
+mcx --build <config>
 ```
 
 Calls `SystemCommand::rebuild(&config)` to rebuild or align the system from a declarative blueprint file. `WorkspaceManager` creates build/stage directories before execution and cleans them on completion.
 
+### Blueprint file format
+
+The blueprint is a JSON file describing the target system state. `mcx -b <path>` reads it, computes the diff against the current installed packages, and runs install/remove to converge.
+
+```json
+{
+  "version": "1.0",
+  "architecture": "x86_64",
+  "packages": [
+    "zlib",
+    "libpng",
+    "libjpeg-turbo",
+    "freetype",
+    "fontconfig",
+    "harfbuzz"
+  ]
+}
+```
+
+| Field | Type | Required | Description |
+| ----- | ---- | -------- | ----------- |
+| `version` | `String` | yes | Blueprint schema version — must be non-empty |
+| `architecture` | `String` | yes | Target CPU architecture — validated by `ProfileValidator` |
+| `packages` | `Array<String>` | yes | Declared package names — no duplicates, no empty entries |
+
+#### Creating a blueprint
+
+1. **From the current system state** — dump installed packages into a JSON file:
+   ```shell
+   mcx -q all | awk '{print $1}' | jq -R -s '{version: "1.0", architecture: "x86_64", packages: split("\n")[:-1]}' > profile.json
+   ```
+2. **Hand-edit** — remove packages you no longer want, add packages you need:
+   ```json
+   {
+     "version": "1.0",
+     "architecture": "x86_64",
+     "packages": [
+       "zlib",
+       "libpng",
+       "libjpeg-turbo"
+     ]
+   }
+   ```
+3. **Converge** — apply the blueprint:
+   ```shell
+   mcx -b profile.json
+   ```
+   The engine will remove packages not in the list and install missing ones.
+
+#### Validation rules
+
+`ProfileValidator::load_profile()` enforces:
+- `version` must be non-empty
+- `architecture` must be non-empty
+- No duplicate package names in the array
+- No empty-string package entries
+
+If validation fails, `mcx -b` exits with an error before any packages are touched.
+
 ## Platform commands
 
-| Command | Aliases | Struct | Module |
-| ------- | ------- | ------ | ------ |
-| `self-update` | `update-self` | `SelfUpdateManager` | `core::update` |
-| `vendor` | `vnd` | `VendorManager` | `core::vendor` |
-| `completion` | `comp` | `CompletionEngine` | `core::completion` |
-| `snapshot` | `snap` | `SnapshotManager` | `core::snapshot` |
-| `swarm` | `p2p` | `SwarmManager` | `core::swarm` |
-| `overlay` | `ovl` | `OverlayManager` | `core::overlay` |
-| `cgroup` | `cg` | `CgroupController` | `core::cgroup` |
-| `stream` | `str` | `StreamManager` | `core::stream` |
+| Command (long flag) | Aliases | Struct | Module |
+| ------------------- | ------- | ------ | ------ |
+| `--self-update` | `update-self` | `SelfUpdateManager` | `core::update` |
+| `--vendor` | `vnd` | `VendorManager` | `core::vendor` |
+| `--completion` | `comp` | `CompletionEngine` | `core::completion` |
+| `--snapshot` | `snap` | `SnapshotManager` | `core::snapshot` |
+| `--swarm` | `p2p` | `SwarmManager` | `core::swarm` |
+| `--overlay` | `ovl` | `OverlayManager` | `core::overlay` |
+| `--cgroup` | `cg` | `CgroupController` | `core::cgroup` |
+| `--stream` | `str` | `StreamManager` | `core::stream` |
+| `--repo-add` | `ra` | `RepositoryManager` | `core::repo` |
+| `--repo-remove` | `rr` | `RepositoryManager` | `core::repo` |
+| `--repo-list` | `rl` | `RepositoryManager` | `core::repo` |
 
 ### `self-update`
 
@@ -288,91 +365,92 @@ mcx --self-update
 
 Checks the project GitHub Releases page for a newer binary. Downloads, verifies SHA-256 checksum, and atomically replaces the running executable with rollback on failure.
 
-### `vendor`
+### `--vendor`
 
 ```
-mcx vendor add <package> <source.xcs>
-mcx vendor remove <package>
-mcx vendor list
+mcx --vendor add <package> <source.xcs>
+mcx --vendor remove <package>
+mcx --vendor list
 ```
 
 Manages an offline package mirror in `var/lib/mcx/vendor/`. When vendored packages are present, `mcx install` can operate without network access by sourcing from the vendor store.
 
-### `completion`
+### `--completion`
 
 ```
-mcx completion bash|zsh|fish
+mcx --completion bash|zsh|fish
 ```
 
 Generates shell-completion scripts for the specified shell and writes them to stdout. Supports Bash (`complete -F`), Zsh (`#compdef`), and Fish (`complete -c`) formats covering all commands, aliases, and flags.
 
-### `snapshot`
+### `--snapshot`
 
 ```
-mcx snapshot take <package> <pid>
-mcx snapshot list <package>
-mcx snapshot restore <package> <snapshot_path> <pid>
-mcx snapshot remove <package>
+mcx --snapshot take <package> <pid>
+mcx --snapshot list <package>
+mcx --snapshot restore <package> <snapshot_path> <pid>
+mcx --snapshot remove <package>
 ```
 
 Process memory checkpoint facility. `take` reads `/proc/<pid>/mem` (falls back to `/proc/<pid>/maps`), compresses with Zstd, and writes to `var/lib/mcx/snapshots/<pkg>/snap-<timestamp>.mem`. `restore` writes the decompressed snapshot back to `/proc/<pid>/mem`. `remove` purges all snapshots for a package.
 
-### `swarm`
+### `--swarm`
 
 ```
-mcx swarm register-hash <package> <version> <hash>
-mcx swarm get-hash <package>
-mcx swarm remove-hash <package>
-mcx swarm register-peer <address> <peer_id>
-mcx swarm list-peers
+mcx --swarm register-hash <package> <version> <hash>
+mcx --swarm get-hash <package>
+mcx --swarm remove-hash <package>
+mcx --swarm register-peer <address> <peer_id>
+mcx --swarm list-peers
 ```
 
 Peer-to-peer package distribution via IPFS/IPLD content hashes. Hashes are persisted in `var/lib/mcx/swarm/<pkg>.json`; peer registry in `var/lib/mcx/swarm/peers.json`.
 
-### `overlay`
+### `--overlay`
 
 ```
-mcx overlay create <package> <lower_root>
-mcx overlay remove <package>
-mcx overlay list
+mcx --overlay create <package> <lower_root>
+mcx --overlay remove <package>
+mcx --overlay list
 ```
 
 Per-package overlayfs isolation. `create` builds a three-layer mount (`upper/`, `work/`, `merged/`) at `~/.mcx/overlays/<pkg>/` and generates a `mount-overlay.sh` script. `remove` unmounts and purges the overlay directory.
 
-### `cgroup`
+### `--cgroup`
 
 ```
-mcx cgroup enforce <package> <max_memory_mb> <max_cpu_percent>
-mcx cgroup enforce-mem <package> <max_memory_mb>
-mcx cgroup enforce-cpu <package> <max_cpu_percent>
-mcx cgroup remove <package>
-mcx cgroup status
+mcx --cgroup enforce <package> <max_memory_mb> <max_cpu_percent>
+mcx --cgroup enforce-mem <package> <max_memory_mb>
+mcx --cgroup enforce-cpu <package> <max_cpu_percent>
+mcx --cgroup remove <package>
+mcx --cgroup status
 ```
 
 cgroup v2 resource enforcement. Writes memory and CPU quota limits to `/sys/fs/cgroup/mcx/<pkg>/memory.max` and `cpu.max`. Package names are sanitised for cgroup path safety. `status` checks whether cgroup v2 is available on the host.
 
-### `stream`
+### `--stream`
 
 ```
-mcx stream generate <package> <version> <url>
-mcx stream remove <package>
-mcx stream list
+mcx --stream generate <package> <version> <url>
+mcx --stream remove <package>
+mcx --stream list
 ```
 
 Generates executable shell scripts at `var/lib/mcx/stream/<pkg>.sh` that mount remote squashfs images via `squashfuse` with HTTP range requests. Falls back to `wget` + `tar` if `squashfuse` is absent.
 
 ## Repository management
 
-| Command | Aliases | Struct | Module |
-| ------- | ------- | ------ | ------ |
-| `repo-add` | `ra` | `RepositoryManager` | `core::repo` |
-| `repo-remove` | `rr` | `RepositoryManager` | `core::repo` |
-| `repo-list` | `rl` | `RepositoryManager` | `core::repo` |
+| Command (long flag) | Aliases | Struct | Module |
+| ------------------- | ------- | ------ | ------ |
+| `--repo-add` | `ra` | `RepositoryManager` | `core::repo` |
+| `--repo-remove` | `rr` | `RepositoryManager` | `core::repo` |
+| `--repo-list` | `rl` | `RepositoryManager` | `core::repo` |
 
-### `repo-add`
+### `--repo-add`
 
 ```
-mcx repo-add <name> <url>
+mcx --repo-add <name> <url>
+mcx ra <name> <url>
 ```
 
 Adds a repository entry to `etc/mcx/repo.json` via `RepositoryManager::add_repository()`.
@@ -382,18 +460,20 @@ Adds a repository entry to `etc/mcx/repo.json` via `RepositoryManager::add_repos
 | `name` | `String` positional | yes | Repository identifier |
 | `url` | `String` positional | yes | Repository base URL |
 
-### `repo-remove`
+### `--repo-remove`
 
 ```
-mcx repo-remove <name>
+mcx --repo-remove <name>
+mcx rr <name>
 ```
 
 Removes a repository entry from `etc/mcx/repo.json` via `RepositoryManager::remove_repository()`.
 
-### `repo-list`
+### `--repo-list`
 
 ```
-mcx repo-list
+mcx --repo-list
+mcx rl
 ```
 
 Enumerates all configured repositories from `etc/mcx/repo.json` in `name -> url` format.
@@ -1260,7 +1340,7 @@ MCX uses a two-tier configuration system:
 
 1. **mmap-based INI config** (`core/config.rs`) — `ConfigManager` holds two memory-mapped configs (`config.ini` for engine parameters, `repo.ini` for repository definitions). Values are parsed zero-copy directly from the mapped region with proper lifetime tracking via `PhantomData`.
 
-2. **JSON repository registry** (`core/repo.rs`) — `RepositoryManager` manages a list of repository descriptors (`name`, `url`, optional `checksum`) persisted to `etc/mcx/repo.json`. This is the runtime registry used by `repo-add`/`repo-remove`/`repo-list` CLI commands.
+2. **JSON repository registry** (`core/repo.rs`) — `RepositoryManager` manages a list of repository descriptors (`name`, `url`, optional `checksum`) persisted to `etc/mcx/repo.json`. This is the runtime registry used by `--repo-add`/`--repo-remove`/`--repo-list` CLI commands.
 
 ## File locations
 
@@ -1354,7 +1434,7 @@ Use the TUI editor:
 
 ```shell
 # Open repo.ini in the built-in text editor
-mcx config
+mcx -C
 ```
 
 Or edit directly:
@@ -1377,20 +1457,20 @@ Sections are parsed by `ConfigParser` — the section header `[name]` becomes th
 
 ## `repo.json` — repository registry (CLI-managed)
 
-The CLI commands `repo-add`/`repo-remove`/`repo-list` operate on `etc/mcx/repo.json`:
+The CLI commands `--repo-add`/`--repo-remove`/`--repo-list` operate on `etc/mcx/repo.json`:
 
 ```shell
 # Add a repository
-mcx repo-add my-repo https://my-packages.example.com/mcx
+mcx --repo-add my-repo https://my-packages.example.com/mcx
 
 # Add a repository with a checksum
-mcx repo-add my-repo https://my-packages.example.com/mcx --checksum sha256:abc123...
+mcx --repo-add my-repo https://my-packages.example.com/mcx --checksum sha256:abc123...
 
 # List configured repositories
-mcx repo-list
+mcx --repo-list
 
 # Remove a repository
-mcx repo-remove my-repo
+mcx --repo-remove my-repo
 ```
 
 Format of `repo.json`:

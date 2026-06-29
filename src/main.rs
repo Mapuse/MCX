@@ -4,8 +4,10 @@ pub mod archive;
 pub mod utils;
 pub mod commands;
 
+use anyhow::Result;
 use clap::{Parser, Subcommand};
-use std::path::PathBuf;
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::process;
 use std::sync::Arc;
 use crate::utils::ui::UserInterface;
@@ -20,6 +22,7 @@ use crate::commands::remove::RemoveCommand;
 use crate::commands::search::SearchCommand;
 use crate::commands::sync::SyncCommand;
 use crate::commands::system::SystemCommand;
+use crate::core::delta::DeltaEngine;
 
 #[derive(Parser)]
 #[command(name = "mcx", version = "2.8.5")]
@@ -224,6 +227,11 @@ impl EngineContext {
 async fn main() {
     let args = Cli::parse();
     let root_path = PathBuf::from(&args.root);
+
+    if elevate_if_needed(&root_path) {
+        return;
+    }
+
     let ctx = EngineContext::new(&root_path);
 
     let _ = &ctx.config_mgr;
@@ -331,22 +339,69 @@ async fn main() {
             }
         }
         Commands::Upgrade { packages } => {
-            if let Some(pkgs) = packages {
-                UserInterface::display_info(&format!("Upgrading specific packages: {:?}", pkgs));
-                let cmd = InstallCommand::new(args.root.clone(), Arc::clone(&ctx.db));
-                match cmd.execute(&pkgs).await {
-                    Ok(_) => UserInterface::display_success("Packages upgraded."),
-                    Err(e) => { eprintln!("{}", e); process::exit(1); }
-                }
+            let pkgs_to_upgrade: Vec<String> = if let Some(pkgs) = packages {
+                pkgs
             } else {
-                UserInterface::display_info("Upgrading all packages...");
-                let cmd = InstallCommand::new(args.root.clone(), Arc::clone(&ctx.db));
-                let installed = ctx.db.get_all_installed_packages()
-                    .unwrap_or_default().into_iter().map(|p| p.pkg_name).collect::<Vec<_>>();
-                match cmd.execute(&installed).await {
-                    Ok(_) => UserInterface::display_success("Upgrade complete."),
-                    Err(e) => { eprintln!("{}", e); process::exit(1); }
+                ctx.db.get_all_installed_packages()
+                    .unwrap_or_default().into_iter().map(|p| p.pkg_name).collect()
+            };
+
+            UserInterface::display_info(&format!("Upgrading: {:?}", pkgs_to_upgrade));
+
+            let active_base = root_path.join("var/lib/mcx/active");
+            let backup_base = root_path.join("var/tmp/mcx/upgrade-backup");
+            let deltas_dir = root_path.join("var/lib/mcx/deltas");
+            let _ = fs::remove_dir_all(&backup_base);
+
+            let mut old_state: Vec<(String, String, PathBuf)> = Vec::new();
+            for pkg in &pkgs_to_upgrade {
+                if let Ok(meta) = ctx.db.get_package_manifest(pkg) {
+                    let active_dir = active_base.join(pkg);
+                    if active_dir.exists() {
+                        let backup = backup_base.join(pkg);
+                        let _ = fs::remove_dir_all(&backup);
+                        let _ = recursive_copy(&active_dir, &backup);
+                        old_state.push((pkg.clone(), meta.version.clone(), backup));
+                    }
                 }
+            }
+
+            let cmd = InstallCommand::new(args.root.clone(), Arc::clone(&ctx.db));
+            match cmd.execute(&pkgs_to_upgrade).await {
+                Ok(_) => {
+                    let _ = fs::create_dir_all(&deltas_dir);
+                    for (pkg_name, old_ver, backup_dir) in &old_state {
+                        let new_active = active_base.join(pkg_name);
+                        if !new_active.exists() || !backup_dir.exists() {
+                            continue;
+                        }
+                        let new_ver = match ctx.db.get_package_manifest(pkg_name) {
+                            Ok(m) => m.version.clone(),
+                            _ => continue,
+                        };
+                        match DeltaEngine::compute_delta(backup_dir, &new_active, pkg_name, old_ver, &new_ver) {
+                            Ok(delta) => {
+                                let added = delta.manifest.added.len();
+                                let removed = delta.manifest.removed.len();
+                                let modified = delta.manifest.modified.len();
+                                UserInterface::display_info(&format!(
+                                    "{}: {} → {} ({} added, {} removed, {} modified)",
+                                    pkg_name, old_ver, new_ver, added, removed, modified,
+                                ));
+                                let xcd_path = deltas_dir.join(format!("{}-{}-{}.xcd", pkg_name, old_ver, new_ver));
+                                if let Err(e) = DeltaEngine::write_delta(&delta, &xcd_path) {
+                                    UserInterface::display_error(&format!("Delta persist failed: {e}"));
+                                }
+                            }
+                            Err(e) => {
+                                UserInterface::display_error(&format!("Delta compute failed for {}: {e}", pkg_name));
+                            }
+                        }
+                    }
+                    let _ = fs::remove_dir_all(&backup_base);
+                    UserInterface::display_success("Upgrade complete.");
+                }
+                Err(e) => { eprintln!("{}", e); process::exit(1); }
             }
         }
         Commands::Query { package } => {
@@ -762,4 +817,68 @@ async fn main() {
             }
         }
     }
+}
+
+fn elevate_if_needed(root: &Path) -> bool {
+    if is_root_process() {
+        return false;
+    }
+    if has_write_access(root) {
+        return false;
+    }
+    let exe = match std::env::current_exe() {
+        Ok(e) => e,
+        Err(_) => return false,
+    };
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    eprintln!("Elevating privileges via sudo...");
+    let status = std::process::Command::new("sudo")
+        .arg(&exe)
+        .args(&args)
+        .status();
+    match status {
+        Ok(s) => std::process::exit(s.code().unwrap_or(1)),
+        Err(_) => false,
+    }
+}
+
+fn is_root_process() -> bool {
+    std::process::Command::new("id")
+        .arg("-u")
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim() == "0")
+        .unwrap_or(false)
+}
+
+fn has_write_access(root: &Path) -> bool {
+    let probe = root.join(".mcx-wt");
+    match std::fs::write(&probe, []) {
+        Ok(_) => {
+            let _ = std::fs::remove_file(&probe);
+            true
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => false,
+        Err(_) => true,
+    }
+}
+
+fn recursive_copy(src: &Path, dst: &Path) -> Result<()> {
+    fs::create_dir_all(dst)?;
+    for entry in fs::read_dir(src)? {
+        let entry = entry?;
+        let path = entry.path();
+        let rel = path.strip_prefix(src).unwrap();
+        let dest = dst.join(rel);
+        if path.is_dir() {
+            recursive_copy(&path, &dest)?;
+        } else if path.is_file() {
+            if let Some(parent) = dest.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            fs::copy(&path, &dest)?;
+        }
+    }
+    Ok(())
 }
