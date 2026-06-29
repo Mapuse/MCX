@@ -412,7 +412,7 @@ async fn main() {
                     ];
                     UserInterface::render_key_values("Installed package", &pairs2);
                 }
-                Err(_) => UserInterface::display_success("Not installed."),
+                Err(_) => UserInterface::display_error("Not installed."),
             }
         }
         Commands::Clean => {
