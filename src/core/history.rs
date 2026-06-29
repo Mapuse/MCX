@@ -3,10 +3,9 @@ use anyhow::{Result, anyhow};
 use crate::core::changelog::{ChangelogManager, ActionKind, RegistryTransactionRecord};
 use crate::core::db::Database;
 
-#[allow(dead_code)]
 pub struct HistoryEngine {
     changelog: ChangelogManager,
-    db: std::sync::Arc<Database>,
+    pub db: std::sync::Arc<Database>,
 }
 
 impl HistoryEngine {

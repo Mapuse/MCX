@@ -2,11 +2,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use anyhow::{Result, Context};
 
-#[allow(dead_code)]
 pub struct WorkspaceManager {
-    root: PathBuf,
-    build_dir: PathBuf,
-    stage_dir: PathBuf,
+    pub root: PathBuf,
+    pub build_dir: PathBuf,
+    pub stage_dir: PathBuf,
 }
 
 impl WorkspaceManager {

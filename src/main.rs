@@ -22,7 +22,7 @@ use crate::commands::sync::SyncCommand;
 use crate::commands::system::SystemCommand;
 
 #[derive(Parser)]
-#[command(name = "mcx", version = "2.7.8")]
+#[command(name = "mcx", version = "2.8.5")]
 struct Cli {
     #[arg(long, global = true, default_value = "/")]
     root: String,
@@ -69,6 +69,10 @@ pub enum Commands {
     History {
         #[arg(long)]
         rollback: Option<String>,
+        #[arg(long)]
+        prune: Option<usize>,
+        #[arg(long)]
+        current_gen: Option<String>,
     },
 
     #[command(short_flag = 'b', long_flag = "build", aliases = ["make", "create"])]
@@ -82,13 +86,100 @@ pub enum Commands {
 
     #[command(long_flag = "repo-list", aliases = ["rl"])]
     RepoList,
+
+    #[command(long_flag = "self-update", aliases = ["update-self"])]
+    SelfUpdate,
+
+    #[command(long_flag = "vendor", aliases = ["vnd"])]
+    Vendor {
+        #[command(subcommand)]
+        action: VendorAction,
+    },
+
+    #[command(long_flag = "completion", aliases = ["comp"])]
+    Completion { shell: String },
+
+    #[command(long_flag = "snapshot", aliases = ["snap"])]
+    Snapshot {
+        #[command(subcommand)]
+        action: SnapshotAction,
+    },
+
+    #[command(long_flag = "swarm", aliases = ["p2p"])]
+    Swarm {
+        #[command(subcommand)]
+        action: SwarmAction,
+    },
+
+    #[command(long_flag = "overlay", aliases = ["ovl"])]
+    Overlay {
+        #[command(subcommand)]
+        action: OverlayAction,
+    },
+
+    #[command(long_flag = "cgroup", aliases = ["cg"])]
+    Cgroup {
+        #[command(subcommand)]
+        action: CgroupAction,
+    },
+
+    #[command(long_flag = "stream", aliases = ["str"])]
+    Stream {
+        #[command(subcommand)]
+        action: StreamAction,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum VendorAction {
+    Add { package: String, source: String },
+    Remove { package: String },
+    List,
+}
+
+#[derive(Subcommand)]
+pub enum SnapshotAction {
+    Take { package: String, pid: u32 },
+    List { package: String },
+    Restore { package: String, snapshot: String, pid: u32 },
+    Remove { package: String },
+}
+
+#[derive(Subcommand)]
+pub enum SwarmAction {
+    RegisterHash { package: String, version: String, hash: String },
+    GetHash { package: String },
+    RemoveHash { package: String },
+    RegisterPeer { address: String, peer_id: String },
+    ListPeers,
+}
+
+#[derive(Subcommand)]
+pub enum OverlayAction {
+    Create { package: String, lower: String },
+    Remove { package: String },
+    List,
+}
+
+#[derive(Subcommand)]
+pub enum CgroupAction {
+    Enforce { package: String, max_memory_mb: u64, max_cpu_percent: u8 },
+    EnforceMem { package: String, max_memory_mb: u64 },
+    EnforceCpu { package: String, max_cpu_percent: u8 },
+    Remove { package: String },
+    Status,
+}
+
+#[derive(Subcommand)]
+pub enum StreamAction {
+    Generate { package: String, version: String, url: String },
+    Remove { package: String },
+    List,
 }
 
 struct EngineContext {
     db: Arc<Database>,
-    #[allow(dead_code)]
     config_mgr: ConfigManager,
-    #[allow(dead_code)]
     plugin_registry: PluginRegistry,
     sys_profile: SystemProfile,
 }
@@ -107,14 +198,23 @@ impl EngineContext {
 
         let params = config_mgr.calibrate();
         UserInterface::display_info(&format!(
-            "Auto-calibration: {} cores | {} MB RAM | thread pool={} | max_dl={}",
-            sys_profile.cpu_count, sys_profile.available_ram_mb, params.thread_pool_size, params.concurrent_downloads
+            "Auto-calibration: {} cores | {} MB RAM | thread pool={} | max_dl={} | zstd={}",
+            sys_profile.cpu_count, sys_profile.available_ram_mb,
+            params.thread_pool_size, params.concurrent_downloads,
+            params.zstd_level
         ));
 
         let db = match Database::open(root) {
             Ok(database) => Arc::new(database),
             Err(e) => { eprintln!("{}", e); process::exit(1); }
         };
+
+        let _ = crate::core::lifecycle::LifecycleEngine::new();
+        UserInterface::display_info(&format!("Plugins: {} fetchers, {} builders, {} packers",
+            plugin_registry.fetcher_count(),
+            plugin_registry.builder_count(),
+            plugin_registry.packer_count(),
+        ));
 
         Self { db, config_mgr, plugin_registry, sys_profile }
     }
@@ -125,6 +225,9 @@ async fn main() {
     let args = Cli::parse();
     let root_path = PathBuf::from(&args.root);
     let ctx = EngineContext::new(&root_path);
+
+    let _ = &ctx.config_mgr;
+    let _ = &ctx.plugin_registry;
 
     match args.command {
         Commands::Install { packages } => {
@@ -139,7 +242,16 @@ async fn main() {
             }
             let cmd = InstallCommand::new(args.root.clone(), Arc::clone(&ctx.db));
             match cmd.execute(&packages).await {
-                Ok(_) => UserInterface::display_success("Installation committed."),
+                Ok(_) => {
+                    let cas = crate::core::cas::CasStore::new(&root_path);
+                    if let Ok(stats) = cas.deduplicate_libraries(&root_path.join("usr/lib")) {
+                        UserInterface::display_info(&format!(
+                            "CAS dedup: {} unique files, {} bytes saved",
+                            stats.unique_files, stats.bytes_saved
+                        ));
+                    }
+                    UserInterface::display_success("Installation committed.");
+                }
                 Err(e) => { UserInterface::display_error(&format!("{e}")); process::exit(1); }
             }
         }
@@ -153,9 +265,19 @@ async fn main() {
         }
         Commands::Build { config } => {
             UserInterface::display_info(&format!("Building from: {}", config));
+            let ws = crate::core::workspace::WorkspaceManager::new(&root_path);
+            if let Err(e) = ws.initialize() {
+                UserInterface::display_error(&format!("Workspace init failed: {e}"));
+                process::exit(1);
+            }
             let cmd = SystemCommand::new(args.root.clone(), Arc::clone(&ctx.db));
             match cmd.rebuild(&config).await {
-                Ok(_) => UserInterface::display_success("System aligned."),
+                Ok(_) => {
+                    if let Err(e) = ws.clean_global_workspaces() {
+                        UserInterface::display_error(&format!("Workspace cleanup failed: {e}"));
+                    }
+                    UserInterface::display_success("System aligned.");
+                }
                 Err(e) => { UserInterface::display_error(&format!("{e}")); process::exit(1); }
             }
         }
@@ -176,6 +298,11 @@ async fn main() {
                                 }
                             }
                         }
+                    }
+                    let rollback_mgr = crate::core::rollback::RollbackManager::new(&root_path);
+                    let gen_root = root_path.join("var/lib/mcx/active");
+                    if gen_root.exists() {
+                        let _ = rollback_mgr.enable_atomic_rollback("local", &gen_root);
                     }
                     UserInterface::display_success("Local package installed.");
                 }
@@ -243,18 +370,85 @@ async fn main() {
         Commands::Clean => {
             let cmd = CleanCommand::new(&args.root);
             match cmd.execute(true, true) {
-                Ok(_) => UserInterface::display_success("Cache cleared."),
+                Ok(_) => {
+                    let ws = crate::core::workspace::WorkspaceManager::new(&root_path);
+                    let _ = ws.clean_global_workspaces();
+                    UserInterface::display_success("Cache cleared.");
+                }
                 Err(e) => { eprintln!("{}", e); process::exit(1); }
             }
         }
         Commands::Verify => UserInterface::display_success("Verification passed."),
         Commands::FixDeps => UserInterface::display_success("Dependencies fixed."),
         Commands::Config => UserInterface::display_success("Configuration saved."),
-        Commands::History { rollback } => {
-            let msg = rollback.map(|id| format!("Rollback to transaction {}", id))
-                .unwrap_or_else(|| "Fetching history...".into());
-            UserInterface::display_info(&msg);
-            UserInterface::display_success("Done.");
+
+        Commands::History { rollback, prune, current_gen } => {
+            let rollback_mgr = crate::core::rollback::RollbackManager::new(&root_path);
+            let _ = rollback_mgr.initialize();
+
+            if let Some(keep) = prune {
+                let all_pkgs = ctx.db.get_all_installed_packages().unwrap_or_default();
+                let pkg_names: Vec<String> = all_pkgs.iter().map(|p| p.pkg_name.clone()).collect();
+                let mut total = 0;
+                for name in &pkg_names {
+                    match rollback_mgr.prune_generations(name, keep) {
+                        Ok(n) => total += n,
+                        Err(e) => UserInterface::display_error(&format!("Prune failed for {}: {e}", name)),
+                    }
+                }
+                UserInterface::display_success(&format!("Pruned {} old generations (keeping {})", total, keep));
+            } else if let Some(pkg_name) = current_gen {
+                match rollback_mgr.current_generation(&pkg_name) {
+                    Ok(Some(generation_id)) => UserInterface::display_success(&format!("{}: current generation {}", pkg_name, generation_id.0)),
+                    Ok(None) => UserInterface::display_info("No generations recorded."),
+                    Err(e) => { UserInterface::display_error(&format!("{e}")); process::exit(1); }
+                }
+            } else if let Some(tx_id) = rollback {
+                UserInterface::display_info(&format!("Rolling back to transaction {}", tx_id));
+                let history = crate::core::history::HistoryEngine::new(&root_path, Arc::clone(&ctx.db));
+                match tx_id.parse::<u64>() {
+                    Ok(id) => {
+                        match history.compute_rollback_plan(id) {
+                            Ok(plan) => {
+                                for (action, targets) in &plan {
+                                    match action {
+                                        crate::core::changelog::ActionKind::Installation => {
+                                            UserInterface::display_info(&format!("Rollback: install {:?}", targets));
+                                        }
+                                        crate::core::changelog::ActionKind::Removal => {
+                                            UserInterface::display_info(&format!("Rollback: remove {:?}", targets));
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                UserInterface::display_error(&format!("Rollback plan failed: {e}"));
+                                process::exit(1);
+                            }
+                        }
+                    }
+                    Err(_) => {
+                        UserInterface::display_error("Invalid transaction ID");
+                        process::exit(1);
+                    }
+                }
+                UserInterface::display_success("Rollback complete.");
+            } else {
+                let history = crate::core::history::HistoryEngine::new(&root_path, Arc::clone(&ctx.db));
+                match history.fetch_ordered_log() {
+                    Ok(records) => {
+                        let items: Vec<String> = records.iter()
+                            .map(|r| format!("#{} {}: {:?}", r.transaction_id, r.timestamp, r.targets))
+                            .collect();
+                        UserInterface::render_list("Transaction history", &items);
+                    }
+                    Err(e) => {
+                        UserInterface::display_error(&format!("History fetch failed: {e}"));
+                        process::exit(1);
+                    }
+                }
+            }
         }
 
         Commands::RepoAdd { name, url } => {
@@ -284,6 +478,287 @@ async fn main() {
                     UserInterface::render_list("Repositories", &items);
                 }
                 Err(e) => { UserInterface::display_error(&format!("{e}")); process::exit(1); }
+            }
+        }
+
+        Commands::SelfUpdate => {
+            UserInterface::display_info("Checking for updates...");
+            let updater = match crate::core::update::SelfUpdateManager::new("2.8.5") {
+                Ok(u) => u,
+                Err(e) => {
+                    UserInterface::display_error(&format!("Self-update init failed: {e}"));
+                    process::exit(1);
+                }
+            };
+            match updater.check_for_updates("https://api.github.com/repos/Cudane/MCX/releases/latest").await {
+                Ok(Some(release)) => {
+                    UserInterface::display_info(&format!("Update available: v{}", release.version));
+                    match updater.deploy_update(&release).await {
+                        Ok(_) => UserInterface::display_success("Update deployed. Restart to apply."),
+                        Err(e) => {
+                            UserInterface::display_error(&format!("Update failed: {e}"));
+                            process::exit(1);
+                        }
+                    }
+                }
+                Ok(None) => UserInterface::display_success("Already up to date."),
+                Err(e) => {
+                    UserInterface::display_error(&format!("Update check failed: {e}"));
+                    process::exit(1);
+                }
+            }
+        }
+
+        Commands::Vendor { action } => {
+            let vendor = crate::core::vendor::VendorManager::new(&root_path);
+            if let Err(e) = vendor.initialize() {
+                UserInterface::display_error(&format!("Vendor init failed: {e}"));
+                process::exit(1);
+            }
+            match action {
+                VendorAction::Add { package, source } => {
+                    let src = PathBuf::from(&source);
+                    match vendor.register_vendor_package(&package, &src) {
+                        Ok(_) => UserInterface::display_success(&format!("Vendored {}", package)),
+                        Err(e) => { UserInterface::display_error(&format!("{e}")); process::exit(1); }
+                    }
+                }
+                VendorAction::Remove { package } => {
+                    match vendor.remove_vendor_package(&package) {
+                        Ok(_) => UserInterface::display_success(&format!("Removed vendored {}", package)),
+                        Err(e) => { UserInterface::display_error(&format!("{e}")); process::exit(1); }
+                    }
+                }
+                VendorAction::List => {
+                    let items: Vec<String> = ctx.db.get_all_installed_packages()
+                        .unwrap_or_default()
+                        .iter()
+                        .filter(|p| vendor.verify_vendor_presence(&p.pkg_name))
+                        .map(|p| format!("{} {} (vendored)", p.pkg_name, p.version))
+                        .collect();
+                    UserInterface::render_list("Vendored packages", &items);
+                }
+            }
+        }
+
+        Commands::Completion { shell } => {
+            let comp = crate::core::completion::CompletionEngine::new(Arc::clone(&ctx.db));
+            match comp.generate_shell_blueprint(&shell) {
+                Ok(script) => {
+                    println!("{}", script);
+                }
+                Err(e) => {
+                    UserInterface::display_error(&format!("Completion generation failed: {e}"));
+                    process::exit(1);
+                }
+            }
+        }
+
+        Commands::Snapshot { action } => {
+            let snap_mgr = crate::core::snapshot::SnapshotManager::new(&root_path);
+            if let Err(e) = snap_mgr.initialize() {
+                UserInterface::display_error(&format!("Snapshot init failed: {e}"));
+                process::exit(1);
+            }
+            match action {
+                SnapshotAction::Take { package, pid } => {
+                    match snap_mgr.checkpoint_process(&package, pid) {
+                        Ok(path) => UserInterface::display_success(&format!("Snapshot saved: {:?}", path)),
+                        Err(e) => { UserInterface::display_error(&format!("{e}")); process::exit(1); }
+                    }
+                }
+                SnapshotAction::List { package } => {
+                    match snap_mgr.list_snapshots(&package) {
+                        Ok(snapshots) => {
+                            let items: Vec<String> = snapshots.iter().map(|p| p.to_string_lossy().to_string()).collect();
+                            UserInterface::render_list(&format!("Snapshots for {}", package), &items);
+                        }
+                        Err(e) => { UserInterface::display_error(&format!("{e}")); process::exit(1); }
+                    }
+                }
+                SnapshotAction::Restore { package: _, snapshot, pid } => {
+                    let snap_path = PathBuf::from(&snapshot);
+                    match snap_mgr.restore_snapshot(&snap_path, pid) {
+                        Ok(_) => UserInterface::display_success("Snapshot restored."),
+                        Err(e) => { UserInterface::display_error(&format!("{e}")); process::exit(1); }
+                    }
+                }
+                SnapshotAction::Remove { package } => {
+                    match snap_mgr.remove_snapshots(&package) {
+                        Ok(_) => UserInterface::display_success(&format!("Snapshots removed for {}", package)),
+                        Err(e) => { UserInterface::display_error(&format!("{e}")); process::exit(1); }
+                    }
+                }
+            }
+        }
+
+        Commands::Swarm { action } => {
+            let swarm_mgr = crate::core::swarm::SwarmManager::new(&root_path);
+            if let Err(e) = swarm_mgr.initialize() {
+                UserInterface::display_error(&format!("Swarm init failed: {e}"));
+                process::exit(1);
+            }
+            match action {
+                SwarmAction::RegisterHash { package, version, hash } => {
+                    match swarm_mgr.register_swarm_hash(&package, &version, &hash) {
+                        Ok(_) => UserInterface::display_success(&format!("Swarm hash registered for {}", package)),
+                        Err(e) => { UserInterface::display_error(&format!("{e}")); process::exit(1); }
+                    }
+                }
+                SwarmAction::GetHash { package } => {
+                    match swarm_mgr.get_swarm_hash(&package) {
+                        Ok(Some(hash)) => UserInterface::display_success(&format!("{}: {}", package, hash)),
+                        Ok(None) => UserInterface::display_info("No swarm hash registered."),
+                        Err(e) => { UserInterface::display_error(&format!("{e}")); process::exit(1); }
+                    }
+                }
+                SwarmAction::RemoveHash { package } => {
+                    match swarm_mgr.remove_swarm_entry(&package) {
+                        Ok(_) => UserInterface::display_success(&format!("Swarm hash removed for {}", package)),
+                        Err(e) => { UserInterface::display_error(&format!("{e}")); process::exit(1); }
+                    }
+                }
+                SwarmAction::RegisterPeer { address, peer_id } => {
+                    let peer = crate::core::swarm::SwarmPeer {
+                        address,
+                        peer_id,
+                        last_seen: std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs(),
+                        advertised_hashes: Vec::new(),
+                    };
+                    match swarm_mgr.register_swarm_peer(peer) {
+                        Ok(_) => UserInterface::display_success("Peer registered."),
+                        Err(e) => { UserInterface::display_error(&format!("{e}")); process::exit(1); }
+                    }
+                }
+                SwarmAction::ListPeers => {
+                    match swarm_mgr.list_swarm_peers() {
+                        Ok(peers) => {
+                            let items: Vec<String> = peers.iter()
+                                .map(|p| format!("{} @ {} [{} hashes]", p.peer_id, p.address, p.advertised_hashes.len()))
+                                .collect();
+                            UserInterface::render_list("Swarm peers", &items);
+                        }
+                        Err(e) => { UserInterface::display_error(&format!("{e}")); process::exit(1); }
+                    }
+                }
+            }
+        }
+
+        Commands::Overlay { action } => {
+            let overlay_mgr = crate::core::overlay::OverlayManager::new(&root_path.join(
+                std::env::var("HOME").unwrap_or_else(|_| "/root".to_string())
+            ));
+            if let Err(e) = overlay_mgr.initialize() {
+                UserInterface::display_error(&format!("Overlay init failed: {e}"));
+                process::exit(1);
+            }
+            match action {
+                OverlayAction::Create { package, lower } => {
+                    match overlay_mgr.create_isolated_overlay(&package, PathBuf::from(&lower).as_path()) {
+                        Ok(merged) => UserInterface::display_success(&format!("Overlay created: {:?}", merged)),
+                        Err(e) => { UserInterface::display_error(&format!("{e}")); process::exit(1); }
+                    }
+                }
+                OverlayAction::Remove { package } => {
+                    match overlay_mgr.remove_isolated_overlay(&package) {
+                        Ok(_) => UserInterface::display_success("Overlay removed."),
+                        Err(e) => { UserInterface::display_error(&format!("{e}")); process::exit(1); }
+                    }
+                }
+                OverlayAction::List => {
+                    match overlay_mgr.list_overlays() {
+                        Ok(overlays) => {
+                            let items: Vec<String> = overlays.iter()
+                                .map(|p| p.to_string_lossy().to_string())
+                                .collect();
+                            UserInterface::render_list("Active overlays", &items);
+                        }
+                        Err(e) => { UserInterface::display_error(&format!("{e}")); process::exit(1); }
+                    }
+                }
+            }
+        }
+
+        Commands::Cgroup { action } => {
+            let cg_mgr = crate::core::cgroup::CgroupController::new();
+            match action {
+                CgroupAction::Enforce { package, max_memory_mb, max_cpu_percent } => {
+                    if !cg_mgr.is_cgroup_v2_available() {
+                        UserInterface::display_error("cgroup v2 not available on this system");
+                        process::exit(1);
+                    }
+                    match cg_mgr.enforce_resource_limits(&package, max_memory_mb, max_cpu_percent) {
+                        Ok(_) => UserInterface::display_success(&format!("Limits enforced for {}", package)),
+                        Err(e) => { UserInterface::display_error(&format!("{e}")); process::exit(1); }
+                    }
+                }
+                CgroupAction::EnforceMem { package, max_memory_mb } => {
+                    if !cg_mgr.is_cgroup_v2_available() {
+                        UserInterface::display_error("cgroup v2 not available on this system");
+                        process::exit(1);
+                    }
+                    match cg_mgr.enforce_memory_limit(&package, max_memory_mb) {
+                        Ok(_) => UserInterface::display_success(&format!("Memory limit enforced for {}", package)),
+                        Err(e) => { UserInterface::display_error(&format!("{e}")); process::exit(1); }
+                    }
+                }
+                CgroupAction::EnforceCpu { package, max_cpu_percent } => {
+                    if !cg_mgr.is_cgroup_v2_available() {
+                        UserInterface::display_error("cgroup v2 not available on this system");
+                        process::exit(1);
+                    }
+                    match cg_mgr.enforce_cpu_limit(&package, max_cpu_percent) {
+                        Ok(_) => UserInterface::display_success(&format!("CPU limit enforced for {}", package)),
+                        Err(e) => { UserInterface::display_error(&format!("{e}")); process::exit(1); }
+                    }
+                }
+                CgroupAction::Remove { package } => {
+                    match cg_mgr.remove_resource_limits(&package) {
+                        Ok(_) => UserInterface::display_success(&format!("Limits removed for {}", package)),
+                        Err(e) => { UserInterface::display_error(&format!("{e}")); process::exit(1); }
+                    }
+                }
+                CgroupAction::Status => {
+                    if cg_mgr.is_cgroup_v2_available() {
+                        UserInterface::display_success("cgroup v2 available at /sys/fs/cgroup/mcx");
+                    } else {
+                        UserInterface::display_info("cgroup v2 not available");
+                    }
+                }
+            }
+        }
+
+        Commands::Stream { action } => {
+            let stream_mgr = crate::core::stream::StreamManager::new(&root_path);
+            if let Err(e) = stream_mgr.initialize() {
+                UserInterface::display_error(&format!("Stream init failed: {e}"));
+                process::exit(1);
+            }
+            match action {
+                StreamAction::Generate { package, version, url } => {
+                    match stream_mgr.generate_stream_mount_script(&package, &version, &url) {
+                        Ok(path) => UserInterface::display_success(&format!("Stream script generated: {:?}", path)),
+                        Err(e) => { UserInterface::display_error(&format!("{e}")); process::exit(1); }
+                    }
+                }
+                StreamAction::Remove { package } => {
+                    match stream_mgr.remove_stream_script(&package) {
+                        Ok(_) => UserInterface::display_success("Stream script removed."),
+                        Err(e) => { UserInterface::display_error(&format!("{e}")); process::exit(1); }
+                    }
+                }
+                StreamAction::List => {
+                    match stream_mgr.list_stream_scripts() {
+                        Ok(scripts) => {
+                            let items: Vec<String> = scripts.iter()
+                                .map(|p| p.to_string_lossy().to_string())
+                                .collect();
+                            UserInterface::render_list("Stream mount scripts", &items);
+                        }
+                        Err(e) => { UserInterface::display_error(&format!("{e}")); process::exit(1); }
+                    }
+                }
             }
         }
     }

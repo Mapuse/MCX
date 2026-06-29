@@ -247,11 +247,17 @@ Key bindings:
 ```
 mcx history
 mcx history --rollback <id>
+mcx history --prune <keep>
+mcx history --current-gen <package>
 ```
 
-Without `--rollback`: prints installation transaction history from `HistoryEngine`.
+Without flags: prints installation transaction history from `HistoryEngine`.
 
-With `--rollback`: reverts the ledger to the specified transaction ID.
+`--rollback <id>`: computes and displays reverse operations to revert to transaction `id`.
+
+`--prune <keep>`: deletes old generation snapshots for all installed packages, keeping the most recent `keep`.
+
+`--current-gen <package>`: displays the active generation ID for a package.
 
 ### `build`
 
@@ -259,7 +265,101 @@ With `--rollback`: reverts the ledger to the specified transaction ID.
 mcx build <config>
 ```
 
-Calls `SystemCommand::rebuild(&config)` to rebuild or align the system from a declarative blueprint file.
+Calls `SystemCommand::rebuild(&config)` to rebuild or align the system from a declarative blueprint file. `WorkspaceManager` creates build/stage directories before execution and cleans them on completion.
+
+## Platform commands
+
+| Command | Aliases | Struct | Module |
+| ------- | ------- | ------ | ------ |
+| `self-update` | `update-self` | `SelfUpdateManager` | `core::update` |
+| `vendor` | `vnd` | `VendorManager` | `core::vendor` |
+| `completion` | `comp` | `CompletionEngine` | `core::completion` |
+| `snapshot` | `snap` | `SnapshotManager` | `core::snapshot` |
+| `swarm` | `p2p` | `SwarmManager` | `core::swarm` |
+| `overlay` | `ovl` | `OverlayManager` | `core::overlay` |
+| `cgroup` | `cg` | `CgroupController` | `core::cgroup` |
+| `stream` | `str` | `StreamManager` | `core::stream` |
+
+### `self-update`
+
+```
+mcx --self-update
+```
+
+Checks the project GitHub Releases page for a newer binary. Downloads, verifies SHA-256 checksum, and atomically replaces the running executable with rollback on failure.
+
+### `vendor`
+
+```
+mcx vendor add <package> <source.xcs>
+mcx vendor remove <package>
+mcx vendor list
+```
+
+Manages an offline package mirror in `var/lib/mcx/vendor/`. When vendored packages are present, `mcx install` can operate without network access by sourcing from the vendor store.
+
+### `completion`
+
+```
+mcx completion bash|zsh|fish
+```
+
+Generates shell-completion scripts for the specified shell and writes them to stdout. Supports Bash (`complete -F`), Zsh (`#compdef`), and Fish (`complete -c`) formats covering all commands, aliases, and flags.
+
+### `snapshot`
+
+```
+mcx snapshot take <package> <pid>
+mcx snapshot list <package>
+mcx snapshot restore <package> <snapshot_path> <pid>
+mcx snapshot remove <package>
+```
+
+Process memory checkpoint facility. `take` reads `/proc/<pid>/mem` (falls back to `/proc/<pid>/maps`), compresses with Zstd, and writes to `var/lib/mcx/snapshots/<pkg>/snap-<timestamp>.mem`. `restore` writes the decompressed snapshot back to `/proc/<pid>/mem`. `remove` purges all snapshots for a package.
+
+### `swarm`
+
+```
+mcx swarm register-hash <package> <version> <hash>
+mcx swarm get-hash <package>
+mcx swarm remove-hash <package>
+mcx swarm register-peer <address> <peer_id>
+mcx swarm list-peers
+```
+
+Peer-to-peer package distribution via IPFS/IPLD content hashes. Hashes are persisted in `var/lib/mcx/swarm/<pkg>.json`; peer registry in `var/lib/mcx/swarm/peers.json`.
+
+### `overlay`
+
+```
+mcx overlay create <package> <lower_root>
+mcx overlay remove <package>
+mcx overlay list
+```
+
+Per-package overlayfs isolation. `create` builds a three-layer mount (`upper/`, `work/`, `merged/`) at `~/.mcx/overlays/<pkg>/` and generates a `mount-overlay.sh` script. `remove` unmounts and purges the overlay directory.
+
+### `cgroup`
+
+```
+mcx cgroup enforce <package> <max_memory_mb> <max_cpu_percent>
+mcx cgroup enforce-mem <package> <max_memory_mb>
+mcx cgroup enforce-cpu <package> <max_cpu_percent>
+mcx cgroup remove <package>
+mcx cgroup status
+```
+
+cgroup v2 resource enforcement. Writes memory and CPU quota limits to `/sys/fs/cgroup/mcx/<pkg>/memory.max` and `cpu.max`. Package names are sanitised for cgroup path safety. `status` checks whether cgroup v2 is available on the host.
+
+### `stream`
+
+```
+mcx stream generate <package> <version> <url>
+mcx stream remove <package>
+mcx stream list
+```
+
+Generates executable shell scripts at `var/lib/mcx/stream/<pkg>.sh` that mount remote squashfs images via `squashfuse` with HTTP range requests. Falls back to `wget` + `tar` if `squashfuse` is absent.
 
 ## Repository management
 
@@ -320,23 +420,31 @@ Enumerates all configured repositories from `etc/mcx/repo.json` in `name -> url`
                                 ▼
                        ┌──────────────────┐
                        │  src/core/       │  Domain logic & persistence
-                       │  ┌─ config.rs    │  mmap INI, lifetime-tracked MappedConfig
-                       │  ├─ database.rs  │  LedgerState, DbTransaction
-                       │  ├─ solver.rs    │  DependencySolver, UpgradePath
-                       │  ├─ lifecycle.rs │  PackageState machine, LifecycleEngine
-                       │  ├─ plugin.rs    │  PluginSlot<T>, Fetcher/Builder/Packer
-                       │  ├─ profiler.rs  │  SystemProfile, DecisionEngine
-                       │  ├─ history.rs   │  HistoryEngine, rollback
-                       │  ├─ repo.rs      │  RepositoryManager
-                       │  ├─ manifest.rs  │  ManifestParser
-                       │  ├─ graph.rs     │  DepGraph
-                       │  ├─ transaction  │  PackageTransaction
-                       │  ├─ cache.rs     │  CacheManager
-                       │  ├─ delta.rs     │  DeltaEngine
-                       │  ├─ …            │  changelog, completion, declarative,
-                       │  │               │  package, sudo, update, vendor,
-                       │  │               │  workspace
-                       │  └───────────────┘
+               │  ├─ config.rs    │  mmap INI, lifetime-tracked MappedConfig
+               │  ├─ database.rs  │  LedgerState, DbTransaction
+               │  ├─ solver.rs    │  DependencySolver, UpgradePath
+               │  ├─ lifecycle.rs │  PackageState machine, LifecycleEngine
+               │  ├─ plugin.rs    │  PluginSlot<T>, Fetcher/Builder/Packer
+               │  ├─ profiler.rs  │  SystemProfile, DecisionEngine
+               │  ├─ history.rs   │  HistoryEngine, rollback
+               │  ├─ repo.rs      │  RepositoryManager
+               │  ├─ manifest.rs  │  ManifestParser
+               │  ├─ graph.rs     │  DepGraph
+               │  ├─ transaction  │  PackageTransaction
+               │  ├─ cache.rs     │  CacheManager
+               │  ├─ delta.rs     │  DeltaEngine
+               │  ├─ cas.rs       │  Content-addressable library dedup
+               │  ├─ snapshot.rs  │  Process memory checkpoint
+               │  ├─ swarm.rs     │  P2P hash registry
+               │  ├─ stream.rs    │  Squashfuse mount scripts
+               │  ├─ overlay.rs   │  Overlayfs per-package isolation
+               │  ├─ cgroup.rs    │  cgroup v2 resource control
+               │  ├─ rollback.rs  │  Generation-based atomic rollback
+               │  ├─ update.rs    │  Self-update binary replacement
+               │  ├─ vendor.rs    │  Offline package mirroring
+               │  ├─ completion.rs│  Shell completion generation
+               │  ├─ workspace.rs │  Build/stage space orchestration
+               │  └───────────────┘
                        └────────┬───────────┘
                                 │
            ┌────────────────────┼────────────────────┐
@@ -354,7 +462,7 @@ Enumerates all configured repositories from `etc/mcx/repo.json` in `name -> url`
 | Module | Path | Responsibility | Public surface |
 | ------ | ---- | -------------- | -------------- |
 | `commands` | `src/commands/` | CLI command implementations — one file per command group. Each command struct implements `execute()` taking `EngineContext`. | `InstallCommand`, `RemoveCommand`, `SyncCommand`, `SearchCommand`, `AddLocalCommand`, `CleanCommand`, `ConfigEditorCommand`, `SystemCommand` |
-| `core` | `src/core/` | Domain logic — persistence, solver, lifecycle, plugins, profiling, configuration, repositories, history, delta engine, changelog, completion, declarative validation, privilege escalation, self-update, vendor mirroring, workspace management. | Config types, `Database`, `DependencySolver`, `LifecycleEngine`, `PluginRegistry`, `SystemProfile`, `HistoryEngine`, `RepositoryManager`, `CacheManager`, `DeltaEngine`, `PackageEntity`, `SelfUpdateManager`, `VendorManager`, `WorkspaceManager`, `ProfileValidator`, `CompletionEngine` |
+| `core` | `src/core/` | Domain logic — persistence, solver, lifecycle, plugins, profiling, configuration, repositories, history, delta engine, changelog, completion, declarative validation, privilege escalation, self-update, vendor mirroring, workspace management, content-addressable store, process snapshots, P2P swarm, streaming mounts, overlayfs isolation, cgroup control, generation-based rollback. | Config types, `Database`, `DependencySolver`, `LifecycleEngine`, `PluginRegistry`, `SystemProfile`, `HistoryEngine`, `RepositoryManager`, `CacheManager`, `DeltaEngine`, `PackageEntity`, `SelfUpdateManager`, `VendorManager`, `WorkspaceManager`, `ProfileValidator`, `CompletionEngine`, `SnapshotManager`, `SwarmManager`, `StreamManager`, `OverlayManager`, `CgroupController`, `RollbackManager`, `CasManager` |
 | `network` | `src/network/` | Remote data operations — HTTP download via `reqwest` + `rustls-tls`, parallel index sync. | `Downloader`, `NetworkSyncEngine` |
 | `archive` | `src/archive/` | Artifact format handling — `.xcs` extraction, SHA-256 hashing, content verification. | `Extractor`, `HashVerifier`, `ContentValidator` |
 | `utils` | `src/utils/` | Shared infrastructure — terminal output. | `UserInterface` |
@@ -783,10 +891,11 @@ Note: rollback to a prior generation is a single symlink swap — O(1), no data 
 
 | Function | Module | Signature |
 | -------- | ------ | --------- |
-| `enable_atomic_rollback` | `core::rollback` | `(pkg: &str, root: &Path) -> Result<GenerationId>` |
-| `rollback_to_generation` | `core::rollback` | `(pkg: &str, gen: GenerationId, root: &Path) -> Result<()>` |
-| `list_generations` | `core::rollback` | `(pkg: &str, root: &Path) -> Result<Vec<GenerationId>>` |
-| `prune_generations` | `core::rollback` | `(pkg: &str, keep: usize, root: &Path) -> Result<usize>` |
+| `enable_atomic_rollback` | `core::rollback` | `(pkg: &str, source_dir: &Path) -> Result<GenerationId>` |
+| `rollback_to_generation` | `core::rollback` | `(pkg: &str, gen: GenerationId) -> Result<()>` |
+| `list_generations` | `core::rollback` | `(pkg: &str) -> Result<Vec<GenerationId>>` |
+| `current_generation` | `core::rollback` | `(pkg: &str) -> Result<Option<GenerationId>>` |
+| `prune_generations` | `core::rollback` | `(pkg: &str, keep: usize) -> Result<usize>` |
 
 ## Content-addressable library store
 
@@ -831,6 +940,7 @@ Captures runtime process memory for a given package:
 | `checkpoint_process` | `core::snapshot` | `(pkg: &str, pid: u32) -> Result<PathBuf>` |
 | `list_snapshots` | `core::snapshot` | `(pkg: &str) -> Result<Vec<PathBuf>>` |
 | `restore_snapshot` | `core::snapshot` | `(snapshot: &Path, target_pid: u32) -> Result<()>` |
+| `remove_snapshots` | `core::snapshot` | `(pkg: &str) -> Result<()>` |
 
 ## P2P swarm distribution
 
@@ -842,14 +952,15 @@ Peer-to-peer package distribution using IPFS/IPLD content hashes:
 
 | Function | Module | Signature |
 | -------- | ------ | --------- |
-| `register_swarm_hash` | `core::swarm` | `(meta: &PackageMetadata, hash: &str) -> Result<()>` |
+| `register_swarm_hash` | `core::swarm` | `(pkg: &str, version: &str, hash: &str) -> Result<()>` |
 | `get_swarm_hash` | `core::swarm` | `(pkg: &str) -> Result<Option<String>>` |
 | `register_swarm_peer` | `core::swarm` | `(peer: SwarmPeer) -> Result<()>` |
 | `list_swarm_peers` | `core::swarm` | `() -> Result<Vec<SwarmPeer>>` |
+| `remove_swarm_entry` | `core::swarm` | `(pkg: &str) -> Result<()>` |
 
 ## Streaming mounts
 
-`generate_stream_mount_script(pkg, url)` writes an executable shell script to `var/lib/mcx/stream/<pkg>.sh`:
+`generate_stream_mount_script(pkg, version, url)` writes an executable shell script to `var/lib/mcx/stream/<pkg>.sh`:
 
 ```sh
 #!/bin/sh
@@ -860,14 +971,21 @@ mkdir -p "$MOUNT" "$CACHE"
 squashfuse "$URL" "$MOUNT" -o ro,allow_other,cache=cache_dir="$CACHE"
 ```
 
+| Function | Module | Signature |
+| -------- | ------ | --------- |
+| `generate_stream_mount_script` | `core::stream` | `(pkg: &str, version: &str, url: &str) -> Result<PathBuf>` |
+| `remove_stream_script` | `core::stream` | `(pkg: &str) -> Result<()>` |
+| `list_stream_scripts` | `core::stream` | `(&self) -> Result<Vec<PathBuf>>` |
+
 ## Isolated overlayfs
 
 Per-package overlayfs isolation via three-layer mount:
 
 | Function | Module | Signature |
 | -------- | ------ | --------- |
-| `create_isolated_overlay` | `core::overlay` | `(pkg: &str, home: &Path) -> Result<()>` |
+| `create_isolated_overlay` | `core::overlay` | `(pkg: &str, lower_root: &Path) -> Result<PathBuf>` |
 | `remove_isolated_overlay` | `core::overlay` | `(pkg: &str) -> Result<()>` |
+| `list_overlays` | `core::overlay` | `(&self) -> Result<Vec<PathBuf>>` |
 
 Generated helper script `mount-overlay.sh` at `~/.mcx/overlays/<pkg>/`:
 
@@ -880,8 +998,11 @@ cgroup v2 resource enforcement:
 
 | Function | Module | Signature |
 | -------- | ------ | --------- |
-| `enforce_resource_limits` | `core::cgroup` | `(pkg: &str, max_mem_mb: u64, max_cpu_pct: u8) -> Result<()>` |
+| `enforce_resource_limits` | `core::cgroup` | `(pkg: &str, max_memory_mb: u64, max_cpu_percent: u8) -> Result<()>` |
+| `enforce_memory_limit` | `core::cgroup` | `(pkg: &str, max_memory_mb: u64) -> Result<()>` |
+| `enforce_cpu_limit` | `core::cgroup` | `(pkg: &str, max_cpu_percent: u8) -> Result<()>` |
 | `remove_resource_limits` | `core::cgroup` | `(pkg: &str) -> Result<()>` |
+| `is_cgroup_v2_available` | `core::cgroup` | `(&self) -> bool` |
 
 Implementation writes to `/sys/fs/cgroup/mcx/<pkg>/`:
 - `memory.max` — bytes
@@ -898,7 +1019,7 @@ Package names are sanitised (non-alphanumeric → `_`) for cgroup path safety.
 | `SelfUpdateManager::check` | `core::update` | `(&self) -> Result<Option<Release>>` |
 | `SelfUpdateManager::update` | `core::update` | `(&self, release: &Release) -> Result<()>` |
 
-Not yet wired into the CLI dispatch.
+Wired into CLI as `mcx --self-update`.
 
 ## Workspace management
 
@@ -1490,7 +1611,7 @@ The Unlicense — see [**`LICENSE`**](github.com/Cudane/MCX/LICENSE) file for de
 
 `▐▀` `-` `▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▌`
 
-- **`Version`:** **`2.7.8`**.
+- **`Version`:** **`2.8.5`**.
 - **`Architecture`:** **`x86_64-unknown-linux-musl`** (**`x86_64-pc-linux-musl`**).
 - **`Compression`:** **`Zstd Level 3 (.xcs)`**.
 
