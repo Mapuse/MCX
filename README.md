@@ -20,7 +20,7 @@
 
 `▐▀` `-` `▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▌`
 
-- The package manager of **`Cudane Linux`**.
+- **`The package manager of Cudane Linux`**.
 
 `▐▄` `-` `▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▌`
 
