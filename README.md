@@ -420,31 +420,31 @@ Enumerates all configured repositories from `etc/mcx/repo.json` in `name -> url`
                                 ▼
                        ┌──────────────────┐
                        │  src/core/       │  Domain logic & persistence
-               │  ├─ config.rs    │  mmap INI, lifetime-tracked MappedConfig
-               │  ├─ database.rs  │  LedgerState, DbTransaction
-               │  ├─ solver.rs    │  DependencySolver, UpgradePath
-               │  ├─ lifecycle.rs │  PackageState machine, LifecycleEngine
-               │  ├─ plugin.rs    │  PluginSlot<T>, Fetcher/Builder/Packer
-               │  ├─ profiler.rs  │  SystemProfile, DecisionEngine
-               │  ├─ history.rs   │  HistoryEngine, rollback
-               │  ├─ repo.rs      │  RepositoryManager
-               │  ├─ manifest.rs  │  ManifestParser
-               │  ├─ graph.rs     │  DepGraph
-               │  ├─ transaction  │  PackageTransaction
-               │  ├─ cache.rs     │  CacheManager
-               │  ├─ delta.rs     │  DeltaEngine
-               │  ├─ cas.rs       │  Content-addressable library dedup
-               │  ├─ snapshot.rs  │  Process memory checkpoint
-               │  ├─ swarm.rs     │  P2P hash registry
-               │  ├─ stream.rs    │  Squashfuse mount scripts
-               │  ├─ overlay.rs   │  Overlayfs per-package isolation
-               │  ├─ cgroup.rs    │  cgroup v2 resource control
-               │  ├─ rollback.rs  │  Generation-based atomic rollback
-               │  ├─ update.rs    │  Self-update binary replacement
-               │  ├─ vendor.rs    │  Offline package mirroring
-               │  ├─ completion.rs│  Shell completion generation
-               │  ├─ workspace.rs │  Build/stage space orchestration
-               │  └───────────────┘
+                       │  ├─ config.rs    │  mmap INI, lifetime-tracked MappedConfig
+                       │  ├─ database.rs  │  LedgerState, DbTransaction
+                       │  ├─ solver.rs    │  DependencySolver, UpgradePath
+                       │  ├─ lifecycle.rs │  PackageState machine, LifecycleEngine
+                       │  ├─ plugin.rs    │  PluginSlot<T>, Fetcher/Builder/Packer
+                       │  ├─ profiler.rs  │  SystemProfile, DecisionEngine
+                       │  ├─ history.rs   │  HistoryEngine, rollback
+                       │  ├─ repo.rs      │  RepositoryManager
+                       │  ├─ manifest.rs  │  ManifestParser
+                       │  ├─ graph.rs     │  DepGraph
+                       │  ├─ transaction  │  PackageTransaction
+                       │  ├─ cache.rs     │  CacheManager
+                       │  ├─ delta.rs     │  DeltaEngine
+                       │  ├─ cas.rs       │  Content-addressable library dedup
+                       │  ├─ snapshot.rs  │  Process memory checkpoint
+                       │  ├─ swarm.rs     │  P2P hash registry
+                       │  ├─ stream.rs    │  Squashfuse mount scripts
+                       │  ├─ overlay.rs   │  Overlayfs per-package isolation
+                       │  ├─ cgroup.rs    │  cgroup v2 resource control
+                       │  ├─ rollback.rs  │  Generation-based atomic rollback
+                       │  ├─ update.rs    │  Self-update binary replacement
+                       │  ├─ vendor.rs    │  Offline package mirroring
+                       │  ├─ completion.rs│  Shell completion generation
+                       │  ├─ workspace.rs │  Build/stage space orchestration
+                       │  └───────────────┘
                        └────────┬───────────┘
                                 │
            ┌────────────────────┼────────────────────┐
