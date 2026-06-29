@@ -38,7 +38,7 @@ pub enum Commands {
     #[command(short_flag = 'i', long_flag = "install", aliases = ["in", "add"])]
     Install { packages: Vec<String> },
 
-    #[command(short_flag = 'a', long_flag = "add-local", aliases = ["local", "package", "xcs"])]
+    #[command(short_flag = 'a', long_flag = "add", aliases = ["local", "package", "xcs"])]
     AddLocal { file: String },
 
     #[command(short_flag = 'r', long_flag = "remove", aliases = ["rm", "uninstall", "delete"])]

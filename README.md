@@ -89,7 +89,7 @@ CLI parsing is handled by `clap` derive macros in `src/main.rs`. The `Cli` struc
 | Short | Long | Aliases | Struct | Module |
 | ----- | ---- | ------- | ------ | ------ |
 | `-i` | `--install` | `in`, `add` | `InstallCommand` | `commands::install` |
-| `-a` | `--add-local` | `local`, `package`, `xcs` | `AddLocalCommand` | `commands::add` |
+| `-a` | `--add` | `local`, `package`, `xcs` | `AddLocalCommand` | `commands::add` |
 | `-r` | `--remove` | `rm`, `uninstall`, `delete` | `RemoveCommand` | `commands::remove` |
 | `-s` | `--search` | `find`, `look` | `SearchCommand` | `commands::search` |
 | `-u` | `--update` | `refresh`, `sync` | `SyncCommand` / `InstallCommand` | `commands::sync` / `commands::install` |
@@ -117,11 +117,11 @@ Resolves the dependency graph for the target packages via `DependencySolver`, do
 | `packages` | `Vec<String>` positional | yes | Package names to install |
 | `--root` | global `-PATH-` | no | MCX root (default `/`) |
 
-### `-a` / `--add-local`
+### `-a` / `--add`
 
 ```
 mcx -a <file.xcs>
-mcx --add-local <file.xcs>
+mcx --add <file.xcs>
 mcx local <file.xcs>
 ```
 
@@ -373,7 +373,7 @@ mcx --vendor remove <package>
 mcx --vendor list
 ```
 
-Manages an offline package mirror in `var/lib/mcx/vendor/`. When vendored packages are present, `mcx install` can operate without network access by sourcing from the vendor store.
+Manages an offline package mirror in `var/lib/mcx/vendor/`. When vendored packages are present, `mcx -i` can operate without network access by sourcing from the vendor store.
 
 ### `--completion`
 
@@ -1123,7 +1123,7 @@ Wired into CLI as `mcx --self-update`.
 | `VendorManager::vendor` | `core::vendor` | `(&self, pkg: &str) -> Result<()>` |
 | `VendorManager::install_from_vendor` | `core::vendor` | `(&self, pkg: &str) -> Result<()>` |
 
-Recursive dependency resolution, download, and caching into a vendored directory structure. When the vendor directory is present, `mcx install` can operate entirely offline.
+Recursive dependency resolution, download, and caching into a vendored directory structure. When the vendor directory is present, `mcx -i` can operate entirely offline.
 
 ## Completion engine
 
@@ -1604,16 +1604,16 @@ cargo audit
 cargo build --profile release-debug  # requires Cargo.toml profile
 
 # Run with RUST_LOG for tracing
-RUST_LOG=debug mcx install zlib
+RUST_LOG=debug mcx -i zlib
 
 # Run with backtrace on panic
-RUST_BACKTRACE=1 mcx install zlib
+RUST_BACKTRACE=1 mcx -i zlib
 
 # Run under strace for syscall tracing
-strace -f -o /tmp/mcx.strace ./target/release/mcx install zlib
+strace -f -o /tmp/mcx.strace ./target/release/mcx -i zlib
 
 # Memory profiling with valgrind
-valgrind --tool=massif ./target/release/mcx install zlib
+valgrind --tool=massif ./target/release/mcx -i zlib
 ms_print massif.out.* | less
 ```
 
@@ -1621,7 +1621,7 @@ ms_print massif.out.* | less
 
 ```shell
 # perf profiling (Linux)
-perf record --call-graph dwarf ./target/release/mcx install zlib
+perf record --call-graph dwarf ./target/release/mcx -i zlib
 perf report
 
 # Generate flamegraph
@@ -1629,7 +1629,7 @@ perf script | inferno-collapse-perf > stacks.folded
 inferno-flamegraph stacks.folded > flamegraph.svg
 
 # CPU sampling with perf stat
-perf stat -e cycles,instructions,cache-misses,faults ./target/release/mcx install zlib
+perf stat -e cycles,instructions,cache-misses,faults ./target/release/mcx -i zlib
 
 # Heap profiling with dhat (requires `dhat` feature)
 # Run with DHAT_VALIDATE=1 and parse dhat-heap.json

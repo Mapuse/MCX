@@ -12,7 +12,7 @@ impl CompletionEngine {
 
     pub fn complete_subcommand(&self, current_token: &str) -> Vec<String> {
         let subcommands = vec![
-            "install", "add-local", "remove", "search", "update",
+            "install", "add", "remove", "search", "update",
             "upgrade", "query", "clean", "verify", "fix-deps",
             "config", "generate", "history", "rebuild", "audit"
         ];
@@ -59,7 +59,7 @@ impl CompletionEngine {
     COMPREPLY=()
     cur="${COMP_WORDS[COMP_CWORD]}"
     prev="${COMP_WORDS[COMP_CWORD-1]}"
-    opts="install add-local remove search update upgrade query clean verify fix-deps config generate history rebuild audit"
+    opts="install add remove search update upgrade query clean verify fix-deps config generate history rebuild audit"
 
     if [[ ${COMP_CWORD} -eq 1 ]] ; then
         COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
@@ -87,7 +87,7 @@ _mcx_commands() {
     local -a commands
     commands=(
         'install:Deploy assets into target node'
-        'add-local:Inject immediate structural block file'
+        'add:Inject immediate structural block file'
         'remove:Purge entity branch and link dependencies'
         'search:Query index registry maps'
         'update:Pull remote manifest mutations'
@@ -110,7 +110,7 @@ _mcx"# .to_string()
     fn fish_template(&self) -> String {
         r#"complete -c mcx -f
 complete -c mcx -n "__fish_use_subcommand" -a install -d 'Deploy assets into target node'
-complete -c mcx -n "__fish_use_subcommand" -a add-local -d 'Inject immediate structural block file'
+complete -c mcx -n "__fish_use_subcommand" -a add -d 'Inject immediate structural block file'
 complete -c mcx -n "__fish_use_subcommand" -a remove -d 'Purge entity branch and link dependencies'
 complete -c mcx -n "__fish_use_subcommand" -a search -d 'Query index registry maps'
 complete -c mcx -n "__fish_use_subcommand" -a update -d 'Pull remote manifest mutations'
