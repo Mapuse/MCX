@@ -29,8 +29,6 @@ impl CleanCommand {
                 fs::create_dir_all(&self.cache_dir)
                     .context("Failed to re-allocate clean binary cache staging structures")?;
                 UserInterface::display_success("Successfully cleared package cache directory downloads.");
-            } else {
-                UserInterface::display_info("Cache directory is already empty.");
             }
         }
 
@@ -41,8 +39,6 @@ impl CleanCommand {
                 fs::create_dir_all(&self.history_dir)
                     .context("Failed to re-allocate pristine log timeline checkpoints")?;
                 UserInterface::display_success("Successfully purged system transaction history state ledgers.");
-            } else {
-                UserInterface::display_info("Transaction ledger log timeline is already clean.");
             }
         }
 

@@ -25,10 +25,12 @@ use crate::commands::system::SystemCommand;
 use crate::core::delta::DeltaEngine;
 
 #[derive(Parser)]
-#[command(name = "mcx", version = "2.8.5")]
+#[command(name = "mcx", version = "2.8.5", disable_version_flag = true)]
 struct Cli {
     #[arg(long, global = true, default_value = "/")]
     root: String,
+    #[arg(long = "version", short = 'v', help = "Print version")]
+    version: bool,
     #[command(subcommand)]
     command: Commands,
 }
@@ -59,7 +61,7 @@ pub enum Commands {
     #[command(short_flag = 'c', long_flag = "clean", aliases = ["wipe", "clear"])]
     Clean,
 
-    #[command(short_flag = 'v', long_flag = "verify", aliases = ["check", "certify"])]
+    #[command(short_flag = 'V', long_flag = "verify", aliases = ["check", "certify"])]
     Verify,
 
     #[command(short_flag = 'f', long_flag = "fix", aliases = ["fix-deps", "repair"])]
@@ -199,25 +201,12 @@ impl EngineContext {
         plugin_registry.register_builder(Arc::new(DefaultBuilder));
         plugin_registry.register_packer(Arc::new(ZstdPacker));
 
-        let params = config_mgr.calibrate();
-        UserInterface::display_info(&format!(
-            "Auto-calibration: {} cores | {} MB RAM | thread pool={} | max_dl={} | zstd={}",
-            sys_profile.cpu_count, sys_profile.available_ram_mb,
-            params.thread_pool_size, params.concurrent_downloads,
-            params.zstd_level
-        ));
-
         let db = match Database::open(root) {
             Ok(database) => Arc::new(database),
             Err(e) => { eprintln!("{}", e); process::exit(1); }
         };
 
         let _ = crate::core::lifecycle::LifecycleEngine::new();
-        UserInterface::display_info(&format!("Plugins: {} fetchers, {} builders, {} packers",
-            plugin_registry.fetcher_count(),
-            plugin_registry.builder_count(),
-            plugin_registry.packer_count(),
-        ));
 
         Self { db, config_mgr, plugin_registry, sys_profile }
     }
@@ -226,6 +215,10 @@ impl EngineContext {
 #[tokio::main]
 async fn main() {
     let args = Cli::parse();
+    if args.version {
+        println!("mcx 2.8.5");
+        return;
+    }
     let root_path = PathBuf::from(&args.root);
 
     if elevate_if_needed(&root_path) {
@@ -831,7 +824,6 @@ fn elevate_if_needed(root: &Path) -> bool {
         Err(_) => return false,
     };
     let args: Vec<String> = std::env::args().skip(1).collect();
-    eprintln!("Elevating privileges via sudo...");
     let status = std::process::Command::new("sudo")
         .arg(&exe)
         .args(&args)
