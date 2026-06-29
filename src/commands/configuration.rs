@@ -11,7 +11,7 @@ use crossterm::{
 };
 
 pub enum ConfigTarget {
-    MainConfig,
+    EngineConfig,
     RepoConfig,
 }
 
@@ -22,8 +22,8 @@ pub struct ConfigEditorCommand {
 impl ConfigEditorCommand {
     pub fn new(root: &str, target: ConfigTarget) -> Self {
         let filename = match target {
-            ConfigTarget::MainConfig => "config.json",
-            ConfigTarget::RepoConfig => "repo.json",
+            ConfigTarget::EngineConfig => "config.ini",
+            ConfigTarget::RepoConfig => "repo.ini",
         };
         Self {
             config_path: PathBuf::from(root).join(format!("etc/mcx/{}", filename)),
@@ -53,7 +53,7 @@ impl ConfigEditorCommand {
         let mut cursor_y = 0;
         let mut scroll_y = 0;
         let mut scroll_x = 0;
-        
+
         let mut is_dirty = false;
         let mut cut_buffer: Option<String> = None;
         let mut status_message = format!("Opened: {:?}", self.config_path);
@@ -79,13 +79,13 @@ impl ConfigEditorCommand {
 
             execute!(stdout, SetBackgroundColor(Color::Black), SetForegroundColor(Color::White))?;
             let modified_tag = if is_dirty { " *MODIFIED* " } else { " " };
-            let header_text = format!(" MCX Configuration Editor | MCX v2.7.6 |{}{:?}", modified_tag, self.config_path);
+            let header_text = format!(" MCX Configuration Editor | MCX v2.7.8 |{}{:?}", modified_tag, self.config_path);
             execute!(stdout, Print(format!("{:width$}\r\n", header_text, width = text_width)), ResetColor)?;
 
             for i in 0..text_height {
                 let file_y = scroll_y + i;
                 execute!(stdout, terminal::Clear(terminal::ClearType::CurrentLine))?;
-                
+
                 if file_y < lines.len() {
                     let line = &lines[file_y];
                     if line.len() > scroll_x {
@@ -99,16 +99,16 @@ impl ConfigEditorCommand {
 
             let status_bg = if is_dirty { Color::Grey } else { Color::DarkGrey };
             execute!(stdout, SetBackgroundColor(status_bg), SetForegroundColor(Color::White))?;
-            
+
             let position_indicator = format!("Ln {}, Col {}", cursor_y + 1, cursor_x + 1);
             let free_space = text_width.saturating_sub(status_message.len() + position_indicator.len() + 2);
             let status_bar = format!(" {}{:free_space$}{} ", status_message, "", position_indicator);
             execute!(stdout, Print(format!("{}\r\n", status_bar)), ResetColor)?;
 
             execute!(stdout, terminal::Clear(terminal::ClearType::CurrentLine), SetForegroundColor(Color::Cyan))?;
-            print!(" Ctrl+X: Close Editor  |  Ctrl+O: Save Configurations  |  Ctrl+K: Cut Current Line  |  Ctrl+Y: Move Up\r\n");
+            print!(" Ctrl+X: Close Editor  |  Ctrl+O: Save File  |  Ctrl+K: Cut Line  |  Ctrl+Y: Move Up\r\n");
             execute!(stdout, terminal::Clear(terminal::ClearType::CurrentLine))?;
-            print!(" Ctrl+C: Drop Actions  |  Ctrl+S: Immediate Save  |  Ctrl+U: Insert Clipboard  |  Ctrl+V: Move Down\r\n");
+            print!(" Ctrl+C: Drop Actions  |  Ctrl+S: Save  |  Ctrl+U: Paste Buffer  |  Ctrl+V: Move Down\r\n");
             execute!(stdout, ResetColor)?;
 
             let screen_x = (cursor_x - scroll_x) as u16;
@@ -129,7 +129,7 @@ impl ConfigEditorCommand {
                         KeyCode::Char('o') | KeyCode::Char('s') => {
                             self.save_file(&lines)?;
                             is_dirty = false;
-                            status_message = format!("Successfully synchronized layout structure updates.");
+                            status_message = format!("File saved successfully.");
                         }
                         KeyCode::Char('k') => {
                             if lines.len() > 1 {
@@ -142,14 +142,14 @@ impl ConfigEditorCommand {
                                 cursor_x = 0;
                             }
                             is_dirty = true;
-                            status_message = "Line cached into internal clip-matrix.".to_string();
+                            status_message = "Line cut to clipboard.".to_string();
                         }
                         KeyCode::Char('u') => {
                             if let Some(ref buffer) = cut_buffer {
                                 lines.insert(cursor_y, buffer.clone());
                                 cursor_y += 1;
                                 is_dirty = true;
-                                status_message = "Injected cached clip matrix buffer safely.".to_string();
+                                status_message = "Line pasted from clipboard.".to_string();
                             }
                         }
                         _ => {}
@@ -161,7 +161,7 @@ impl ConfigEditorCommand {
                     match key_event.code {
                         KeyCode::Char('y') | KeyCode::Char('Y') => return self.exit_editor(),
                         KeyCode::Char('n') | KeyCode::Char('N') => {
-                            status_message = format!("Returned to active development layout workflow.");
+                            status_message = format!("Return to editor.");
                             continue;
                         }
                         _ => {}

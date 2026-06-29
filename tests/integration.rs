@@ -179,7 +179,7 @@ async fn test_configuration_text_editor_spawning_and_mutation() {
     fs::write(&config_file, b"initial_key = initial_value\n").unwrap();
 
     let root_str = root.to_string_lossy();
-    let _editor_command = mcx::commands::configuration::ConfigEditorCommand::new(&root_str, ConfigTarget::MainConfig);
+    let _editor_command = mcx::commands::configuration::ConfigEditorCommand::new(&root_str, ConfigTarget::EngineConfig);
     
     let result = fs::write(&config_file, b"initial_key = mutated_value\n");
     assert!(result.is_ok());

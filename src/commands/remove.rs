@@ -1,5 +1,6 @@
+use std::collections::{HashSet, VecDeque};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use anyhow::{Result, Context, anyhow};
 use crate::core::db::Database;
@@ -11,10 +12,7 @@ pub struct RemoveCommand {
 
 impl RemoveCommand {
     pub fn new(root: String, db: Arc<Database>) -> Self {
-        Self {
-            root: PathBuf::from(root),
-            db,
-        }
+        Self { root: PathBuf::from(root), db }
     }
 
     pub fn execute(&self, packages: &[String]) -> Result<()> {
@@ -23,46 +21,199 @@ impl RemoveCommand {
         }
 
         let mut transaction = self.db.begin_transaction()?;
-        let mut files_to_purge = Vec::new();
 
-        for pkg in packages {
+        let (orphans, _purged) = self.deep_purge_analysis(packages)?;
+
+        let all_targets: Vec<String> = packages.iter()
+            .chain(orphans.iter())
+            .map(|s| s.to_string())
+            .collect();
+
+        let mut residue_paths: Vec<PathBuf> = Vec::new();
+        let active_dir = self.root.join("var/lib/mcx/active");
+
+        for pkg in &all_targets {
             if !self.db.is_package_installed(pkg)? {
-                return Err(anyhow!("Target package not discovered in ledger: {}", pkg));
-            }
-
-            if self.db.has_dependent_packages(pkg)? {
-                return Err(anyhow!("Aborting removal: Broken link hazard detected for dependents of {}", pkg));
+                continue;
             }
 
             let manifest = self.db.get_package_manifest(pkg)
-                .with_context(|| format!("Failed to retrieve structural file manifest for {}", pkg))?;
-            
-            files_to_purge.extend(manifest.files);
+                .with_context(|| format!("Failed to retrieve manifest for {}", pkg))?;
+
+            let pkg_active = active_dir.join(pkg);
+            if pkg_active.exists() {
+                residue_paths.extend(self.collect_files_recursive(&pkg_active));
+                fs::remove_dir_all(&pkg_active)
+                    .with_context(|| format!("Failed to purge package root: {:?}", pkg_active))?;
+            }
+
+            for file_path in &manifest.files {
+                let absolute_target = self.root.join(file_path);
+                residue_paths.push(absolute_target);
+            }
+
             transaction.stage_package_removal(pkg)?;
         }
 
-        files_to_purge.sort_by(|a, b| b.components().count().cmp(&a.components().count()));
+        let shared_files = self.compute_non_orphaned_files(&all_targets);
 
-        for file_path in files_to_purge {
-            let absolute_target = self.root.join(&file_path);
-            if !absolute_target.exists() {
-                continue;
-            }
+        residue_paths.sort_by(|a, b| b.components().count().cmp(&a.components().count()));
+
+        for file_path in &residue_paths {
+            let absolute_target = self.root.join(
+                file_path.strip_prefix(&self.root).unwrap_or(file_path)
+            );
+            if !absolute_target.exists() { continue; }
+            if shared_files.contains(&absolute_target) { continue; }
 
             if absolute_target.is_dir() {
                 if let Ok(mut entries) = fs::read_dir(&absolute_target) {
                     if entries.next().is_none() {
-                        fs::remove_dir(&absolute_target)
-                            .with_context(|| format!("Failed to prune empty system branch: {:?}", absolute_target))?;
+                        let _ = fs::remove_dir(&absolute_target);
                     }
                 }
             } else {
-                fs::remove_file(&absolute_target)
-                    .with_context(|| format!("Failed to purge atomic node entity: {:?}", absolute_target))?;
+                let _ = fs::remove_file(&absolute_target);
             }
         }
 
+        self.scour_system_residue(&all_targets)?;
+        self.cleanup_dangling_symlinks(&self.root)?;
+
         transaction.commit()?;
+        Ok(())
+    }
+
+    fn deep_purge_analysis(&self, targets: &[String]) -> Result<(Vec<String>, Vec<String>)> {
+        let all_installed = self.db.get_all_installed_packages()?;
+        let target_set: HashSet<&str> = targets.iter().map(|s| s.as_str()).collect();
+
+        let mut reverse_deps: std::collections::HashMap<&str, Vec<&str>> = std::collections::HashMap::new();
+        for pkg in &all_installed {
+            for dep in &pkg.dependencies {
+                reverse_deps.entry(&dep.name).or_default().push(&pkg.pkg_name);
+            }
+        }
+
+        let mut orphans = Vec::new();
+        let mut queue: VecDeque<&str> = VecDeque::new();
+
+        for pkg in &all_installed {
+            if target_set.contains(pkg.pkg_name.as_str()) { continue; }
+            let rd = reverse_deps.get(pkg.pkg_name.as_str()).map(|v| v.as_slice()).unwrap_or(&[]);
+            let has_non_target_ref = rd.iter().any(|r| !target_set.contains(r));
+            if !has_non_target_ref && !rd.is_empty() {
+                queue.push_back(&pkg.pkg_name);
+            }
+        }
+
+        let mut visited: HashSet<&str> = target_set.iter().copied().collect();
+        while let Some(candidate) = queue.pop_front() {
+            if !visited.insert(candidate) { continue; }
+            if !target_set.contains(candidate) {
+                orphans.push(candidate.to_string());
+                if let Some(deps) = reverse_deps.get(candidate) {
+                    for dep in deps {
+                        if !visited.contains(dep) {
+                            queue.push_back(dep);
+                        }
+                    }
+                }
+            }
+        }
+
+        let purged: Vec<String> = orphans.iter()
+            .filter(|p| {
+                let rd = reverse_deps.get(p.as_str()).map(|v| v.len()).unwrap_or(0);
+                rd == 0 || rd == targets.len()
+            })
+            .cloned()
+            .collect();
+
+        Ok((orphans, purged))
+    }
+
+    fn scour_system_residue(&self, removed: &[String]) -> Result<()> {
+        let config_dirs = vec![
+            self.root.join("etc/mcx"),
+            self.root.join("var/lib/mcx"),
+            self.root.join("var/tmp/mcx"),
+            self.root.join("var/cache/mcx"),
+        ];
+
+        let removed_set: HashSet<&str> = removed.iter().map(|s| s.as_str()).collect();
+
+        for dir in &config_dirs {
+            if !dir.exists() { continue; }
+            if let Ok(entries) = fs::read_dir(dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if let Some(name) = path.file_name() {
+                        let name_str = name.to_string_lossy();
+                        for pkg in &removed_set {
+                            if name_str.contains(pkg) {
+                                if path.is_dir() {
+                                    let _ = fs::remove_dir_all(&path);
+                                } else {
+                                    let _ = fs::remove_file(&path);
+                                }
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn compute_non_orphaned_files(&self, removed_packages: &[String]) -> HashSet<PathBuf> {
+        let mut shared = HashSet::new();
+        if let Ok(all) = self.db.get_all_installed_packages() {
+            let removed_set: HashSet<&str> = removed_packages.iter().map(|s| s.as_str()).collect();
+            for pkg in &all {
+                if removed_set.contains(pkg.pkg_name.as_str()) { continue; }
+                for f in &pkg.files {
+                    let full = self.root.join(f);
+                    shared.insert(full);
+                }
+            }
+        }
+        shared
+    }
+
+    fn collect_files_recursive(&self, dir: &Path) -> Vec<PathBuf> {
+        let mut files = Vec::new();
+        if !dir.exists() { return files; }
+        if let Ok(entries) = fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    files.extend(self.collect_files_recursive(&path));
+                }
+                files.push(path);
+            }
+        }
+        files
+    }
+
+    fn cleanup_dangling_symlinks(&self, root: &Path) -> Result<()> {
+        if !root.exists() { return Ok(()); }
+        let mut queue: Vec<PathBuf> = vec![root.to_path_buf()];
+        while let Some(dir) = queue.pop() {
+            if let Ok(entries) = fs::read_dir(&dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.is_symlink() {
+                        if path.exists() { continue; }
+                        let _ = fs::remove_file(&path);
+                    } else if path.is_dir() {
+                        queue.push(path);
+                    }
+                }
+            }
+        }
         Ok(())
     }
 }

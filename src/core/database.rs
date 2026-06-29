@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use anyhow::{Result, anyhow};
 use serde::{Serialize, Deserialize};
+use crate::core::transaction::ParallelFileOp;
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct ChecksumData {
@@ -181,6 +182,10 @@ impl<'a> DbTransaction<'a> {
             self.tx_log.track_package(name)?;
         }
         Ok(())
+    }
+
+    pub fn parallel_copy(&self, ops: &[ParallelFileOp]) -> Result<()> {
+        self.tx_log.parallel_copy(ops)
     }
 
     pub fn backup_file(&mut self, path: &Path) -> Result<()> {
