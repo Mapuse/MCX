@@ -489,7 +489,7 @@ Enumerates all configured repositories from `etc/mcx/repo.json` in `name -> url`
 | `LifecycleEngine` | `core::lifecycle` | `audit_log` | `(&self, pkg: &str) -> Vec<AuditEntry>` |
 | `LifecycleEngine` | `core::lifecycle` | `find_orphans` | `(&self, graph: &DependencyGraph) -> OrphanSet` |
 
-## Execution flow — phases
+## Execution flow
 
 ```
   ╔══════════════════════════════════════════════╗
@@ -1319,7 +1319,7 @@ prune_age_hours = 168
 | `verify_checksums` | `true` | `true`, `false` | When enabled, every downloaded package is verified against its SHA-256 checksum before extraction. |
 | `allow_unverified` | `false` | `true`, `false` | When true, packages without checksums are still installed with a warning. Affects `fix-deps` and `verify` behaviour. |
 
-### Section: `[cache]`
+### `[cache]`
 
 | Key | Default | Values | Effect |
 | --- | ------- | ------ | ------ |
