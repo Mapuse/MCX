@@ -24,7 +24,6 @@
 
 `▐▄` `-` `▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▌`
 
-`▀` `-` `▀▀▀▀▀▀`
 
 <details><summary id="contents">Contents</summary>
 
@@ -2108,8 +2107,6 @@ strip = true            # Strip symbols
 The Unlicense — see [**`LICENSE`**](github.com/Cudane/MCX/LICENSE) file for details.
 
 </details>
-
-`-` `▄▄▄▄▄▄▄▄▌`
 
 `▐▀` `-` `▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▌`
 
