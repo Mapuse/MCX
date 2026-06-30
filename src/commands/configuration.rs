@@ -79,7 +79,7 @@ impl ConfigEditorCommand {
 
             execute!(stdout, SetBackgroundColor(Color::Black), SetForegroundColor(Color::White))?;
             let modified_tag = if is_dirty { " *MODIFIED* " } else { " " };
-            let header_text = format!(" MCX Configuration Editor | MCX v2.8.5 |{}{:?}", modified_tag, self.config_path);
+            let header_text = format!(" MCX Configuration Editor | MCX v3.0.0 |{}{:?}", modified_tag, self.config_path);
             execute!(stdout, Print(format!("{:width$}\r\n", header_text, width = text_width)), ResetColor)?;
 
             for i in 0..text_height {

@@ -89,15 +89,15 @@ CLI parsing is handled by `clap` derive macros in `src/main.rs`. The `Cli` struc
 | Short | Long | Aliases | Struct | Module |
 | ----- | ---- | ------- | ------ | ------ |
 | `-i` | `--install` | `in`, `add` | `InstallCommand` | `commands::install` |
-| `-a` | `--add` | `local`, `package`, `xcs` | `AddLocalCommand` | `commands::add` |
+| `-a` | `--add-local` | `local`, `package`, `xcs` | `AddLocalCommand` | `commands::add` |
 | `-r` | `--remove` | `rm`, `uninstall`, `delete` | `RemoveCommand` | `commands::remove` |
 | `-s` | `--search` | `find`, `look` | `SearchCommand` | `commands::search` |
 | `-u` | `--update` | `refresh`, `sync` | `SyncCommand` / `InstallCommand` | `commands::sync` / `commands::install` |
 | `-U` | `--upgrade` | `up`, `dist-upgrade` | `InstallCommand` | `commands::install` |
 | `-q` | `--query` | `info`, `show` | inline in `main.rs` | — |
 | `-c` | `--clean` | `wipe`, `clear` | `CleanCommand` | `commands::clean` |
-| `-V` | `--verify` | `check`, `certify` | inline stub | — |
-| `-f` | `--fix` | `fix-deps`, `repair` | inline stub | — |
+| `-V` | `--verify` | `check`, `certify` | inline in `main.rs` | — |
+| `-f` | `--fix` | `fix-deps`, `repair` | inline in `main.rs` | — |
 | `-C` | `--config` | `cfg`, `settings` | `ConfigEditorCommand` | `commands::configuration` |
 | `-H` | `--history` | `log`, `record` | inline in `main.rs` | — |
 | `-b` | `--build` | `make`, `create` | `SystemCommand` | `commands::system` |
@@ -117,11 +117,11 @@ Resolves the dependency graph for the target packages via `DependencySolver`, do
 | `packages` | `Vec<String>` positional | yes | Package names to install |
 | `--root` | global `-PATH-` | no | MCX root (default `/`) |
 
-### `-a` / `--add`
+### `-a` / `--add-local`
 
 ```
 mcx -a <file.xcs>
-mcx --add <file.xcs>
+mcx --add-local <file.xcs>
 mcx local <file.xcs>
 ```
 
@@ -193,16 +193,14 @@ mcx --query <package>
 mcx info <package>
 ```
 
-Reads `PackageMetadata` from the `installed` ledger and renders a key-value table:
+Queries `PackageMetadata` from the ledger and displays:
 
-| Field | Source |
-| ----- | ------ |
-| Package | `meta.pkg_name` |
-| Version | `meta.version` |
-| License | `meta.license` |
-| Source | `meta.source` |
-| Files | `meta.files.len()` |
-| Dependencies | `meta.dependencies.len()` |
+| Output | Content |
+| ------ | ------- |
+| Key-value table | Package, Version, License, Source, file count, dependency count, reverse-dependency count |
+| Dependency tree | Each dependency: `name version (type)` — resolved real-time from ledger |
+| Required by | List of installed packages that declare this package as a dependency |
+| Installed files | Full paths of every file claimed by the manifest |
 
 ### `-c` / `--clean`
 
@@ -221,7 +219,21 @@ mcx -V
 mcx --verify
 ```
 
-Stub — prints "Verification passed." No-op.
+Runs six integrity checks across the entire system:
+
+| Check | What it does |
+| ----- | ------------ |
+| File existence | Every path in every package manifest must exist on disk |
+| Active directory | Every installed package must have a `var/lib/mcx/active/<pkg>/` directory |
+| Dependency integrity | Every dependency declared by an installed package must itself be installed |
+| Dangling symlinks | Recurses `usr/`, `etc/`, `var/` under root counting symlinks whose target is missing |
+
+If all checks pass: reports "All N packages intact. No broken deps, no missing files, no dangling symlinks."
+If any check fails: lists every issue and advises `mcx -f` to repair.
+
+| Input | Type | Required | Description |
+| ----- | ---- | -------- | ----------- |
+| (none) | — | — | Operates on all installed packages |
 
 ### `-f` / `--fix`
 
@@ -230,7 +242,18 @@ mcx -f
 mcx --fix
 ```
 
-Stub — prints "Dependencies fixed." No-op.
+Scans all installed packages for two kinds of breakage and repairs them:
+
+| Check | Action |
+| ----- | ------ |
+| Missing files | Any package whose manifest-listed files are not present on disk is reinstalled via `InstallCommand` |
+| Missing dependencies | Any dependency declared by an installed package that is not itself installed is resolved and installed |
+
+If nothing is broken, reports "All packages intact. No repair needed."
+
+| Input | Type | Required | Description |
+| ----- | ---- | -------- | ----------- |
+| (none) | — | — | Operates on all installed packages |
 
 ### `-C` / `--config`
 
@@ -363,7 +386,7 @@ If validation fails, `mcx -b` exits with an error before any packages are touche
 mcx --self-update
 ```
 
-Checks the project GitHub Releases page for a newer binary. Downloads, verifies SHA-256 checksum, and atomically replaces the running executable with rollback on failure.
+Clones `https://codeberg.org/Cudane/MCX` into a temporary directory, runs `cargo build --release --target x86_64-unknown-linux-musl`, and copies the resulting binary to `/system/bin/mcx`. Every invocation performs the full lifecycle — clone, compile, install.
 
 ### `--vendor`
 
@@ -1691,7 +1714,7 @@ The Unlicense — see [**`LICENSE`**](github.com/Cudane/MCX/LICENSE) file for de
 
 `▐▀` `-` `▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▌`
 
-- **`Version`:** **`2.8.5`**.
+- **`Version`:** **`3.0.0`**.
 - **`Architecture`:** **`x86_64-unknown-linux-musl`** (**`x86_64-pc-linux-musl`**).
 - **`Compression`:** **`Zstd Level 3 (.xcs)`**.
 

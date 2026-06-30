@@ -25,7 +25,7 @@ use crate::commands::system::SystemCommand;
 use crate::core::delta::DeltaEngine;
 
 #[derive(Parser)]
-#[command(name = "mcx", version = "2.8.5", disable_version_flag = true)]
+#[command(name = "mcx", version = "3.0.0", disable_version_flag = true)]
 struct Cli {
     #[arg(long, global = true, default_value = "/")]
     root: String,
@@ -216,7 +216,7 @@ impl EngineContext {
 async fn main() {
     let args = Cli::parse();
     if args.version {
-        println!("mcx 2.8.5");
+        println!("mcx 3.0.0");
         return;
     }
     let root_path = PathBuf::from(&args.root);
@@ -402,15 +402,52 @@ async fn main() {
                 Ok(meta) => {
                     let file_count = meta.files.len().to_string();
                     let dep_count = meta.dependencies.len().to_string();
-                    let pairs2 = [
+
+                    let rdepends: Vec<String> = ctx.db.get_all_installed_packages()
+                        .unwrap_or_default()
+                        .into_iter()
+                        .filter(|p| p.dependencies.iter().any(|d| d.name == package))
+                        .map(|p| p.pkg_name)
+                        .collect();
+                    let rdeps_str = if rdepends.is_empty() {
+                        "none".to_string()
+                    } else {
+                        rdepends.join(", ")
+                    };
+
+                    let dep_list: Vec<String> = meta.dependencies.iter()
+                        .map(|d| {
+                            let ver = ctx.db.get_package_manifest(&d.name)
+                                .ok()
+                                .map(|m| m.version)
+                                .unwrap_or_default();
+                            format!("{} {} ({})", d.name, ver, d.dep_type)
+                        })
+                        .collect();
+
+                    let pairs = [
                         ("Package", meta.pkg_name.as_str()),
                         ("Version", meta.version.as_str()),
                         ("License", meta.license.as_str()),
                         ("Source", meta.source.as_str()),
-                        ("Files", file_count.as_str()),
-                        ("Dependencies", dep_count.as_str()),
+                        ("Files", &file_count),
+                        ("Dependencies", &dep_count),
+                        ("Reverse deps", &rdeps_str),
                     ];
-                    UserInterface::render_key_values("Installed package", &pairs2);
+                    UserInterface::render_key_values(&format!("Package: {}", meta.pkg_name), &pairs);
+
+                    if !dep_list.is_empty() {
+                        UserInterface::render_list("Dependency tree", &dep_list);
+                    }
+                    if !rdepends.is_empty() {
+                        UserInterface::render_list("Required by", &rdepends);
+                    }
+                    if !meta.files.is_empty() {
+                        let file_strings: Vec<String> = meta.files.iter()
+                            .map(|p| p.to_string_lossy().to_string())
+                            .collect();
+                        UserInterface::render_list("Installed files", &file_strings);
+                    }
                 }
                 Err(_) => UserInterface::display_error("Not installed."),
             }
@@ -426,8 +463,98 @@ async fn main() {
                 Err(e) => { eprintln!("{}", e); process::exit(1); }
             }
         }
-        Commands::Verify => UserInterface::display_success("Verification passed."),
-        Commands::FixDeps => UserInterface::display_success("Dependencies fixed."),
+        Commands::Verify => {
+            let all_pkgs = ctx.db.get_all_installed_packages().unwrap_or_default();
+            let installed_names: std::collections::HashSet<String> = all_pkgs.iter().map(|p| p.pkg_name.clone()).collect();
+            let active_base = root_path.join("var/lib/mcx/active");
+            let mut errors: Vec<String> = Vec::new();
+
+            for pkg in &all_pkgs {
+                for file in &pkg.files {
+                    let full = root_path.join(file);
+                    if !full.exists() {
+                        errors.push(format!("{}: missing file {}", pkg.pkg_name, file.display()));
+                    }
+                }
+                let pkg_active = active_base.join(&pkg.pkg_name);
+                if !pkg_active.exists() {
+                    errors.push(format!("{}: missing active directory", pkg.pkg_name));
+                }
+                for dep in &pkg.dependencies {
+                    if !installed_names.contains(&dep.name) {
+                        errors.push(format!("{}: missing dependency {}", pkg.pkg_name, dep.name));
+                    }
+                }
+            }
+
+            let dangling_count = count_dangling_symlinks(&root_path);
+            if dangling_count > 0 {
+                errors.push(format!("{} dangling symlink(s) found", dangling_count));
+            }
+
+            if errors.is_empty() {
+                UserInterface::display_success(&format!("All {} packages intact. No broken deps, no missing files, no dangling symlinks.", all_pkgs.len()));
+            } else {
+                for e in &errors {
+                    UserInterface::display_error(e);
+                }
+                UserInterface::display_error(&format!("{} issues found. Run mcx -f to repair.", errors.len()));
+            }
+        }
+        Commands::FixDeps => {
+            let all_pkgs = ctx.db.get_all_installed_packages().unwrap_or_default();
+            let installed_names: Vec<String> = all_pkgs.iter().map(|p| p.pkg_name.clone()).collect();
+            let mut missing_deps = Vec::new();
+            let mut missing_files_pkgs = Vec::new();
+
+            for pkg in &all_pkgs {
+                let mut missing_files = false;
+                for file in &pkg.files {
+                    if !root_path.join(file).exists() {
+                        missing_files = true;
+                        break;
+                    }
+                }
+                if missing_files {
+                    missing_files_pkgs.push(pkg.pkg_name.clone());
+                }
+
+                for dep in &pkg.dependencies {
+                    if !installed_names.contains(&dep.name) {
+                        if !missing_deps.contains(&dep.name) {
+                            missing_deps.push(dep.name.clone());
+                        }
+                    }
+                }
+            }
+
+            let mut fixed = 0usize;
+            if !missing_deps.is_empty() {
+                UserInterface::display_info(&format!("Installing {} missing dependencies...", missing_deps.len()));
+                let cmd = InstallCommand::new(args.root.clone(), Arc::clone(&ctx.db));
+                if let Err(e) = cmd.execute(&missing_deps).await {
+                    UserInterface::display_error(&format!("Dependency install failed: {e}"));
+                } else {
+                    fixed += missing_deps.len();
+                }
+            }
+
+            if !missing_files_pkgs.is_empty() {
+                UserInterface::display_info(&format!("Reinstalling {} packages with missing files...", missing_files_pkgs.len()));
+                let cmd = InstallCommand::new(args.root.clone(), Arc::clone(&ctx.db));
+                if let Err(e) = cmd.execute(&missing_files_pkgs).await {
+                    UserInterface::display_error(&format!("Reinstall failed: {e}"));
+                } else {
+                    fixed += missing_files_pkgs.len();
+                }
+            }
+
+            if fixed > 0 {
+                UserInterface::display_success(&format!("Repair complete: {} issues resolved.", fixed));
+            } else {
+                UserInterface::display_success("All packages intact. No repair needed.");
+            }
+        }
         Commands::Config => UserInterface::display_success("Configuration saved."),
 
         Commands::History { rollback, prune, current_gen } => {
@@ -530,31 +657,55 @@ async fn main() {
         }
 
         Commands::SelfUpdate => {
-            UserInterface::display_info("Checking for updates...");
-            let updater = match crate::core::update::SelfUpdateManager::new("2.8.5") {
-                Ok(u) => u,
-                Err(e) => {
-                    UserInterface::display_error(&format!("Self-update init failed: {e}"));
-                    process::exit(1);
-                }
-            };
-            match updater.check_for_updates("https://api.github.com/repos/Cudane/MCX/releases/latest").await {
-                Ok(Some(release)) => {
-                    UserInterface::display_info(&format!("Update available: v{}", release.version));
-                    match updater.deploy_update(&release).await {
-                        Ok(_) => UserInterface::display_success("Update deployed. Restart to apply."),
-                        Err(e) => {
-                            UserInterface::display_error(&format!("Update failed: {e}"));
-                            process::exit(1);
-                        }
-                    }
-                }
-                Ok(None) => UserInterface::display_success("Already up to date."),
-                Err(e) => {
-                    UserInterface::display_error(&format!("Update check failed: {e}"));
-                    process::exit(1);
-                }
+            UserInterface::display_info("Building from source (codeberg.org/Cudane/MCX)...");
+            let tmp = std::env::temp_dir().join("mcx-self-update");
+            let _ = fs::remove_dir_all(&tmp);
+
+            let clone_status = std::process::Command::new("git")
+                .args(["clone", "https://codeberg.org/Cudane/MCX", &tmp.to_string_lossy()])
+                .status()
+                .unwrap_or_else(|_| { UserInterface::display_error("git not found"); process::exit(1); });
+            if !clone_status.success() {
+                UserInterface::display_error("Clone failed");
+                process::exit(1);
             }
+
+            UserInterface::display_info("Compiling (cargo build --release --target x86_64-unknown-linux-musl)...");
+            let build_status = std::process::Command::new("cargo")
+                .args(["build", "--release", "--target", "x86_64-unknown-linux-musl"])
+                .current_dir(&tmp)
+                .status()
+                .unwrap_or_else(|_| { UserInterface::display_error("cargo not found"); process::exit(1); });
+            if !build_status.success() {
+                UserInterface::display_error("Build failed");
+                let _ = fs::remove_dir_all(&tmp);
+                process::exit(1);
+            }
+
+            let built = tmp.join("target/x86_64-unknown-linux-musl/release/mcx");
+            if !built.exists() {
+                UserInterface::display_error("Built binary not found at target/x86_64-unknown-linux-musl/release/mcx");
+                let _ = fs::remove_dir_all(&tmp);
+                process::exit(1);
+            }
+
+            let dest = PathBuf::from("/system/bin/mcx");
+            if let Some(parent) = dest.parent() {
+                let _ = fs::create_dir_all(parent);
+            }
+            if let Err(e) = fs::copy(&built, &dest) {
+                UserInterface::display_error(&format!("Failed to copy binary to /system/bin/mcx: {e}"));
+                let _ = fs::remove_dir_all(&tmp);
+                process::exit(1);
+            }
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = fs::set_permissions(&dest, fs::Permissions::from_mode(0o755));
+            }
+
+            let _ = fs::remove_dir_all(&tmp);
+            UserInterface::display_success("Update complete. Binary written to /system/bin/mcx");
         }
 
         Commands::Vendor { action } => {
@@ -854,6 +1005,30 @@ fn has_write_access(root: &Path) -> bool {
         Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => false,
         Err(_) => true,
     }
+}
+
+fn count_dangling_symlinks(root: &Path) -> usize {
+    let mut count = 0usize;
+    let dirs = ["usr", "etc", "var"];
+    for d in &dirs {
+        let target = root.join(d);
+        if !target.exists() {
+            continue;
+        }
+        if let Ok(entries) = std::fs::read_dir(&target) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_symlink() {
+                    if !path.exists() {
+                        count += 1;
+                    }
+                } else if path.is_dir() {
+                    count += count_dangling_symlinks(&path);
+                }
+            }
+        }
+    }
+    count
 }
 
 fn recursive_copy(src: &Path, dst: &Path) -> Result<()> {
