@@ -110,7 +110,7 @@ mcx --install <package>...
 mcx in <package>...
 ```
 
-Resolves the dependency graph for the target packages via `DependencySolver`, downloads missing `.xcs` archives into `var/cache/mcx/`, verifies SHA-256 checksums, extracts each package in parallel (≥4 CPUs + ≥1 GB RAM triggers `spawn_blocking` per-package), copies artifacts into both the active root and `var/lib/mcx/active/<pkg>/`, and commits the transaction to `local.json`.
+Resolves the dependency graph for the target packages via `DependencySolver`, downloads missing `.xcs` archives into `var/cache/mcx/`, verifies SHA-256 checksums, extracts each package in parallel (≥4 CPUs + ≥1 GB RAM triggers `spawn_blocking` per-package), copies artifacts into both the active root and `var/lib/mcx/active/<pkg>/`, and commits the transaction to LMDB.
 
 | Input | Type | Required | Description |
 | ----- | ---- | -------- | ----------- |
@@ -153,7 +153,7 @@ mcx --search <query>
 mcx find <query>
 ```
 
-Pattern-matches `query` against the `available` index in the current `LedgerState` (populated by the last `update`/sync). Results are printed to stdout via `UserInterface`.
+Pattern-matches `query` against the `available` database in LMDB (populated by the last `update`/sync). Results are printed to stdout via `UserInterface`.
 
 | Input | Type | Required | Description |
 | ----- | ---- | -------- | ----------- |
@@ -181,7 +181,7 @@ mcx --upgrade <package>...
 mcx up <package>...
 ```
 
-Without arguments: collects all currently installed package names from the ledger, then runs `InstallCommand` over the full set.
+Without arguments: collects all currently installed package names from LMDB, then runs `InstallCommand` over the full set.
 
 With arguments: runs `InstallCommand` on the specified subset.
 
@@ -193,7 +193,7 @@ mcx --query <package>
 mcx info <package>
 ```
 
-Queries `PackageMetadata` from the ledger and displays:
+Queries `PackageMetadata` from LMDB and displays:
 
 | Output | Content |
 | ------ | ------- |
@@ -278,7 +278,7 @@ Creates the following files under `<root>/etc/mcx/`:
 | ---- | ------- |
 | `config.ini` | Engine parameters (thread pool, network, security, cache) |
 | `repo.ini` | Repository definitions (main + community) |
-| `profile.json` | Declarative package profile (empty, versioned) |
+| `profile.ini` | Declarative package profile (INI format) |
 
 Existing files are **not** overwritten — only missing files are created. This is useful when bootstrapping a new root or restoring defaults after a wipe.
 
@@ -350,9 +350,9 @@ The blueprint is a JSON file describing the target system state. `mcx -b <path>`
 
 #### Creating a blueprint
 
-1. **From the current system state** — dump installed packages into a JSON file:
+1. **From the current system state** — dump installed packages into a JSON blueprint:
    ```shell
-   mcx -q all | awk '{print $1}' | jq -R -s '{version: "1.0", architecture: "x86_64", packages: split("\n")[:-1]}' > profile.json
+   mcx -q all | awk '{print $1}' | jq -R -s '{version: "1.0", architecture: "x86_64", packages: split("\n")[:-1]}' > blueprint.json
    ```
 2. **Hand-edit** — remove packages you no longer want, add packages you need:
    ```json
@@ -368,7 +368,7 @@ The blueprint is a JSON file describing the target system state. `mcx -b <path>`
    ```
 3. **Converge** — apply the blueprint:
    ```shell
-   mcx -b profile.json
+   mcx -b blueprint.json
    ```
    The engine will remove packages not in the list and install missing ones.
 
@@ -384,7 +384,7 @@ If validation fails, `mcx -b` exits with an error before any packages are touche
 
 #### Automatic profile drift detection
 
-After every `install` and `remove` operation, if `etc/mcx/profile.json` exists, MCX automatically computes `compile_profile_diff()` between the declared profile and the current installed state. If drift is detected (packages to install or remove), a message is printed with the counts. This runs in the background without blocking the operation.
+After every `install` and `remove` operation, if `etc/mcx/profile.ini` exists, MCX automatically computes `compile_profile_diff()` between the declared profile and the current installed state. If drift is detected (packages to install or remove), a message is printed with the counts. This runs in the background without blocking the operation.
 
 ## Platform commands
 
@@ -408,7 +408,7 @@ After every `install` and `remove` operation, if `etc/mcx/profile.json` exists, 
 mcx --self-update
 ```
 
-Clones `https://codeberg.org/Cudane/MCX` into a temporary directory, runs `cargo build --release --target x86_64-unknown-linux-musl`, and copies the resulting binary to `/system/bin/mcx`. Every invocation performs the full lifecycle — clone, compile, install.
+Iterates over every configured repository (`repo.ini`), constructs the URL `<repo-url>/system/bin/mcx`, downloads the pre-built binary, verifies it via `--version`, and performs an atomic rename over `/system/bin/mcx`. Falls through to the next repository on failure; exits with an error if no repo succeeds.
 
 ### `--vendor`
 
@@ -498,7 +498,7 @@ mcx --repo-add <name> <url>
 mcx ra <name> <url>
 ```
 
-Adds a repository entry to `etc/mcx/repo.json` via `RepositoryManager::add_repository()`.
+Adds a repository entry to `etc/mcx/repo.ini` via `RepositoryManager::add_repository()`.
 
 | Input | Type | Required | Description |
 | ----- | ---- | -------- | ----------- |
@@ -512,7 +512,7 @@ mcx --repo-remove <name>
 mcx rr <name>
 ```
 
-Removes a repository entry from `etc/mcx/repo.json` via `RepositoryManager::remove_repository()`.
+Removes a repository entry from `etc/mcx/repo.ini` via `RepositoryManager::remove_repository()`.
 
 ### `--repo-list`
 
@@ -521,7 +521,7 @@ mcx --repo-list
 mcx rl
 ```
 
-Enumerates all configured repositories from `etc/mcx/repo.json` in `name -> url` format.
+Enumerates all configured repositories from `etc/mcx/repo.ini` in `name -> url` format.
 
 ## Repository management guide
 
@@ -539,12 +539,13 @@ Example:
 mcx --repo-add cudane https://packages.cudane.org
 ```
 
-This writes an entry to `etc/mcx/repo.json`:
+This writes an entry to `etc/mcx/repo.ini`:
 
-```json
-{
-  "cudane": "https://packages.cudane.org"
-}
+```ini
+[cudane]
+url = https://packages.cudane.org
+enabled = true
+priority = 100
 ```
 
 ### Removing a repository
@@ -561,7 +562,7 @@ mcx --repo-list
 
 Output:
 
-```
+```shell
   ┌── Configured repositories ─────────────────────────
   ├─ cudane -> https://packages.cudane.org
   └─ local   -> https://mirror.internal/mcx
@@ -569,23 +570,11 @@ Output:
 
 ### Resolution order
 
-When installing a package, each configured repository is queried in the order they appear in `repo.json`. The first repository that provides the package is used. If all repositories fail, the download pipeline falls through to swarm P2P and finally `git clone`.
+When installing a package, each configured repository is queried in the order they appear in `repo.ini`. The first repository that provides the package is used. If all repositories fail, the download pipeline falls through to swarm P2P and finally `git clone`.
 
 ### Configuring without CLI
 
-Edit `etc/mcx/repo.ini` directly:
-
-```ini
-[main]
-url = https://packages.cudane.org
-enabled = true
-
-[local]
-url = https://mirror.internal/mcx
-enabled = true
-```
-
-Entries in `repo.ini` are read at startup via zero-copy `MappedConfig`. The JSON registry (`repo.json`) is managed exclusively through CLI commands.
+Edit `etc/mcx/repo.ini` directly with any text editor. The file is managed through CLI commands (`--repo-add`, `--repo-remove`, `--repo-list`) but can also be written manually.
 
 ## Global flags
 
@@ -610,7 +599,7 @@ Entries in `repo.ini` are read at startup via zero-copy `MappedConfig`. The JSON
                        ┌──────────────────┐
                        │  src/core/       │  Domain logic & persistence
                        │  ├─ config.rs    │  mmap INI, lifetime-tracked MappedConfig
-                       │  ├─ database.rs  │  LedgerState, DbTransaction
+                       │  ├─ database.rs  │  DbTransaction (LMDB)
                        │  ├─ solver.rs    │  DependencySolver, UpgradePath
                        │  ├─ lifecycle.rs │  PackageState machine, LifecycleEngine
                        │  ├─ plugin.rs    │  PluginSlot<T>, Fetcher/Builder/Packer
@@ -625,7 +614,7 @@ Entries in `repo.ini` are read at startup via zero-copy `MappedConfig`. The JSON
                        │  ├─ cas.rs       │  Content-addressable library dedup
                        │  ├─ snapshot.rs  │  Process memory checkpoint
                        │  ├─ swarm.rs     │  P2P hash registry
-                       │  ├─ stream.rs    │  Squashfuse mount scripts
+                       │  ├─ stream.rs    │  zstd+tar mount scripts
                        │  ├─ overlay.rs   │  Overlayfs per-package isolation
                        │  ├─ cgroup.rs    │  cgroup v2 resource control
                        │  ├─ security.rs  │  SecurityMonitor, PluginSlot runtime isolation
@@ -693,8 +682,8 @@ Entries in `repo.ini` are read at startup via zero-copy `MappedConfig`. The JSON
         auto-generate defaults if absent, calibrate() → CalibratedParams
      c. PluginRegistry::new() — register CurlFetcher, DefaultBuilder,
         ZstdPacker as built-in plugins
-     d. Database::open(root) — deserialise var/lib/mcx/local.json
-        into Mutex<LedgerState>; create empty state if absent
+      d. Database::open(root) — open LMDB environment at
+         var/lib/mcx/data/; create three named databases
      e. LifecycleEngine::new() — load transition rules, hook chains
      f. DecisionEngine::new() — initialise heuristic matrix
      g. NetworkProber::probe() — ICMP/HTTP latency test (5 s timeout)
@@ -722,14 +711,16 @@ Entries in `repo.ini` are read at startup via zero-copy `MappedConfig`. The JSON
   ║  EXECUTE (transaction commit)  ║
   ╚════════════════════════════════╝
   1. Database::begin_transaction() → DbTransaction
-     - Clone LedgerState into staging_state
-     - Initialise PackageTransaction log
+    - env.write_txn() → LMDB write transaction
+    - Initialise PackageTransaction log
   2. For each package in plan:
-     a. lifecycle.transition(pkg, PackageState::Staged) → hook pre_execute
-     b. Download → extract → copy to active root
-     c. lifecycle.transition(pkg, PackageState::Installed) → hook post_install
-     d. Record in PackageTransaction
-  3. DbTransaction::commit() → flush JSON, swap Mutex
+    a. lifecycle.transition(pkg, PackageState::Staged) → hook pre_execute
+    b. Download → extract → copy to active root
+    c. lifecycle.transition(pkg, PackageState::Installed) → hook post_install
+    d. Write to LMDB via installed_db.put() inside the RwTxn
+  3. DbTransaction::commit()
+    a. PackageTransaction::commit() → append to history.jsonl
+    b. RwTxn::commit() → LMDB atomic write (all-or-nothing)
 
   ╔════════════════════╗
   ║  VERIFY / CLEANUP  ║
@@ -800,8 +791,8 @@ Every command struct implements `pub fn execute(&self, engine: &EngineContext) -
 | File | Exports | Role | Dependencies |
 | ---- | ------- | ---- | ------------ |
 | `config.rs` | `MappedConfig<'a>`, `ConfigManager`, `CalibratedParams` | Mmap INI parser with `PhantomData` lifetime tracking. `ConfigManager` embeds `config.ini` + `repo.ini`. | `memmap2` |
-| `database.rs` | `Database`, `DbTransaction`, `LedgerState`, `PackageMetadata` | JSON-backed installation ledger behind `Mutex<LedgerState>`. | `serde_json` |
-| `repo.rs` | `RepositoryManager` | CRUD for `etc/mcx/repo.json`. | `serde_json` |
+| `database.rs` | `Database`, `DbTransaction`, `PackageMetadata` | LMDB-backed package registry via `heed` + `bincode`. Three named databases: installed, available, virtual_provides. | `heed`, `bincode` |
+| `repo.rs` | `RepositoryManager` | CRUD for `etc/mcx/repo.ini` (INI format). Synced indexes remain JSON on disk. | — |
 | `manifest.rs` | `ManifestParser` | Deserialise `.xcs` package manifests. | — |
 | `solver.rs` | `DependencySolver`, `ResolutionVerdict`, `UpgradePath` | Dependency graph resolution, delta-cost estimation, deadlock detection, cycle breaking. | `graph.rs` |
 | `graph.rs` | `DepGraph` | DAG of package dependencies and conflicts. | — |
@@ -816,7 +807,7 @@ Every command struct implements `pub fn execute(&self, engine: &EngineContext) -
 | `package.rs` | `PackageEntity` | Unified package representation across all stages. | — |
 | `plugin.rs` | `PluginRegistry`, `PluginSlot<T>`, `Fetcher`, `Builder`, `Packer`, `CurlFetcher`, `DefaultBuilder`, `ZstdPacker` | Lock-free plugin hot-swap via `RwLock<Arc<T>>`. | — |
 | `profiler.rs` | `SystemProfile`, `DecisionEngine`, `AutoHealer`, `NetworkProber` | Host profiling, heuristic decisions, network latency probing. | — |
-| `sudo.rs` | — | (removed — replaced by `elevate_for()` in `main.rs`) | — |
+
 | `update.rs` | `SelfUpdateManager` | GitHub Releases check + binary self-replace. | `network::download` |
 | `vendor.rs` | `VendorManager` | Offline mirror: recursive download + caching. | `network::download` |
 | `workspace.rs` | `WorkspaceManager` | Multi-package workspace orchestration. | `solver.rs` |
@@ -846,54 +837,17 @@ Every command struct implements `pub fn execute(&self, engine: &EngineContext) -
 
 <details><summary id="data--persistence">Data & persistence</summary>
 
-## Ledger state — JSON schema
+## Package metadata — LMDB schema
 
-The central data structure is `LedgerState` (defined in `core::database`), serialised to `var/lib/mcx/local.json`:
+All package metadata is stored in an LMDB database at `var/lib/mcx/data/` via the `heed` crate. Three named databases exist:
 
-```json
-{
-  "installed": {
-    "<package_name>": {
-      "pkg_name": "zlib",
-      "version": "1.2.13",
-      "license": "Zlib",
-      "source": "https://packages.cudane.org/zlib/1.2.13/xcs",
-      "files": ["/usr/lib/libz.so.1.2.13", "/usr/include/zlib.h", "..."],
-      "dependencies": ["glibc>=2.35"],
-      "checksum": "sha256:a1b2c3d4e5f6..."
-    }
-  },
-  "available": {
-    "<package_name>": {
-      "pkg_name": "zlib",
-      "version": "1.3.0",
-      "license": "Zlib",
-      "source": "https://packages.cudane.org/zlib/1.3.0/xcs",
-      "files": [],
-      "dependencies": ["glibc>=2.35"],
-      "checksum": "sha256:f6e5d4c3b2a1..."
-    }
-  },
-  "repositories": [
-    {
-      "name": "main",
-      "url": "https://packages.cudane.org",
-      "checksum": null
-    }
-  ],
-  "virtual": {
-    "webserver": "apache",
-    "mailserver": "postfix"
-  }
-}
-```
+| Database | Codec | Content |
+| -------- | ----- | ------- |
+| `installed` | `Database<Str, SerdeBincode<PackageMetadata>>` | Currently installed packages, keyed by package name. Mutated during install/remove transactions via `DbTransaction`. |
+| `available` | `Database<Str, SerdeBincode<PackageMetadata>>` | Packages discovered from repository indexes. Cleared and rebuilt on each sync. |
+| `virtual_provides` | `Database<Str, SerdeBincode<String>>` | Virtual package name → real package name mapping. Populated from repository indexes. |
 
-| Field | Type | Mutability | Purpose |
-| ----- | ---- | ---------- | ------- |
-| `installed` | `HashMap<String, PackageMetadata>` | read/write | Currently installed packages, keyed by package name. Mutated during install/remove transactions. |
-| `available` | `HashMap<String, PackageMetadata>` | read/write | Packages discovered from repository indexes. Cleared and rebuilt on each sync. |
-| `repositories` | `Vec<RepositoryInfo>` | read/write | Active repository descriptors. Mutated by `repo-add`/`repo-remove`. |
-| `virtual` | `HashMap<String, String>` | read-only | Virtual-package to real-package mapping. Populated from repository indexes. |
+LMDB provides memory-mapped, zero-copy reads and full ACID transactions with single-writer serialisation.
 
 ### `PackageMetadata` fields
 
@@ -903,9 +857,11 @@ The central data structure is `LedgerState` (defined in `core::database`), seria
 | `version` | `String` | Semantic version string |
 | `license` | `String` | SPDX license identifier |
 | `source` | `String` | URL or path of the source artifact |
-| `files` | `Vec<String>` | Absolute paths of installed files |
-| `dependencies` | `Vec<String>` | Dependency specs (`name`, `name>=ver`, `name==ver`, `name<ver`) |
-| `checksum` | `Option<String>` | SHA-256 hex digest (prefixed `sha256:`) |
+| `files` | `Vec<PathBuf>` | Relative paths of installed files |
+| `dependencies` | `Vec<Dependency>` | Dependency specs (`name`, `dep_type`) |
+| `checksum` | `ChecksumData` | `{ kind: String, value: String }` |
+| `provides` | `Option<Vec<String>>` | Virtual package names provided by this package |
+| `conflicts` | `Option<Vec<String>>` | Package names this package conflicts with |
 
 ## On-disk layout
 
@@ -914,12 +870,14 @@ All paths are relative to the `--root` directory (default `/`).
 ```
 etc/mcx/
 ├── config.ini          # Engine configuration (mmap-based, INI format)
-├── repo.ini            # Repository URL configuration (mmap-based, INI format)
-├── repo.json           # Repository registry (JSON, CLI-managed)
+├── repo.ini            # Repository definitions (INI format, CLI-managed)
+├── profile.ini         # Declarative package profile (INI format)
 
 var/
 ├── lib/mcx/
-│   ├── local.json      # LedgerState serialised as JSON
+│   ├── data/           # LMDB environment directory
+│   │   ├── data.mdb    # Package metadata (installed, available, virtual_provides)
+│   │   └── lock.mdb    # LMDB lock file
 │   ├── active/         # Symlinks to current generation for each installed package
 │   │   └── <pkg> → ../generations/<pkg>/<N>/
 │   ├── generations/    # Per-package numbered snapshots for atomic rollback
@@ -985,7 +943,7 @@ Default files are written on first `ConfigManager::new()` if absent.
 | Compression command | `zstd --compress -3 --tar -o output.xcs input/` |
 | Decompression command | `zstd --decompress --tar -o output_dir input.xcs` |
 | Internal structure | Plain directory tree with no wrapper metadata |
-| Metadata location | Stored in `LedgerState.installed.<pkg>.checksum` — the archive itself has no embedded manifest |
+| Metadata location | Stored in LMDB `installed` database (`PackageMetadata.checksum`) — the archive itself has no embedded manifest |
 
 ## Delta format — `.xcd`
 
@@ -1002,62 +960,51 @@ Default files are written on first `ConfigManager::new()` if absent.
 ```
   ┌─────────────────────────────────────────────────────┐
   │  Database::begin_transaction()                      │
-  │  1. let staging_state = self.state.lock().clone()   │
-  │  2. let txn_log = PackageTransaction::new()         │
-  │  3. Return DbTransaction { staging_state, txn_log } │
+  │  1. env.write_txn() → LMDB RwTxn                   │
+  │  2. PackageTransaction::new() → tx_log              │
+  │  3. Return DbTransaction { txn, tx_log }            │
   └──────────────────────┬──────────────────────────────┘
                          │
                          ▼
   ┌──────────────────────────────────────────────────────────────────┐
   │  Command execution:                                              │
-  │  Each operation mutates staging_state and appends to txn_log:    │
+  │  Each operation reads/writes LMDB directly via the open RwTxn:  │
   │                                                                  │
   │  Install:                                                        │
   │   1. Download .xcs → var/cache/mcx/<pkg>-<ver>.xcs               │
   │   2. Extract → var/tmp/mcx/stage/<pkg>/                          │
-  │   3. Copy → active root (<--root>/usr/lib/... etc.)              │
-  │   4. staging_state.installed.insert(pkg, meta)                   │
+  │   3. Copy → active root                                          │
+  │   4. installed_db.put(txn, &pkg_name, &meta)                     │
   │   5. txn_log.record_install(pkg, version, files)                 │
   │                                                                  │
   │  Remove:                                                         │
   │   1. deep_purge_analysis() → orphan set                          │
   │   2. Delete files listed in meta.files                           │
-  │   3. scour_system_residue() → etc, lib, tmp, cache               │
+  │   3. scour_system_residue()                                      │
   │   4. Clean dangling symlinks                                     │
-  │   5. staging_state.installed.remove(pkg)                         │
+  │   5. installed_db.delete(txn, &pkg_name)                          │
   │   6. txn_log.record_remove(pkg)                                  │
   └──────────────────────┬───────────────────────────────────────────┘
                          │
                          ▼
-  ┌─────────────────────────────────────────────────────────────┐
-  │  DbTransaction::commit()                                    │
-  │  1. Write txn_log to var/lib/mcx/transactions/<id>.json     │
-  │  2. Serialise staging_state to JSON string                  │
-  │  3. Atomic write: write to .tmp, then rename to local.json  │
-  │  4. Swap state: *self.state.lock() = staging_state          │
-  └─────────────────────────────────────────────────────────────┘
+  ┌─────────────────────────────────────────────┐
+  │  DbTransaction::commit()                    │
+  │  1. txn_log.commit() → history.jsonl        │
+  │  2. txn.commit() → LMDB atomic flush        │
+  └─────────────────────────────────────────────┘
 ```
 
-The `.tmp` → `local.json` rename is atomic on Linux (same filesystem, `rename()` syscall). A crash during step 2 or 3 leaves the previous `local.json` intact. The transaction log is written before the state file, enabling crash recovery by replaying `transactions/`.
+LMDB transactions are fully ACID. A crash during step 1 leaves the LMDB state unchanged (RwTxn is aborted on drop). The changelog write happens before the LMDB commit, enabling crash recovery by comparing the changelog against the LMDB state.
 
 ## Transaction log format
 
-Each transaction is serialised to `var/lib/mcx/transactions/<unix_timestamp>-<uuid>.json`:
+Each transaction is appended to `var/lib/mcx/history.jsonl` as a single JSON line:
 
 ```json
-{
-  "id": "1719000000-abc123",
-  "timestamp": 1719000000,
-  "operations": [
-    {
-      "type": "install",
-      "package": "zlib",
-      "version": "1.2.13",
-      "files_affected": 42
-    }
-  ]
-}
+{"transaction_id":1719000000,"timestamp":1719000000,"action":"Installation","targets":["zlib","libpng"]}
 ```
+
+The changelog (`ChangelogManager`) uses JSONL — one record per line, append-only. This is the only remaining JSON persistence in the system.
 
 </details>
 
@@ -1234,15 +1181,13 @@ Auto-registers every package on `install`, auto-unregisters on `remove`. The iso
 
 ## Self-update
 
-`SelfUpdateManager::build_from_source()` clones `https://codeberg.org/Cudane/MCX` into a temp directory, runs `cargo build --release --target x86_64-unknown-linux-musl`, verifies the built binary is functional (`--version`), then atomically renames it over `/system/bin/mcx`. If verification fails, the original binary is never touched.
+`SelfUpdateManager::binary()` downloads a pre-built binary from `<repo-url>/system/bin/mcx` using the `Downloader`, verifies it via `--version`, and copies it to the destination path. If verification fails the temp file is removed and the original binary is never touched.
 
-Escalates via `sudo` automatically when invoked as non-root.
+Escalates via `sudo` automatically when invoked as non-root. The CLI `mcx --self-update` handler iterates through all configured repositories (from `repo.ini`) and tries each one in order until a download succeeds.
 
 | Function | Module | Signature |
 | -------- | ------ | --------- |
-| `SelfUpdateManager::build_from_source` | `core::update` | `(repo_url: &str, target: &str, output_path: &Path) -> Result<PathBuf>` |
-
-Wired into CLI as `mcx --self-update`.
+| `SelfUpdateManager::binary` | `core::update` | `(binary_url: &str, dest: &Path) -> impl Future<Output = Result<PathBuf>>` |
 
 ## Workspace management
 
@@ -1477,27 +1422,60 @@ All traits require `Send + Sync`.
 
 <details><summary id="configuration-guide">Configuration guide</summary>
 
-## Architecture
+## Overview
 
-MCX uses a two-tier configuration system:
+MCX configuration is entirely file-based. Three INI files under `<root>/etc/mcx/` control every aspect of behaviour:
 
-1. **mmap-based INI config** (`core/config.rs`) — `ConfigManager` holds two memory-mapped configs (`config.ini` for engine parameters, `repo.ini` for repository definitions). Values are parsed zero-copy directly from the mapped region with proper lifetime tracking via `PhantomData`.
+| File | Purpose | Reading mechanism | Writing mechanism |
+| ---- | ------- | ----------------- | ----------------- |
+| `config.ini` | Engine tuning (threads, network, cache, security) | `MappedConfig` (mmap, zero-copy) | TUI editor `-C` or manual edit |
+| `repo.ini` | Package repository definitions | `RepositoryManager.load_repositories()` (text parse) | CLI `--repo-add`/`--repo-remove`/`--repo-list` or manual edit |
+| `profile.ini` | Declarative package manifest for drift detection | `ProfileValidator.load_profile()` (text parse) | Manual edit |
 
-2. **JSON repository registry** (`core/repo.rs`) — `RepositoryManager` manages a list of repository descriptors (`name`, `url`, optional `checksum`) persisted to `etc/mcx/repo.json`. This is the runtime registry used by `--repo-add`/`--repo-remove`/`--repo-list` CLI commands.
+---
 
-## File locations
+## Guide 1: Configuring MCX from scratch
 
-All paths are relative to `--root` (default: `/`).
+### Step 1 — Generate defaults
 
-| Path | Format | Purpose | Managed by |
-| ------ | ------ | --------- | ---------- |
-| `etc/mcx/config.ini` | INI | Engine parameters (thread pool, network, security, cache) | `ConfigManager` (on first access) |
-| `etc/mcx/repo.ini` | INI | Repository URLs with priority/enabled flags | `ConfigManager` (on first access) |
-| `etc/mcx/repo.json` | JSON | Repository registry (add/remove/list) | `RepositoryManager` |
+```shell
+mcx -C --init
+```
 
-## `config.ini` — engine parameters
+or equivalently:
 
-Written automatically on first `ConfigManager::new()`. Default content:
+```shell
+mcx --config --init
+```
+
+This creates the entire configuration directory and all three default files. Existing files are **never overwritten** — only missing files are created.
+
+### Step 2 — Verify the directory tree
+
+```
+<root>/etc/mcx/
+├── config.ini          # engine, network, security, cache sections
+├── repo.ini            # main + community repositories
+└── profile.ini         # empty declarative profile
+```
+
+The root is auto-detected:
+
+| User | Root | Example |
+| ---- | ---- | ------- |
+| root (UID 0) | `/` | `/etc/mcx/config.ini` |
+| non-root | `~/.mcx/` | `~/.mcx/etc/mcx/config.ini` |
+
+Override with `--root`:
+
+```shell
+# Custom root
+mcx -C --init --root /opt/mcx
+```
+
+### Step 3 — Understand each file
+
+#### `config.ini` — engine parameters
 
 ```ini
 [engine]
@@ -1519,39 +1497,20 @@ limit_bytes = 5368709120
 prune_age_hours = 168
 ```
 
-### `[engine]`
+| Section | Key | Default | Values | Effect |
+| ------- | --- | ------- | ------ | ------ |
+| `[engine]` | `thread_pool_mode` | `auto` | `auto`, `max`, `half`, `quad` | Thread pool = `auto=cpus`, `max=cpus*2`, `half=cpus/2`, `quad=cpus*4` |
+| `[engine]` | `max_concurrent_downloads` | `8` | integer | Cap on parallel HTTP downloads, clamped to `min(cpus, val)` |
+| `[engine]` | `zstd_level` | `3` | 1–19 | `.xcs` compression level |
+| `[network]` | `fallback_repos` | `enabled` | `enabled`, `disabled` | Fall through to secondary repos on primary failure |
+| `[network]` | `latency_threshold_ms` | `200` | integer (ms) | Concurrency drops if latency exceeds this |
+| `[network]` | `bandwidth_threshold_kbps` | `5000` | integer (kbps) | Switches to serial downloads below this |
+| `[security]` | `verify_checksums` | `true` | `true`, `false` | SHA-256 verification before extraction |
+| `[security]` | `allow_unverified` | `false` | `true`, `false` | Install packages without checksums (with warning) |
+| `[cache]` | `limit_bytes` | `5368709120` | integer (bytes) | Max size of `var/cache/mcx/` (5 GB default) |
+| `[cache]` | `prune_age_hours` | `168` | integer (hours) | Cache eviction age threshold (7 days) |
 
-| Key | Default | Values | Effect |
-| --- | ------- | ------ | ------ |
-| `thread_pool_mode` | `auto` | `auto`, `max`, `half`, `quad` | Sets thread pool size relative to CPU count. `auto=cpus`, `max=cpus*2`, `half=cpus/2`, `quad=cpus*4`. |
-| `max_concurrent_downloads` | `8` | integer | Caps parallel HTTP downloads. Clamped to `min(cpus, value)`. |
-| `zstd_level` | `3` | 1–19 | Compression level for `.xcs` package archives. Higher = smaller but slower. |
-
-### `[network]`
-
-| Key | Default | Values | Effect |
-| --- | ------- | ------ | ------ |
-| `fallback_repos` | `enabled` | `enabled`, `disabled` | When enabled, if primary repo is unreachable, MCX falls back to secondary repos. |
-| `latency_threshold_ms` | `200` | integer (ms) | If network latency exceeds this threshold, MCX adjusts concurrency downward. |
-| `bandwidth_threshold_kbps` | `5000` | integer (kbps) | If measured bandwidth drops below this, MCX switches to serial downloads. |
-
-### `[security]`
-
-| Key | Default | Values | Effect |
-| --- | ------- | ------ | ------ |
-| `verify_checksums` | `true` | `true`, `false` | When enabled, every downloaded package is verified against its SHA-256 checksum before extraction. |
-| `allow_unverified` | `false` | `true`, `false` | When true, packages without checksums are still installed with a warning. Affects `fix-deps` and `verify` behaviour. |
-
-### `[cache]`
-
-| Key | Default | Values | Effect |
-| --- | ------- | ------ | ------ |
-| `limit_bytes` | `5368709120` | integer (bytes, 5 GB default) | Maximum size of the package cache at `var/cache/mcx/`. `clean` and `CacheManager` use this for pruning. |
-| `prune_age_hours` | `168` | integer (hours, 7 days) | Packages older than this age are candidates for automatic cache eviction. |
-
-## `repo.ini` — repository configuration
-
-Written automatically on first `ConfigManager::new()`. Default content:
+#### `repo.ini` — repository definitions
 
 ```ini
 [main]
@@ -1565,130 +1524,434 @@ enabled = false
 priority = 200
 ```
 
+Each `[section]` is one repository. Keys inside a section:
+
 | Key | Required | Values | Effect |
 | --- | -------- | ------ | ------ |
-| `url` | yes | URL string | Base URL of the package repository index. |
-| `enabled` | yes | `true`, `false` | Whether this repo is active during sync. Disabled repos are skipped. |
-| `priority` | yes | integer | Lower number = higher priority. Used by the solver to select between packages available from multiple repos. |
+| `url` | yes | URL string | Base URL of the repository index. The index must be available at `<url>/index.json`. |
+| `enabled` | yes | `true`, `false` | If `false`, the repo is skipped during `mcx -u` (sync). |
+| `priority` | yes | integer | Lower number = higher priority. Used by `DependencySolver` when the same package version is available from multiple repos. |
+| `checksum` | no | hex string | Optional SHA-256 of the index file. If set, every sync verifies the downloaded index against this hash. |
 
-### Editing `repo.ini`
+Comments (`#` or `;` to end of line) are allowed anywhere.
 
-Use the TUI editor:
-
-```shell
-# Open repo.ini in the built-in text editor
-mcx -C
-```
-
-Or edit directly:
-
-```shell
-# Manual edit
-$EDITOR /etc/mcx/repo.ini
-```
-
-### Adding a new repository
+#### `profile.ini` — declarative package profile
 
 ```ini
-[my-repo]
-url = https://my-packages.example.com/mcx
-enabled = true
-priority = 50
+[profile]
+version = 1.0.0
+architecture = x86_64
+packages = nginx, openssl, curl
 ```
 
-Sections are parsed by `ConfigParser` — the section header `[name]` becomes the repository key. Keys must be unique (last-writer-wins per section).
+| Key | Required | Values | Effect |
+| --- | -------- | ------ | ------ |
+| `version` | yes | string | Schema version. Must be non-empty. |
+| `architecture` | yes | string | Target CPU architecture. Must be non-empty. |
+| `packages` | no | comma-separated list | Package names the system should have installed. No duplicates, no empty entries. |
 
-## `repo.json` — repository registry (CLI-managed)
+When this file exists, MCX runs `ProfileValidator::compile_profile_diff()` automatically after every `install` and `remove` operation. If the current installed set diverges from the declared set, a drift report is printed:
 
-The CLI commands `--repo-add`/`--repo-remove`/`--repo-list` operate on `etc/mcx/repo.json`:
-
-```shell
-# Add a repository
-mcx --repo-add my-repo https://my-packages.example.com/mcx
-
-# Add a repository with a checksum
-mcx --repo-add my-repo https://my-packages.example.com/mcx --checksum sha256:abc123...
-
-# List configured repositories
-mcx --repo-list
-
-# Remove a repository
-mcx --repo-remove my-repo
+```
+Profile drift: 2 to install, 1 to remove
 ```
 
-Format of `repo.json`:
+This is purely informational — it does not block the operation or auto-correct.
+
+### Step 4 — Complete full state directory tree
+
+After using MCX (installing packages, syncing repos), the full tree is:
+
+```
+<root>/
+├── etc/mcx/
+│   ├── config.ini         # Engine parameters (mmap)
+│   ├── repo.ini           # Repository definitions (INI)
+│   └── profile.ini        # Declarative profile (optional)
+├── var/
+│   ├── lib/mcx/
+│   │   ├── data/          # LMDB environment
+│   │   │   ├── data.mdb   # installed + available + virtual metadata
+│   │   │   └── lock.mdb   # LMDB lock
+│   │   ├── active/        # Active package dir symlinks
+│   │   │   └── <pkg>/     # One directory per installed package
+│   │   ├── cas/           # Content-addressable library store
+│   │   │   └── <hex2>/    # First 2 hex chars of SHA-256
+│   │   │       └── <sha256>  # Hard-linked unique .so
+│   │   ├── deltas/        # Binary delta archives
+│   │   │   └── <pkg>-<old>-<new>.xcd
+│   │   ├── generations/   # Per-package rollback snapshots
+│   │   │   └── <pkg>/
+│   │   │       ├── 1/     # Generation N-1
+│   │   │       └── 2/     # Generation N (current)
+│   │   ├── snapshots/     # Process memory checkpoints
+│   │   │   └── <pkg>/
+│   │   │       └── snap-<timestamp>.mem
+│   │   ├── stream/        # Cloud-stream mount scripts
+│   │   │   └── <pkg>.sh
+│   │   ├── swarm/         # P2P distribution state
+│   │   │   ├── <pkg>.json  # IPFS/IPLD content hashes
+│   │   │   └── peers.json  # Known swarm peers
+│   │   ├── sync/           # Synced repository index files
+│   │   │   └── <repo>.json # Downloaded index (JSON array of PackageMetadata)
+│   │   ├── vendor/         # Offline package mirror
+│   │   └── history.jsonl   # Append-only transaction changelog
+│   ├── cache/mcx/          # Downloaded .xcs package archives
+│   │   └── <pkg>-<ver>.xcs
+│   └── tmp/mcx/
+│       └── stage/          # In-flight extraction staging
+├── ~/.mcx/overlays/        # Per-package overlayfs (upper/work/merged)
+│   └── <pkg>/
+│       ├── upper/
+│       ├── work/
+│       └── merged/
+└── /sys/fs/cgroup/mcx/     # cgroup v2 hierarchy (root only)
+    └── <pkg>/
+        ├── memory.max
+        └── cpu.max
+```
+
+---
+
+## Guide 2: Creating a package repository
+
+A package repository is any HTTP(S) server that serves two things:
+
+1. **`index.json`** — an array of `PackageMetadata` objects describing every available package.
+2. **`.xcs` archives** — the actual package files, addressed by path.
+
+### Repository directory structure (server-side)
+
+```
+<repo-root>/
+├── index.json               # Required: package index
+└── pool/
+    └── <pkg-name>/
+        └── <pkg-name>-<version>.xcs   # Package archives
+```
+
+The `url` field in `repo.ini` points to `<repo-root>`.
+
+### `index.json` format
 
 ```json
 [
   {
-    "name": "my-repo",
-    "url": "https://my-packages.example.com/mcx",
-    "checksum": null
+    "pkg_name": "zlib",
+    "version": "1.3.1",
+    "license": "Zlib",
+    "source": "https://repo.example.com/pool/zlib/zlib-1.3.1.xcs",
+    "checksum": {
+      "kind": "sha256",
+      "value": "a1b2c3d4e5f67890abcdef1234567890abcdef1234567890abcdef1234567890"
+    },
+    "dependencies": [
+      { "name": "glibc", "dep_type": "runtime" }
+    ],
+    "files": [],
+    "provides": ["libz.so.1"],
+    "conflicts": []
+  },
+  {
+    "pkg_name": "libpng",
+    "version": "1.6.40",
+    "license": "libpng-2.0",
+    "source": "https://repo.example.com/pool/libpng/libpng-1.6.40.xcs",
+    "checksum": {
+      "kind": "sha256",
+      "value": "fedcba0987654321fedcba0987654321fedcba0987654321fedcba0987654321"
+    },
+    "dependencies": [
+      { "name": "zlib", "dep_type": "runtime" }
+    ],
+    "files": [],
+    "provides": ["libpng16.so.16"],
+    "conflicts": []
   }
 ]
 ```
 
-## Reading configuration programmatically
+| Field | Type | Required | Description |
+| ----- | ---- | -------- | ----------- |
+| `pkg_name` | string | yes | Canonical package name |
+| `version` | string | yes | Semantic version |
+| `license` | string | yes | SPDX identifier or custom |
+| `source` | string | yes | Download URL for the `.xcs` archive |
+| `checksum` | object | yes | `{ kind: "sha256", value: "<hex>" }` |
+| `dependencies` | array | yes | List of `{ name, dep_type }` objects. `dep_type` is typically `"runtime"`, `"build"`, or `"library"`. |
+| `files` | array | yes | Populated after installation; empty in the index is fine |
+| `provides` | array | no | Virtual package names this package provides (e.g., `libz.so.1`) |
+| `conflicts` | array | no | Package names this package conflicts with |
+
+### Creating a `.xcs` package archive
+
+```shell
+# Create a package directory with the files to distribute
+mkdir -p my-pkg/usr/bin
+cp my-binary my-pkg/usr/bin/
+
+# Pack into .xcs (zstd-compressed tar)
+cd my-pkg
+zstd --compress -3 --tar -o my-pkg-1.0.0.xcs .
+```
+
+### Generating `index.json` automatically
+
+```shell
+# Assuming .xcs files are in pool/<pkg>/
+cat << 'SCRIPT' > generate-index.sh
+#!/bin/sh
+echo "["
+first=true
+for xcs in pool/*/*.xcs; do
+  $first || echo ","
+  first=false
+  pkg=$(basename "$xcs" | sed 's/-[0-9].*//')
+  ver=$(basename "$xcs" | sed 's/.*-\([0-9].*\)\.xcs/\1/')
+  hash=$(sha256sum "$xcs" | cut -d' ' -f1)
+  cat << JSON
+  {
+    "pkg_name": "$pkg",
+    "version": "$ver",
+    "license": "Unknown",
+    "source": "https://repo.example.com/pool/$pkg/$pkg-$ver.xcs",
+    "checksum": { "kind": "sha256", "value": "$hash" },
+    "dependencies": [],
+    "files": [],
+    "provides": [],
+    "conflicts": []
+  }
+JSON
+done
+echo "]"
+SCRIPT
+chmod +x generate-index.sh
+./generate-index.sh > index.json
+```
+
+### Requirements for the HTTP server
+
+- Serve `index.json` at `<url>/index.json`.
+- Serve `.xcs` files at whatever path `source` specifies in the index.
+- No special headers required; standard HTTPS with `curl`/`reqwest`-compatible responses.
+- Optional: serve a checksum file for the index itself (`<url>/index.json.sha256`) if you want `checksum` in `repo.ini` to work.
+
+---
+
+## Guide 3: Adding a repository
+
+### Via CLI — `--repo-add`
+
+```shell
+mcx --repo-add <name> <url>
+```
+
+| Argument | Required | Description |
+| -------- | -------- | ----------- |
+| `name` | yes | Unique identifier for the repository (alphanumeric, hyphens allowed) |
+| `url` | yes | Base URL of the repository (must serve `index.json` at this path) |
+
+Examples:
+
+```shell
+# Add the official Cudane repository
+mcx --repo-add cudane https://packages.cudane.org
+
+# Add a custom internal mirror
+mcx --repo-add internal https://mirror.internal.example.com/mcx
+
+# Add an experimental repository
+mcx --repo-add edge https://edge.packages.example.com
+```
+
+Duplicate names are rejected:
+
+```
+Error: Repository 'cudane' already exists
+```
+
+### Via CLI — `--repo-list`
+
+```shell
+mcx --repo-list
+```
+
+Output:
+
+```
+  ┌── Configured repositories ─────────────────────────
+  ├─ cudane -> https://packages.cudane.org
+  ├─ internal -> https://mirror.internal.example.com/mcx
+  └─ edge -> https://edge.packages.example.com
+```
+
+### Via CLI — `--repo-remove`
+
+```shell
+mcx --repo-remove <name>
+```
+
+Example:
+
+```shell
+mcx --repo-remove edge
+```
+
+Non-existent names are rejected:
+
+```
+Error: Repository 'edge' not found
+```
+
+### Via manual edit — `repo.ini`
+
+Edit `<root>/etc/mcx/repo.ini` directly:
+
+```shell
+# Using the built-in TUI editor
+mcx -C
+```
+
+Or with any text editor:
+
+```shell
+$EDITOR /etc/mcx/repo.ini
+```
+
+Append a new section:
+
+```ini
+[my-repo]
+url = https://my-repo.example.com/mcx
+enabled = true
+priority = 50
+```
+
+| Field | Required | Description |
+| ----- | -------- | ----------- |
+| `[name]` | yes | Section header becomes the repository name |
+| `url` | yes | Repository base URL |
+| `enabled` | yes | `true` to include during sync, `false` to skip |
+| `priority` | yes | Lower = higher priority |
+| `checksum` | no | SHA-256 of the index file for verification |
+
+### What happens when you add a repo
+
+1. `RepositoryManager.add_repository()` appends the entry to `repo.ini`.
+2. On next `mcx -u` (sync), `RepositoryManager.sync_all_parallel()` downloads `<url>/index.json` to `var/lib/mcx/sync/<name>.json`.
+3. The downloaded index is loaded into the `available` LMDB database via `DbTransaction.update_repository_index()`.
+4. Packages from the new repo now appear in `mcx -s` (search) and are available for `mcx -i` (install).
+
+### Sync flow in detail
+
+```
+mcx -u (no package args)
+  └─ SyncCommand::execute()
+       ├─ RepositoryManager::load_repositories()  ← reads repo.ini sections
+       ├─ For each enabled repo (parallel):
+       │    ├─ Downloader::download_package(url/index.json, sync/<name>.json)
+       │    └─ HashVerifier::verify_integrity()    ← if checksum is set in repo.ini
+       ├─ Database::begin_transaction()
+       └─ For each downloaded index:
+            └─ tx.update_repository_index()        ← inserts into LMDB available db
+```
+
+---
+
+## Guide 4: Editing configuration
+
+### Built-in TUI editor
+
+The `-C` (`--config`) command opens a full-screen terminal editor:
+
+```shell
+mcx -C
+```
+
+Key bindings:
+
+| Key | Action |
+| --- | ------ |
+| `Ctrl+X` | Exit (prompts if unsaved changes) |
+| `Ctrl+O` / `Ctrl+S` | Save file |
+| `Ctrl+K` | Cut current line |
+| `Ctrl+U` | Paste cut buffer |
+| Arrow keys | Navigate |
+| `PageUp` / `PageDown` | Scroll |
+| `Home` / `End` | Line start/end |
+| `Backspace` / `Delete` | Character deletion |
+| `Enter` | Split line |
+
+The editor targets `etc/mcx/config.ini` by default.
+
+### Direct file editing
+
+Any of the three config files can be edited directly with any text editor:
+
+```shell
+# Edit engine parameters
+$EDITOR /etc/mcx/config.ini
+
+# Edit repository definitions
+$EDITOR /etc/mcx/repo.ini
+
+# Edit declarative profile
+$EDITOR /etc/mcx/profile.ini
+```
+
+Changes take effect on the next MCX command. The `MappedConfig` (used for `config.ini` and `repo.ini` by `ConfigManager`) is a snapshot at startup — restart MCX to pick up changes. The `RepositoryManager` and `ProfileValidator` read their files fresh on every invocation.
+
+### Validation rules
+
+When editing manually, observe these rules:
+
+| File | Rule | Consequence |
+| ---- | ---- | ----------- |
+| `config.ini` | Unknown sections/keys are silently ignored | No error, but the value has no effect |
+| `config.ini` | Missing section → default values used | Engine falls back to baked defaults |
+| `repo.ini` | Duplicate section names → last-writer-wins in `MappedConfig`, error in `RepositoryManager` | CLI `--repo-add` rejects duplicates; manual edit overwrites silently |
+| `repo.ini` | Missing `url` key → section is skipped | Repo is not registered |
+| `repo.ini` | Invalid `url` → sync fails at download time | Error during `mcx -u` |
+| `profile.ini` | Empty `version` or `architecture` → load rejects | Drift detection is skipped |
+| `profile.ini` | Duplicate packages → load rejects | Drift detection is skipped |
+| All INI | Invalid INI syntax (unclosed `[section`, no `=`) → parse halts | Affected file becomes unreadable |
+
+---
+
+## Programmatic API
 
 ```rust
 use std::path::Path;
 use mcx::core::config::ConfigManager;
+use mcx::core::repo::RepositoryManager;
+use mcx::core::declarative::ProfileValidator;
 
+// ── Reading config.ini (zero-copy, mmap-backed) ──
 let mgr = ConfigManager::new(Path::new("/"))?;
 
-// Read from config.ini (zero-copy, mmap-backed)
-let thread_mode = mgr.local().get("engine", "thread_pool_mode");  // Option<&str>
-let max_dl = mgr.local().get_usize("engine", "max_concurrent_downloads"); // Option<usize>
-let verify = mgr.local().get_bool("security", "verify_checksums"); // Option<bool>
-let cache_limit = mgr.local().get_u64("cache", "limit_bytes");     // Option<u64>
+let thread_mode = mgr.local().get("engine", "thread_pool_mode");
+let max_dl = mgr.local().get_usize("engine", "max_concurrent_downloads");
+let verify = mgr.local().get_bool("security", "verify_checksums");
+let cache_limit = mgr.local().get_u64("cache", "limit_bytes");
 
-// Read from repo.ini
-let main_url = mgr.repo().get("main", "url");          // Option<&str>
-let main_enabled = mgr.repo().get_bool("main", "enabled"); // Option<bool>
+// ── Reading repo.ini programmatically ──
+let main_url = mgr.repo().get("main", "url");
+let main_enabled = mgr.repo().get_bool("main", "enabled");
 
-// CalibratedParams auto-computes thread pools from config values + CPU count
+// ── CalibratedParams auto-computes thread pools ──
 let params = mgr.calibrate();
-println!("Thread pool: {}", params.thread_pool_size);
-```
+println!("Thread pool: {} cores", params.thread_pool_size);
+println!("Concurrent downloads: {}", params.concurrent_downloads);
 
-## Auto-calibration at startup
+// ── Managing repositories ──
+let repo_mgr = RepositoryManager::new(Path::new("/"));
+for repo in repo_mgr.load_repositories()? {
+    println!("{} -> {}", repo.name, repo.url);
+}
 
-`calibrate()` reads `config.ini` and bakes a `CalibratedParams` struct:
-
-| Field | Source | Fallback |
-| ----- | ------ | -------- |
-| `thread_pool_size` | `[engine] thread_pool_mode` evaluated against `num_cpus` | `num_cpus` |
-| `concurrent_downloads` | `[engine] max_concurrent_downloads` | `min(cpus, 8)` |
-| `zstd_level` | `[engine] zstd_level` | `3` |
-| `io_parallelism` | `thread_pool_size.max(2)` | `cpus.max(2)` |
-| `network_latency_adaptive` | `[network] fallback_repos` | `true` |
-| `latency_threshold_ms` | `[network] latency_threshold_ms` | `200` |
-| `bandwidth_threshold_kbps` | `[network] bandwidth_threshold_kbps` | `5000` |
-
-## Complete directory tree
-
-```
-<root>/                                  # / (root) or ~/.mcx/ (non-root)
-├── etc/mcx/
-│   ├── config.ini         # Engine config (mmap, zero-copy)
-│   ├── repo.ini           # Repo definitions (mmap, zero-copy)
-│   ├── repo.json          # Repo registry (JSON, CLI-managed)
-│   └── profile.json       # Declarative profile (optional, auto-validated)
-├── var/
-│   ├── lib/mcx/
-│   │   ├── active/        # Active package directories (one per pkg)
-│   │   ├── cas/           # Content-addressable library store (SHA-256)
-│   │   ├── deltas/        # Binary delta archives (.xcd per upgrade)
-│   │   ├── history.json   # Transaction ledger
-│   │   ├── rollback/      # Generation-based symlink snapshots
-│   │   ├── snapshots/     # Process memory checkpoints (.mem)
-│   │   ├── stream/        # Squashfuse mount scripts (.sh)
-│   │   ├── swarm/         # P2P hash registry + peer list (JSON)
-│   │   └── vendor/        # Offline package mirror
-│   ├── cache/mcx/         # Downloaded .xcs archives
-│   └── tmp/mcx/stage/     # Extraction staging area
-├── ~/.mcx/overlays/       # Per-package overlayfs dirs (upper/work/merged)
-└── /sys/fs/cgroup/mcx/    # cgroup v2 hierarchy (requires root)
+// ── Reading the declarative profile ──
+let profile = ProfileValidator::load_profile("/etc/mcx/profile.ini")?;
+println!("Target packages: {:?}", profile.packages);
 ```
 
 </details>

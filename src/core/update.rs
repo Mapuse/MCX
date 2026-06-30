@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use anyhow::{Result, anyhow};
+use crate::network::download::Downloader;
 
 pub struct SelfUpdateManager;
 
@@ -9,45 +10,33 @@ impl SelfUpdateManager {
         Self
     }
 
-    pub fn build_from_source(repo_url: &str, target: &str, output_path: &Path) -> Result<PathBuf> {
-        let tmp = std::env::temp_dir().join("mcx-self-update-src");
-        let _ = std::fs::remove_dir_all(&tmp);
-
-        let clone = Command::new("git")
-            .args(["clone", repo_url, &tmp.to_string_lossy()])
-            .status()
-            .map_err(|e| anyhow!("git execution failed: {}", e))?;
-        if !clone.success() {
-            return Err(anyhow!("git clone exited with status {}", clone));
-        }
-
-        let build = Command::new("cargo")
-            .args(["build", "--release", "--target", target])
-            .current_dir(&tmp)
-            .status()
-            .map_err(|e| anyhow!("cargo execution failed: {}", e))?;
-        if !build.success() {
-            let _ = std::fs::remove_dir_all(&tmp);
-            return Err(anyhow!("cargo build exited with status {}", build));
-        }
-
-        let built = tmp.join(format!("target/{}/release/mcx", target));
-        if !built.exists() {
-            let _ = std::fs::remove_dir_all(&tmp);
-            return Err(anyhow!("Built binary not found at target/{}/release/mcx", target));
-        }
-
-        if let Some(parent) = output_path.parent() {
+    pub async fn binary(binary_url: &str, dest: &Path) -> Result<PathBuf> {
+        if let Some(parent) = dest.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        std::fs::copy(&built, output_path)?;
+
+        let downloader = Downloader::new();
+        downloader.download_package(binary_url, dest).await?;
+
+        if !dest.exists() {
+            return Err(anyhow!("Downloaded binary not found at {:?}", dest));
+        }
+
+        let verify = Command::new(dest)
+            .arg("--version")
+            .output()
+            .map_err(|e| anyhow!("Verification execution failed: {}", e))?;
+        if !verify.status.success() {
+            let _ = std::fs::remove_file(dest);
+            return Err(anyhow!("Downloaded binary failed version check"));
+        }
+
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(output_path, std::fs::Permissions::from_mode(0o755))?;
+            std::fs::set_permissions(dest, std::fs::Permissions::from_mode(0o755))?;
         }
 
-        let _ = std::fs::remove_dir_all(&tmp);
-        Ok(output_path.to_path_buf())
+        Ok(dest.to_path_buf())
     }
 }

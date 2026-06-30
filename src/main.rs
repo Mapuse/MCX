@@ -79,7 +79,7 @@ pub enum Commands {
 
     #[command(short_flag = 'C', long_flag = "config", aliases = ["cfg", "settings"])]
     Config {
-        #[arg(long, help = "Generate default config.ini, repo.ini, and profile.json")]
+        #[arg(long, help = "Generate default config.ini, repo.ini, and profile.ini")]
         init: bool,
     },
 
@@ -793,79 +793,77 @@ async fn main() {
                 elevate_for("self-update");
             }
 
-            UserInterface::self_update("Building from source (codeberg.org/Cudane/MCX)...");
-            let tmp = std::env::temp_dir().join("mcx-self-update");
-            let _ = fs::remove_dir_all(&tmp);
+            let repo_mgr = crate::core::repo::RepositoryManager::new(&root_path);
+            let repos = repo_mgr.load_repositories()
+                .unwrap_or_else(|e| { UserInterface::error(&format!("Failed to load repos: {e}")); process::exit(1); });
 
-            let clone_status = std::process::Command::new("git")
-                .args(["clone", "https://codeberg.org/Cudane/MCX", &tmp.to_string_lossy()])
-                .status()
-                .unwrap_or_else(|_| { UserInterface::error("git not found"); process::exit(1); });
-            if !clone_status.success() {
-                UserInterface::error("Clone failed");
+            if repos.is_empty() {
+                UserInterface::error("No repositories configured. Use --repo-add first.");
                 process::exit(1);
             }
 
-            UserInterface::info("Compiling (cargo build --release --target x86_64-unknown-linux-musl)...");
-            let build_status = std::process::Command::new("cargo")
-                .args(["build", "--release", "--target", "x86_64-unknown-linux-musl"])
-                .current_dir(&tmp)
-                .status()
-                .unwrap_or_else(|_| { UserInterface::error("cargo not found"); process::exit(1); });
-            if !build_status.success() {
-                UserInterface::error("Build failed");
-                let _ = fs::remove_dir_all(&tmp);
-                process::exit(1);
-            }
+            let mut last_error = String::new();
+            let mut downloaded = false;
 
-            let built = tmp.join("target/x86_64-unknown-linux-musl/release/mcx");
-            if !built.exists() {
-                UserInterface::error("Built binary not found");
-                let _ = fs::remove_dir_all(&tmp);
-                process::exit(1);
-            }
+            for repo in &repos {
+                let binary_url = format!("{}/system/bin/mcx", repo.url.trim_end_matches('/'));
+                UserInterface::self_update(&format!("Downloading from {}...", binary_url));
 
-            // verify the built binary is functional before swapping
-            let verify = std::process::Command::new(&built)
-                .arg("--version")
-                .output();
-            match verify {
-                Ok(out) if out.status.success() => {
-                    let ver = String::from_utf8_lossy(&out.stdout);
-                    UserInterface::info(&format!("Built: {}", ver.trim()));
+                let tmp = std::env::temp_dir().join("mcx-self-update-bin");
+                let _ = std::fs::remove_file(&tmp);
+
+                match crate::core::update::SelfUpdateManager::binary(&binary_url, &tmp).await {
+                    Ok(downloaded_path) => {
+                        let ver_output = std::process::Command::new(&downloaded_path)
+                            .arg("--version")
+                            .output()
+                            .map(|o| o.stdout)
+                            .unwrap_or_default();
+                        let ver = String::from_utf8_lossy(&ver_output);
+                        UserInterface::info(&format!("Downloaded: {}", ver.trim()));
+
+                        // atomic swap: write to .new, rename over target
+                        let new_path = output_path.with_extension("mcx.new");
+                        if let Some(parent) = new_path.parent() {
+                            let _ = fs::create_dir_all(parent);
+                        }
+                        if new_path.exists() {
+                            let _ = fs::remove_file(&new_path);
+                        }
+                        fs::copy(&tmp, &new_path).unwrap_or_else(|e| {
+                            UserInterface::error(&format!("Copy failed: {}", e));
+                            let _ = fs::remove_file(&tmp);
+                            process::exit(1);
+                        });
+                        #[cfg(unix)]
+                        {
+                            use std::os::unix::fs::PermissionsExt;
+                            let _ = fs::set_permissions(&new_path, fs::Permissions::from_mode(0o755));
+                        }
+                        fs::rename(&new_path, &output_path).unwrap_or_else(|e| {
+                            UserInterface::error(&format!("Atomic rename failed: {}", e));
+                            let _ = fs::remove_file(&tmp);
+                            process::exit(1);
+                        });
+
+                        let _ = fs::remove_file(&tmp);
+                        downloaded = true;
+                        break;
+                    }
+                    Err(e) => {
+                        last_error = format!("{}: {}", repo.name, e);
+                        let _ = fs::remove_file(&tmp);
+                        UserInterface::info(&format!("Skipping {}: {}", repo.name, e));
+                        continue;
+                    }
                 }
-                _ => {
-                    UserInterface::error("Built binary failed verification");
-                    let _ = fs::remove_dir_all(&tmp);
-                    process::exit(1);
-                }
             }
 
-            // atomic swap: write to .new, rename over target (atomic on same filesystem)
-            let new_path = output_path.with_extension("mcx.new");
-            if let Some(parent) = new_path.parent() {
-                let _ = fs::create_dir_all(parent);
-            }
-            if new_path.exists() {
-                let _ = fs::remove_file(&new_path);
-            }
-            fs::copy(&built, &new_path).unwrap_or_else(|e| {
-                UserInterface::error(&format!("Copy failed: {}", e));
-                let _ = fs::remove_dir_all(&tmp);
+            if !downloaded {
+                UserInterface::error(&format!("Self-update failed. Last error: {}", last_error));
                 process::exit(1);
-            });
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                let _ = fs::set_permissions(&new_path, fs::Permissions::from_mode(0o755));
             }
-            fs::rename(&new_path, &output_path).unwrap_or_else(|e| {
-                UserInterface::error(&format!("Atomic rename failed: {}", e));
-                let _ = fs::remove_dir_all(&tmp);
-                process::exit(1);
-            });
 
-            let _ = fs::remove_dir_all(&tmp);
             UserInterface::self_update("Self-update complete. New binary at /system/bin/mcx");
         }
 
