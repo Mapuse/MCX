@@ -31,15 +31,14 @@ URL="{}"
 MOUNT="{}"
 CACHE="{}"
 mkdir -p "$MOUNT" "$CACHE"
-if command -v squashfuse >/dev/null 2>&1; then
-    squashfuse "$URL" "$MOUNT" -o ro,allow_other,cache=cache_dir="$CACHE"
-    echo "Mounted {} at $MOUNT"
-else
-    echo "Warning: squashfuse not installed. Falling back to direct download."
-    wget -q -O - "$URL" | tar -xz -C "$MOUNT"
+ARCHIVE="$CACHE/{}-{}.xcs"
+if [ ! -f "$ARCHIVE" ]; then
+    curl -sL "$URL" -o "$ARCHIVE"
 fi
+zstd -d -c "$ARCHIVE" | tar -x -C "$MOUNT"
+echo "Stream {} at $MOUNT"
 "#,
-            pkg_name, version, url, mount_point, cache_dir, pkg_name
+            pkg_name, version, url, mount_point, cache_dir, pkg_name, version, pkg_name
         );
 
         fs::write(&script_path, &script)

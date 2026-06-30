@@ -767,10 +767,11 @@ fn test_stream_manager_script_generation() {
     let stream = mcx::core::stream::StreamManager::new(&root);
     assert!(stream.initialize().is_ok());
 
-    let script = stream.generate_stream_mount_script("test-pkg", "1.0.0", "https://example.com/test.sqsh");
+    let script = stream.generate_stream_mount_script("test-pkg", "1.0.0", "https://example.com/test-pkg-1.0.0.xcs");
     assert!(script.is_ok());
     let content = fs::read_to_string(script.unwrap()).unwrap();
-    assert!(content.contains("squashfuse"));
+    assert!(content.contains("zstd"));
+    assert!(content.contains("curl"));
     assert!(content.contains("test-pkg"));
 
     let list = stream.list_stream_scripts().unwrap();
