@@ -627,9 +627,9 @@ Entries in `repo.ini` are read at startup via zero-copy `MappedConfig`. The JSON
                        │  ├─ swarm.rs     │  P2P hash registry
                        │  ├─ stream.rs    │  Squashfuse mount scripts
                        │  ├─ overlay.rs   │  Overlayfs per-package isolation
-                        │  ├─ cgroup.rs    │  cgroup v2 resource control
-                        │  ├─ security.rs  │  SecurityMonitor, PluginSlot runtime isolation
-                        │  ├─ rollback.rs  │  Generation-based atomic rollback
+                       │  ├─ cgroup.rs    │  cgroup v2 resource control
+                       │  ├─ security.rs  │  SecurityMonitor, PluginSlot runtime isolation
+                       │  ├─ rollback.rs  │  Generation-based atomic rollback
                        │  ├─ update.rs    │  Self-update binary replacement
                        │  ├─ vendor.rs    │  Offline package mirroring
                        │  ├─ completion.rs│  Shell completion generation
@@ -640,11 +640,11 @@ Entries in `repo.ini` are read at startup via zero-copy `MappedConfig`. The JSON
            ┌────────────────────┼────────────────────┐
            ▼                    ▼                    ▼
  ┌──────────────────┐  ┌──────────────────┐  ┌──────────────────┐
-  │  src/network/    │  │  src/archive/    │  │  src/utils/      │
-  │  download.rs     │  │  extract.rs      │  │  ui.rs           │
-  │  pipeline.rs     │  │  hash.rs         │  │  UserInterface   │
-  │  sync.rs         │  │  verify.rs       │  └──────────────────┘
- │  reqwest+rustls  │  │  verify.rs       │  └──────────────────┘
+ │  src/network/    │  │  src/archive/    │  │  src/utils/      │
+ │  download.rs     │  │  extract.rs      │  │  ui.rs           │
+ │  pipeline.rs     │  │  hash.rs         │  │  UserInterface   │
+ │  sync.rs         │  │  verify.rs       │  └──────────────────┘
+ │  reqwest+rustls  │  │  verify.rs       │
  └──────────────────┘  └──────────────────┘
 ```
 
@@ -760,10 +760,10 @@ Entries in `repo.ini` are read at startup via zero-copy `MappedConfig`. The JSON
 ## Modules
 
 ```
-  main.rs ────→ lib.rs ────→ commands ────→ core ────→ network
-                                │              ├────→ archive
-                                │              └────→ utils
-                                └───→ utils
+  main.rs ➔ lib.rs ➔ commands ➔ core ➔ network
+                                │              ├ ➔ archive
+                                │              └ ➔ utils
+                                └ ➔ utils
 ```
 
 Every `commands::*` struct receives an `EngineContext` reference which gates access to all `core` subsystems. `core` depends on `network` (download during install/sync) and `archive` (extract/verify). `utils` is a leaf module used by both `commands` and `main`.
@@ -987,7 +987,7 @@ Default files are written on first `ConfigManager::new()` if absent.
 | Internal structure | Plain directory tree with no wrapper metadata |
 | Metadata location | Stored in `LedgerState.installed.<pkg>.checksum` — the archive itself has no embedded manifest |
 
-## `.xcd` delta format
+## Delta format — `.xcd`
 
 | Component | Detail |
 | --------- | ------ |
@@ -997,7 +997,7 @@ Default files are written on first `ConfigManager::new()` if absent.
 | `diff.meta` schema | `{ "removed": ["path1", "path2", …], "base_version": "1.2.12" }` |
 | Apply | Extract old `.xcs` → overlay delta files → delete removed → re-pack |
 
-## Staging and commit model — transaction flow
+## Transaction flow
 
 ```
   ┌─────────────────────────────────────────────────────┐
