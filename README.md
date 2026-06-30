@@ -20,7 +20,7 @@
 
 `▐▀` `-` `▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▌`
 
-- **`The package manager of Cudane Linux`**.
+- **`The Package Manager of Cudane`**.
 
 `▐▄` `-` `▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▌`
 
@@ -564,8 +564,8 @@ Output:
 
 ```shell
   ┌── Configured repositories ─────────────────────────
-  ├─ cudane -> https://packages.cudane.org
-  └─ local   -> https://mirror.internal/mcx
+  ├─ core -> https://packages.cudane.org
+  └─ plus -> https://mirror.internal/mcx
 ```
 
 ### Resolution order
@@ -958,17 +958,17 @@ Default files are written on first `ConfigManager::new()` if absent.
 ## Transaction flow
 
 ```
-  ┌─────────────────────────────────────────────────────┐
-  │  Database::begin_transaction()                      │
-  │  1. env.write_txn() → LMDB RwTxn                   │
-  │  2. PackageTransaction::new() → tx_log              │
-  │  3. Return DbTransaction { txn, tx_log }            │
-  └──────────────────────┬──────────────────────────────┘
+  ┌──────────────────────────────────────────┐
+  │  Database::begin_transaction()           │
+  │  1. env.write_txn() → LMDB RwTxn         │
+  │  2. PackageTransaction::new() → tx_log   │
+  │  3. Return DbTransaction { txn, tx_log } │
+  └──────────────────────┬───────────────────┘
                          │
                          ▼
   ┌──────────────────────────────────────────────────────────────────┐
   │  Command execution:                                              │
-  │  Each operation reads/writes LMDB directly via the open RwTxn:  │
+  │  Each operation reads/writes LMDB directly via the open RwTxn:   │
   │                                                                  │
   │  Install:                                                        │
   │   1. Download .xcs → var/cache/mcx/<pkg>-<ver>.xcs               │
@@ -982,16 +982,16 @@ Default files are written on first `ConfigManager::new()` if absent.
   │   2. Delete files listed in meta.files                           │
   │   3. scour_system_residue()                                      │
   │   4. Clean dangling symlinks                                     │
-  │   5. installed_db.delete(txn, &pkg_name)                          │
+  │   5. installed_db.delete(txn, &pkg_name)                         │
   │   6. txn_log.record_remove(pkg)                                  │
   └──────────────────────┬───────────────────────────────────────────┘
                          │
                          ▼
-  ┌─────────────────────────────────────────────┐
-  │  DbTransaction::commit()                    │
-  │  1. txn_log.commit() → history.jsonl        │
-  │  2. txn.commit() → LMDB atomic flush        │
-  └─────────────────────────────────────────────┘
+  ┌──────────────────────────────────────┐
+  │  DbTransaction::commit()             │
+  │  1. txn_log.commit() → history.jsonl │
+  │  2. txn.commit() → LMDB atomic flush │
+  └──────────────────────────────────────┘
 ```
 
 LMDB transactions are fully ACID. A crash during step 1 leaves the LMDB state unchanged (RwTxn is aborted on drop). The changelog write happens before the LMDB commit, enabling crash recovery by comparing the changelog against the LMDB state.
