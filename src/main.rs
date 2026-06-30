@@ -272,7 +272,7 @@ async fn main() {
                     UserInterface::separator();
 
                     // profile validation after install
-                    let profile_path = root_path.join("etc/mcx/profile.json");
+                    let profile_path = root_path.join("etc/mcx/profile.ini");
                     if profile_path.exists() {
                         match crate::core::declarative::ProfileValidator::load_profile(&profile_path) {
                             Ok(profile) => {
@@ -309,7 +309,7 @@ async fn main() {
                     UserInterface::separator();
 
                     // profile validation after removal
-                    let profile_path = root_path.join("etc/mcx/profile.json");
+                    let profile_path = root_path.join("etc/mcx/profile.ini");
                     if profile_path.exists() {
                         match crate::core::declarative::ProfileValidator::load_profile(&profile_path) {
                             Ok(profile) => {
@@ -669,15 +669,10 @@ async fn main() {
                     });
                 }
 
-                let profile_json = config_dir.join("profile.json");
-                if !profile_json.exists() {
-                    let default_profile = serde_json::json!({
-                        "version": "1.0.0",
-                        "architecture": "x86_64",
-                        "packages": []
-                    });
-                    fs::write(&profile_json, serde_json::to_string_pretty(&default_profile).unwrap()).unwrap_or_else(|e| {
-                        UserInterface::error(&format!("Failed to write profile.json: {e}"));
+                let profile_ini = config_dir.join("profile.ini");
+                if !profile_ini.exists() {
+                    fs::write(&profile_ini, b"[profile]\nversion = 1.0.0\narchitecture = x86_64\npackages = \n").unwrap_or_else(|e| {
+                        UserInterface::error(&format!("Failed to write profile.ini: {e}"));
                         process::exit(1);
                     });
                 }
@@ -686,7 +681,7 @@ async fn main() {
                 UserInterface::render_list("Generated", &[
                     config_ini.to_string_lossy().to_string(),
                     repo_ini.to_string_lossy().to_string(),
-                    profile_json.to_string_lossy().to_string(),
+                    profile_ini.to_string_lossy().to_string(),
                 ]);
             } else {
                 UserInterface::success("Configuration saved.");

@@ -1,9 +1,10 @@
-use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
 use anyhow::{Result, anyhow};
 use serde::{Serialize, Deserialize};
+use heed::{Env, EnvOpenOptions, RwTxn};
+use heed::types::{Str, SerdeBincode};
+
 use crate::core::transaction::ParallelFileOp;
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -38,97 +39,113 @@ pub struct RepositoryInfo {
     pub checksum: Option<String>,
 }
 
-#[derive(Serialize, Deserialize, Clone, Default)]
-pub struct LedgerState {
-    pub installed: std::collections::HashMap<String, PackageMetadata>,
-    pub available: std::collections::HashMap<String, PackageMetadata>,
-    pub repositories: Vec<RepositoryInfo>,
-    pub virtual_provides: std::collections::HashMap<String, String>,
-}
+type PkgDb = heed::Database<Str, SerdeBincode<PackageMetadata>>;
+type StrDb = heed::Database<Str, SerdeBincode<String>>;
 
 pub struct Database {
-    pub registry_path: PathBuf,
-    pub state: Mutex<LedgerState>,
+    env: Env,
+    installed_db: PkgDb,
+    available_db: PkgDb,
+    virtual_db: StrDb,
 }
 
-pub struct DbTransaction<'a> {
-    pub db: &'a Database,
-    pub staging_state: LedgerState,
-    pub committed: bool,
-    pub tx_log: crate::core::transaction::PackageTransaction,
+pub struct DbTransaction<'e> {
+    db: &'e Database,
+    txn: Option<RwTxn<'e>>,
+    tx_log: crate::core::transaction::PackageTransaction,
+    committed: bool,
 }
 
 impl Database {
     pub fn open<P: AsRef<Path>>(root: P) -> Result<Self> {
-        let registry_path = root.as_ref().join("var/lib/mcx/local.json");
-        if let Some(parent) = registry_path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        let state = if registry_path.exists() {
-            let content = fs::read_to_string(&registry_path)?;
-            serde_json::from_str(&content)?
-        } else {
-            LedgerState::default()
+        let db_path = root.as_ref().join("var/lib/mcx/data");
+        fs::create_dir_all(&db_path)?;
+
+        let env = unsafe {
+            EnvOpenOptions::new()
+                .map_size(10 * 1024 * 1024)
+                .max_dbs(4)
+                .open(&db_path)?
         };
-        Ok(Self {
-            registry_path,
-            state: Mutex::new(state),
-        })
+
+        let mut txn = env.write_txn()?;
+        let installed_db = env.create_database(&mut txn, Some("installed"))?;
+        let available_db = env.create_database(&mut txn, Some("available"))?;
+        let virtual_db = env.create_database(&mut txn, Some("virtual"))?;
+        txn.commit()?;
+
+        Ok(Self { env, installed_db, available_db, virtual_db })
     }
 
     pub fn begin_transaction(&self) -> Result<DbTransaction<'_>> {
-        let staging_state = self.state.lock().map_err(|_| anyhow!("Lock failure"))?.clone();
-        let mut root = self.registry_path.clone();
-        for _ in 0..4 {
-            root.pop();
-        }
+        let txn = self.env.write_txn()?;
+        let env_path = self.env.path();
+        let tx_root = env_path
+            .ancestors()
+            .nth(3)
+            .unwrap_or_else(|| Path::new("."))
+            .to_path_buf();
 
-        let tx_log = crate::core::transaction::PackageTransaction::new(root, crate::core::changelog::ActionKind::Installation)?;
+        let tx_log = crate::core::transaction::PackageTransaction::new(tx_root, crate::core::changelog::ActionKind::Installation)?;
 
         Ok(DbTransaction {
             db: self,
-            staging_state,
-            committed: false,
+            txn: Some(txn),
             tx_log,
+            committed: false,
         })
     }
 
     pub fn get_all_installed_packages(&self) -> Result<Vec<PackageMetadata>> {
-        let guard = self.state.lock().map_err(|_| anyhow!("Lock failure"))?;
-        Ok(guard.installed.values().cloned().collect())
+        let txn = self.env.read_txn()?;
+        let mut results = Vec::new();
+        let iter = self.installed_db.iter(&txn)?;
+        for result in iter {
+            let (_key, meta) = result?;
+            results.push(meta);
+        }
+        Ok(results)
     }
 
     pub fn get_all_available_packages(&self) -> Result<Vec<PackageMetadata>> {
-        let guard = self.state.lock().map_err(|_| anyhow!("Lock failure"))?;
-        Ok(guard.available.values().cloned().collect())
+        let txn = self.env.read_txn()?;
+        let mut results = Vec::new();
+        let iter = self.available_db.iter(&txn)?;
+        for result in iter {
+            let (_key, meta) = result?;
+            results.push(meta);
+        }
+        Ok(results)
     }
 
     pub fn is_package_installed(&self, pkg_name: &str) -> Result<bool> {
-        let guard = self.state.lock().map_err(|_| anyhow!("Lock failure"))?;
-        Ok(guard.installed.contains_key(pkg_name))
+        let txn = self.env.read_txn()?;
+        let exists = self.installed_db.get(&txn, pkg_name)?.is_some();
+        Ok(exists)
     }
 
     pub fn get_package_manifest(&self, pkg_name: &str) -> Result<PackageMetadata> {
-        let guard = self.state.lock().map_err(|_| anyhow!("Lock failure"))?;
-        if let Some(pkg) = guard.installed.get(pkg_name) {
-            return Ok(pkg.clone());
+        let txn = self.env.read_txn()?;
+        if let Some(meta) = self.installed_db.get(&txn, pkg_name)? {
+            return Ok(meta);
         }
-        if let Some(pkg) = guard.available.get(pkg_name) {
-            return Ok(pkg.clone());
+        if let Some(meta) = self.available_db.get(&txn, pkg_name)? {
+            return Ok(meta);
         }
         Err(anyhow!("Package '{}' not found in registry", pkg_name))
     }
 
     pub fn get_configured_repositories(&self) -> Result<Vec<RepositoryInfo>> {
-        let guard = self.state.lock().map_err(|_| anyhow!("Lock failure"))?;
-        Ok(guard.repositories.clone())
+        Err(anyhow!("Not supported via LMDB; use RepositoryManager"))
     }
 
     pub fn has_dependent_packages(&self, pkg_name: &str) -> Result<bool> {
-        let guard = self.state.lock().map_err(|_| anyhow!("Lock failure"))?;
-        for (installed_name, installed_pkg) in &guard.installed {
-            if installed_name != pkg_name {
-                if installed_pkg.dependencies.iter().any(|d| d.name == pkg_name) {
+        let txn = self.env.read_txn()?;
+        let iter = self.installed_db.iter(&txn)?;
+        for result in iter {
+            let (_key, meta) = result?;
+            if meta.pkg_name != pkg_name {
+                if meta.dependencies.iter().any(|d| d.name == pkg_name) {
                     return Ok(true);
                 }
             }
@@ -137,23 +154,32 @@ impl Database {
     }
 }
 
-impl<'a> DbTransaction<'a> {
+impl<'e> DbTransaction<'e> {
+    fn txn(&mut self) -> &mut RwTxn<'e> {
+        self.txn.as_mut().unwrap()
+    }
+
     pub fn register_package_placement(&mut self, meta: &PackageMetadata) -> Result<()> {
-        for (inst_name, inst_pkg) in &self.staging_state.installed {
-            if inst_name != &meta.pkg_name {
+        // Check file collisions against installed packages
+        let iter = self.db.installed_db.iter(self.txn())?;
+        for result in iter {
+            let (_key, installed): (_, PackageMetadata) = result?;
+            if installed.pkg_name != meta.pkg_name {
                 for file in &meta.files {
-                    if inst_pkg.files.contains(file) {
-                        return Err(anyhow!("File collision error: {:?} belongs to {}", file, inst_name));
+                    if installed.files.contains(file) {
+                        return Err(anyhow!("File collision error: {:?} belongs to {}", file, installed.pkg_name));
                     }
                 }
             }
         }
+
         if let Some(provides) = &meta.provides {
             for v in provides {
-                self.staging_state.virtual_provides.insert(v.clone(), meta.pkg_name.clone());
+                self.db.virtual_db.put(self.txn(), v, &meta.pkg_name)?;
             }
         }
-        self.staging_state.installed.insert(meta.pkg_name.clone(), meta.clone());
+
+        self.db.installed_db.put(self.txn(), &meta.pkg_name, meta)?;
         self.tx_log.track_package(&meta.pkg_name)?;
         Ok(())
     }
@@ -164,21 +190,23 @@ impl<'a> DbTransaction<'a> {
         for pkg in remote_pkgs {
             if let Some(provides) = &pkg.provides {
                 for v in provides {
-                    self.staging_state.virtual_provides.insert(v.clone(), pkg.pkg_name.clone());
+                    self.db.virtual_db.put(self.txn(), v, &pkg.pkg_name)?;
                 }
             }
-            self.staging_state.available.insert(pkg.pkg_name.clone(), pkg);
+            self.db.available_db.put(self.txn(), &pkg.pkg_name, &pkg)?;
         }
         Ok(())
     }
 
     pub fn stage_package_removal(&mut self, name: &str) -> Result<()> {
-        if let Some(meta) = self.staging_state.installed.remove(name) {
+        let existing = self.db.installed_db.get(self.txn(), name)?;
+        if let Some(meta) = existing {
             if let Some(provides) = &meta.provides {
                 for v in provides {
-                    self.staging_state.virtual_provides.remove(v);
+                    self.db.virtual_db.delete(self.txn(), v)?;
                 }
             }
+            self.db.installed_db.delete(self.txn(), name)?;
             self.tx_log.track_package(name)?;
         }
         Ok(())
@@ -198,11 +226,19 @@ impl<'a> DbTransaction<'a> {
 
     pub fn commit(mut self) -> Result<()> {
         self.tx_log.commit()?;
-        let payload = serde_json::to_string_pretty(&self.staging_state)?;
-        let mut file = OpenOptions::new().create(true).write(true).truncate(true).open(&self.db.registry_path)?;
-        file.write_all(payload.as_bytes())?;
-        let mut guard = self.db.state.lock().map_err(|_| anyhow!("Lock failure"))?;
-        *guard = self.staging_state;
+        if let Some(txn) = self.txn.take() {
+            txn.commit()?;
+        }
+        self.committed = true;
         Ok(())
+    }
+}
+
+impl<'e> Drop for DbTransaction<'e> {
+    fn drop(&mut self) {
+        if !self.committed {
+            // RwTxn drops automatically (aborts) when Option::take'd on drop
+            let _ = self.txn.take();
+        }
     }
 }

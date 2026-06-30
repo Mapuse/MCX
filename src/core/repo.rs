@@ -15,7 +15,7 @@ pub struct RepositoryManager {
 impl RepositoryManager {
     pub fn new<P: AsRef<Path>>(root: P) -> Self {
         Self {
-            config_file: root.as_ref().join("etc/mcx/repo.json"),
+            config_file: root.as_ref().join("etc/mcx/repo.ini"),
             sync_dir: root.as_ref().join("var/lib/mcx/sync"),
         }
     }
@@ -35,21 +35,77 @@ impl RepositoryManager {
             return Ok(Vec::new());
         }
         let content = fs::read_to_string(&self.config_file)
-            .with_context(|| format!("Failed to read repository registry configurations: {:?}", self.config_file))?;
-        let repos: Vec<RepositoryInfo> = serde_json::from_str(&content)
-            .context("Repository mapping definitions failed schema structural validation")?;
+            .with_context(|| format!("Failed to read repository registry: {:?}", self.config_file))?;
+        let repos = Self::parse_ini(&content)?;
         Ok(repos)
     }
 
+    fn parse_ini(content: &str) -> Result<Vec<RepositoryInfo>> {
+        let mut repos = Vec::new();
+        let mut current_name: Option<String> = None;
+        let mut current_url: Option<String> = None;
+        let mut current_checksum: Option<String> = None;
+
+        for line in content.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') || line.starts_with(';') {
+                continue;
+            }
+            if line.starts_with('[') && line.ends_with(']') {
+                // Save previous section
+                if let (Some(name), Some(url)) = (current_name.take(), current_url.take()) {
+                    repos.push(RepositoryInfo {
+                        name,
+                        url,
+                        checksum: current_checksum.take(),
+                    });
+                }
+                current_name = Some(line[1..line.len()-1].trim().to_string());
+                current_url = None;
+                current_checksum = None;
+                continue;
+            }
+            if let Some(eq_pos) = line.find('=') {
+                let key = line[..eq_pos].trim();
+                let value = line[eq_pos + 1..].trim().to_string();
+                match key {
+                    "url" => current_url = Some(value),
+                    "checksum" => current_checksum = Some(value),
+                    "enabled" | "priority" => {} // ignore metadata fields
+                    _ => {}
+                }
+            }
+        }
+
+        if let (Some(name), Some(url)) = (current_name, current_url) {
+            repos.push(RepositoryInfo { name, url, checksum: current_checksum });
+        }
+
+        Ok(repos)
+    }
+
+    fn format_ini(repos: &[RepositoryInfo]) -> String {
+        let mut output = String::new();
+        for repo in repos {
+            output.push_str(&format!("[{}]\n", repo.name));
+            output.push_str(&format!("url = {}\n", repo.url));
+            output.push_str("enabled = true\n");
+            output.push_str("priority = 100\n");
+            if let Some(ref checksum) = repo.checksum {
+                output.push_str(&format!("checksum = {}\n", checksum));
+            }
+            output.push('\n');
+        }
+        output
+    }
+
     pub fn save_repositories(&self, repos: &[RepositoryInfo]) -> Result<()> {
-        let serialized_payload = serde_json::to_string_pretty(repos)
-            .context("Failed to serialize repository tracking metadata blocks")?;
-        fs::write(&self.config_file, serialized_payload)
-            .with_context(|| format!("Failed to write repository layout configuration back to disk: {:?}", self.config_file))?;
+        let payload = Self::format_ini(repos);
+        fs::write(&self.config_file, payload)
+            .with_context(|| format!("Failed to write repo config: {:?}", self.config_file))?;
         Ok(())
     }
 
-    
     pub fn add_repository(&self, repo: RepositoryInfo) -> Result<()> {
         let mut repos = self.load_repositories()?;
         if repos.iter().any(|r| r.name == repo.name) {
@@ -59,7 +115,6 @@ impl RepositoryManager {
         self.save_repositories(&repos)
     }
 
-    
     pub fn remove_repository(&self, name: &str) -> Result<()> {
         let mut repos = self.load_repositories()?;
         let len_before = repos.len();
@@ -70,7 +125,6 @@ impl RepositoryManager {
         self.save_repositories(&repos)
     }
 
-    
     pub async fn sync_all_parallel(&self) -> Result<(usize, Vec<String>)> {
         let repos = self.load_repositories()?;
         if repos.is_empty() {
@@ -138,7 +192,6 @@ impl RepositoryManager {
         Ok((synced, errors))
     }
 
-    
     pub fn search_across_repos(&self, query: &str) -> Result<Vec<(String, PackageMetadata)>> {
         let mut results = Vec::new();
         if !self.sync_dir.exists() {
@@ -168,8 +221,6 @@ impl RepositoryManager {
         Ok(results)
     }
 
-    
-    
     pub fn resolve_across_repos(&self, pkg_name: &str) -> Result<Vec<PackageMetadata>> {
         let mut results = Vec::new();
         if !self.sync_dir.exists() {
@@ -204,9 +255,9 @@ impl RepositoryManager {
             return Err(anyhow!("Synchronized remote manifest index not found locally for: {}", repo_name));
         }
         let content = fs::read_to_string(&index_path)
-            .with_context(|| format!("Failed to read synchronized storage index file stream: {:?}", index_path))?;
+            .with_context(|| format!("Failed to read synchronized index: {:?}", index_path))?;
         let metadata: Vec<PackageMetadata> = serde_json::from_str(&content)
-            .context("Cached index stream data allocation matched an invalid metadata schema layout")?;
+            .context("Cached index data matched an invalid metadata schema")?;
         Ok(metadata)
     }
 }

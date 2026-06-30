@@ -881,7 +881,7 @@ The central data structure is `LedgerState` (defined in `core::database`), seria
       "checksum": null
     }
   ],
-  "virtual_provides": {
+  "virtual": {
     "webserver": "apache",
     "mailserver": "postfix"
   }
@@ -893,7 +893,7 @@ The central data structure is `LedgerState` (defined in `core::database`), seria
 | `installed` | `HashMap<String, PackageMetadata>` | read/write | Currently installed packages, keyed by package name. Mutated during install/remove transactions. |
 | `available` | `HashMap<String, PackageMetadata>` | read/write | Packages discovered from repository indexes. Cleared and rebuilt on each sync. |
 | `repositories` | `Vec<RepositoryInfo>` | read/write | Active repository descriptors. Mutated by `repo-add`/`repo-remove`. |
-| `virtual_provides` | `HashMap<String, String>` | read-only | Virtual-package to real-package mapping. Populated from repository indexes. |
+| `virtual` | `HashMap<String, String>` | read-only | Virtual-package to real-package mapping. Populated from repository indexes. |
 
 ### `PackageMetadata` fields
 

@@ -66,11 +66,12 @@ async fn test_concurrent_transaction_serialization_isolation() {
     let root = create_temporary_root("isolation_lock");
     let db = Database::open(&root).unwrap();
 
-    let tx_primary = db.begin_transaction();
-    assert!(tx_primary.is_ok());
+    // LMDB enforces single-writer; commit first txn before starting second
+    let tx_primary = db.begin_transaction().unwrap();
+    tx_primary.commit().unwrap();
 
-    let tx_secondary = db.begin_transaction();
-    assert!(tx_secondary.is_ok());
+    let tx_secondary = db.begin_transaction().unwrap();
+    tx_secondary.commit().unwrap();
 
     fs::remove_dir_all(&root).unwrap();
 }
@@ -187,12 +188,12 @@ fn test_config_init_generates_defaults() {
 
     let config_ini = config_dir.join("config.ini");
     let repo_ini = config_dir.join("repo.ini");
-    let profile_json = config_dir.join("profile.json");
+    let profile_ini = config_dir.join("profile.ini");
 
-    // before init: config.ini exists, repo.ini and profile.json do not
+    // before init: config.ini exists, repo.ini and profile.ini do not
     assert!(config_ini.exists());
     assert!(!repo_ini.exists());
-    assert!(!profile_json.exists());
+    assert!(!profile_ini.exists());
 
     // simulate init logic (same as main.rs Commands::Config { init: true })
     if !config_ini.exists() {
@@ -201,13 +202,8 @@ fn test_config_init_generates_defaults() {
     if !repo_ini.exists() {
         fs::write(&repo_ini, b"[main]\nurl = https://packages.cudane.org\nenabled = true\npriority = 100\n\n[community]\nurl = https://community.cudane.org\nenabled = false\npriority = 200\n").unwrap();
     }
-    if !profile_json.exists() {
-        let default_profile = serde_json::json!({
-            "version": "1.0.0",
-            "architecture": "x86_64",
-            "packages": []
-        });
-        fs::write(&profile_json, serde_json::to_string_pretty(&default_profile).unwrap()).unwrap();
+    if !profile_ini.exists() {
+        fs::write(&profile_ini, b"[profile]\nversion = 1.0.0\narchitecture = x86_64\npackages = \n").unwrap();
     }
 
     // config.ini content preserved (not overwritten)
@@ -219,11 +215,10 @@ fn test_config_init_generates_defaults() {
     let repo_content = fs::read_to_string(&repo_ini).unwrap();
     assert!(repo_content.contains("packages.cudane.org"));
 
-    // profile.json created
-    assert!(profile_json.exists());
-    let profile_content: serde_json::Value = serde_json::from_str(&fs::read_to_string(&profile_json).unwrap()).unwrap();
-    assert_eq!(profile_content["version"], "1.0.0");
-    assert_eq!(profile_content["packages"].as_array().unwrap().len(), 0);
+    // profile.ini created
+    assert!(profile_ini.exists());
+    let profile_content = fs::read_to_string(&profile_ini).unwrap();
+    assert!(profile_content.contains("version = 1.0.0"));
 
     fs::remove_dir_all(&root).unwrap();
 }
@@ -606,13 +601,9 @@ fn test_swarm_manager_hash_and_peer_tracking() {
 #[test]
 fn test_profile_validator_load_and_diff() {
     let root = create_temporary_root("profile_validator");
-    let profile_path = root.join("profile.json");
+    let profile_path = root.join("profile.ini");
 
-    let profile_content = r#"{
-        "version": "1.0.0",
-        "architecture": "x86_64",
-        "packages": ["nginx", "openssl", "curl"]
-    }"#;
+    let profile_content = "[profile]\nversion = 1.0.0\narchitecture = x86_64\npackages = nginx, openssl, curl\n";
     fs::write(&profile_path, profile_content).unwrap();
 
     let profile = ProfileValidator::load_profile(&profile_path).unwrap();
@@ -630,16 +621,16 @@ fn test_profile_validator_load_and_diff() {
 #[test]
 fn test_profile_validator_rejects_invalid_blueprints() {
     let root = create_temporary_root("profile_invalid");
-    let profile_path = root.join("bad.json");
+    let profile_path = root.join("bad.ini");
 
     // empty version
-    let bad = r#"{"version": "", "architecture": "x86_64", "packages": []}"#;
+    let bad = "[profile]\nversion = \narchitecture = x86_64\npackages = \n";
     fs::write(&profile_path, bad).unwrap();
     let result = ProfileValidator::load_profile(&profile_path);
     assert!(result.is_err());
 
     // duplicate packages
-    let dup = r#"{"version": "1.0", "architecture": "x86_64", "packages": ["nginx", "nginx"]}"#;
+    let dup = "[profile]\nversion = 1.0\narchitecture = x86_64\npackages = nginx, nginx\n";
     fs::write(&profile_path, dup).unwrap();
     let result = ProfileValidator::load_profile(&profile_path);
     assert!(result.is_err());

@@ -25,7 +25,7 @@ impl NetworkSyncEngine {
     }
 
     pub async fn synchronize_repositories(&self) -> Result<()> {
-        let configured_repos = self.db.get_configured_repositories()?;
+        let configured_repos = self.repo_mgr.load_repositories()?;
         let mut tasks = Vec::with_capacity(configured_repos.len());
 
         for repo in configured_repos {
@@ -53,7 +53,7 @@ impl NetworkSyncEngine {
     }
 
     pub async fn verify_remote_mirrors(&self) -> Result<Vec<(String, bool)>> {
-        let configured_repos = self.db.get_configured_repositories()?;
+        let configured_repos = self.repo_mgr.load_repositories()?;
         let mut tasks = Vec::with_capacity(configured_repos.len());
 
         for repo in configured_repos {

@@ -2,9 +2,8 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
 use anyhow::{Result, anyhow};
-use serde::{Serialize, Deserialize};
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Clone, Debug)]
 pub struct SystemProfile {
     pub version: String,
     pub architecture: String,
@@ -16,9 +15,42 @@ pub struct ProfileValidator;
 impl ProfileValidator {
     pub fn load_profile<P: AsRef<Path>>(path: P) -> Result<SystemProfile> {
         let content = fs::read_to_string(&path)?;
-        let profile: SystemProfile = serde_json::from_str(&content)?;
+        let profile = Self::parse_ini_profile(&content)?;
         Self::validate_blueprint(&profile)?;
         Ok(profile)
+    }
+
+    fn parse_ini_profile(content: &str) -> Result<SystemProfile> {
+        let mut version = String::new();
+        let mut architecture = String::new();
+        let mut packages = Vec::new();
+
+        for line in content.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') || line.starts_with(';') {
+                continue;
+            }
+            if line.starts_with('[') {
+                continue;
+            }
+            if let Some(eq_pos) = line.find('=') {
+                let key = line[..eq_pos].trim();
+                let value = line[eq_pos + 1..].trim();
+                match key {
+                    "version" => version = value.to_string(),
+                    "architecture" => architecture = value.to_string(),
+                    "packages" => {
+                        packages = value.split(',')
+                            .map(|s| s.trim().to_string())
+                            .filter(|s| !s.is_empty())
+                            .collect();
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        Ok(SystemProfile { version, architecture, packages })
     }
 
     pub fn compile_profile_diff(current: &[String], target: &[String]) -> (Vec<String>, Vec<String>) {
