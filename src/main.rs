@@ -78,7 +78,10 @@ pub enum Commands {
     FixDeps,
 
     #[command(short_flag = 'C', long_flag = "config", aliases = ["cfg", "settings"])]
-    Config,
+    Config {
+        #[arg(long, help = "Generate default config.ini, repo.ini, and profile.json")]
+        init: bool,
+    },
 
     #[command(short_flag = 'H', long_flag = "history", aliases = ["log", "record"])]
     History {
@@ -642,7 +645,53 @@ async fn main() {
                 UserInterface::success("All packages intact. No repair needed.");
             }
         }
-        Commands::Config => UserInterface::success("Configuration saved."),
+        Commands::Config { init } => {
+            if init {
+                let config_dir = root_path.join("etc/mcx");
+                fs::create_dir_all(&config_dir).unwrap_or_else(|e| {
+                    UserInterface::error(&format!("Failed to create config dir: {e}"));
+                    process::exit(1);
+                });
+
+                let config_ini = config_dir.join("config.ini");
+                if !config_ini.exists() {
+                    fs::write(&config_ini, b"[engine]\nthread_pool_mode = auto\nmax_concurrent_downloads = 8\nzstd_level = 3\n\n[network]\nfallback_repos = enabled\nlatency_threshold_ms = 200\nbandwidth_threshold_kbps = 5000\n\n[security]\nverify_checksums = true\nallow_unverified = false\n\n[cache]\nlimit_bytes = 5368709120\nprune_age_hours = 168\n").unwrap_or_else(|e| {
+                        UserInterface::error(&format!("Failed to write config.ini: {e}"));
+                        process::exit(1);
+                    });
+                }
+
+                let repo_ini = config_dir.join("repo.ini");
+                if !repo_ini.exists() {
+                    fs::write(&repo_ini, b"[main]\nurl = https://packages.cudane.org\nenabled = true\npriority = 100\n\n[community]\nurl = https://community.cudane.org\nenabled = false\npriority = 200\n").unwrap_or_else(|e| {
+                        UserInterface::error(&format!("Failed to write repo.ini: {e}"));
+                        process::exit(1);
+                    });
+                }
+
+                let profile_json = config_dir.join("profile.json");
+                if !profile_json.exists() {
+                    let default_profile = serde_json::json!({
+                        "version": "1.0.0",
+                        "architecture": "x86_64",
+                        "packages": []
+                    });
+                    fs::write(&profile_json, serde_json::to_string_pretty(&default_profile).unwrap()).unwrap_or_else(|e| {
+                        UserInterface::error(&format!("Failed to write profile.json: {e}"));
+                        process::exit(1);
+                    });
+                }
+
+                UserInterface::success("Core configuration files generated.");
+                UserInterface::render_list("Generated", &[
+                    config_ini.to_string_lossy().to_string(),
+                    repo_ini.to_string_lossy().to_string(),
+                    profile_json.to_string_lossy().to_string(),
+                ]);
+            } else {
+                UserInterface::success("Configuration saved.");
+            }
+        }
 
         Commands::History { rollback, prune, current_gen } => {
             let rollback_mgr = crate::core::rollback::RollbackManager::new(&root_path);

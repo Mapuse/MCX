@@ -28,53 +28,53 @@
 
 <details><summary id="contents">Contents</summary>
 
-- [[Commands]](#commands)
-- [[Architecture]](#architecture)
-  - [[Module dependency graph]](#module-dependency-graph)
-  - [[Module inventory]](#module-inventory)
-  - [[Trait contracts — core domain]](#trait-contracts--core-domain)
-  - [[Execution flow — phases]](#execution-flow--phases)
-  - [[Auto-calibration]](#auto-calibration)
-- [[Code structure]](#code-structure)
-  - [[Module relationships]](#module-relationships)
-  - [[Entry points]](#entry-points)
-  - [[commands/ — CLI-level behaviour]](#commands--cli-level-behaviour)
-  - [[core/ — Domain logic]](#core--domain-logic)
-  - [[network/ — Remote operations]](#network--remote-operations)
-  - [[archive/ — Artifact primitives]](#archive--artifact-primitives)
-  - [[utils/ — Shared utilities]](#utils--shared-utilities)
-- [[Data & persistence]](#data--persistence)
-  - [[Ledger state — JSON schema]](#ledger-state--json-schema)
-  - [[On-disk layout]](#on-disk-layout)
-  - [[INI-based configuration]](#ini-based-configuration)
-  - [[Package format]](#package-format)
-  - [[Staging and commit model]](#staging-and-commit-model)
-  - [[Transaction log format]](#transaction-log-format)
-- [[Feature subsystems]](#feature-subsystems)
-  - [[Atomic package rollback]](#atomic-package-rollback)
-  - [[Content-addressable library store]](#content-addressable-library-store)
-  - [[Delta upgrades]](#delta-upgrades)
-  - [[Process snapshot / checkpoint]](#process-snapshot--checkpoint)
-  - [[P2P swarm distribution]](#p2p-swarm-distribution)
-  - [[Streaming mounts]](#streaming-mounts)
-  - [[Isolated overlayfs]](#isolated-overlayfs)
-  - [[Resource control via cgroups]](#resource-control-via-cgroups)
-  - [[Self-update]](#self-update)
-  - [[Workspace management]](#workspace-management)
-  - [[Vendor (offline mirror)]](#vendor-offline-mirror)
-  - [[Completion engine]](#completion-engine)
-- [[Development]](#development)
-  - [[Building]](#building)
-  - [[Testing]](#testing)
-  - [[Linting and static analysis]](#linting-and-static-analysis)
-  - [[Auditing]](#auditing)
-  - [[Debugging]](#debugging)
-  - [[Profiling]](#profiling)
-  - [[Continuous integration]](#continuous-integration)
-- [[Plugin authoring & linking]](#plugin-authoring--linking)
-- [[Configuration guide]](#configuration-guide)
-- [[Credits]](#credits)
-- [[License]](#license)
+- [Commands]
+- [Architecture]
+  - [Module dependency graph]
+  - [Module inventory]
+  - [Trait contracts]
+  - [Execution flow]
+  - [Auto-calibration]
+- [Code structure]
+  - [Modules]
+  - [Entry points]
+  - [commands/ — CLI-level behaviour]
+  - [core/ — Domain logic]
+  - [network/ — Remote operations]
+  - [archive/ — Artifact primitives]
+  - [utils/ — Shared utilities]
+- [Data & persistence]
+  - [Ledger state — JSON schema]
+  - [On-disk layout]
+  - [INI-based configuration]
+  - [Package format]
+  - [Staging and commit model]
+  - [Transaction log format]
+- [Feature subsystems]
+  - [Atomic package rollback]
+  - [Content-addressable library store]
+  - [Delta upgrades]
+  - [Process snapshot / checkpoint]
+  - [P2P swarm distribution]
+  - [Streaming mounts]
+  - [Isolated overlayfs]
+  - [Resource control via cgroups]
+  - [Self-update]
+  - [Workspace management]
+  - [Vendor (offline mirror)]
+  - [Completion engine]
+- [Development]
+  - [Building]
+  - [Testing]
+  - [Linting]
+  - [Auditing]
+  - [Debugging]
+  - [Profiling]
+  - [Continuous integration]
+- [Plugin authoring & linking]
+- [Configuration guide]
+- [Credits]
+- [License]
 
 </details>
 
@@ -98,7 +98,7 @@ CLI parsing is handled by `clap` derive macros in `src/main.rs`. The `Cli` struc
 | `-c` | `--clean` | `wipe`, `clear` | `CleanCommand` | `commands::clean` |
 | `-V` | `--verify` | `check`, `certify` | inline in `main.rs` | — |
 | `-f` | `--fix` | `fix-deps`, `repair` | inline in `main.rs` | — |
-| `-C` | `--config` | `cfg`, `settings` | `ConfigEditorCommand` | `commands::configuration` |
+| `-C` | `--config` | `cfg`, `settings` | `ConfigEditorCommand` + `--init` | `commands::configuration` / inline in `main.rs` |
 | `-H` | `--history` | `log`, `record` | inline in `main.rs` | — |
 | `-b` | `--build` | `make`, `create` | `SystemCommand` | `commands::system` |
 
@@ -260,11 +260,29 @@ If nothing is broken, reports "All packages intact. No repair needed."
 ```
 mcx -C
 mcx --config
+mcx -C --init
+mcx --config --init
 ```
 
-Opens the full-screen TUI editor (`ConfigEditorCommand` in `commands::configuration.rs`). The editor targets `etc/mcx/config.ini`.
+Opens the full-screen TUI editor (`ConfigEditorCommand` in `commands::configuration.rs`) when invoked with no sub-flag. The editor targets `etc/mcx/config.ini`.
 
-Key bindings:
+With `--init`, generates default configuration files without opening the editor:
+
+```
+mcx -C --init
+```
+
+Creates the following files under `<root>/etc/mcx/`:
+
+| File | Content |
+| ---- | ------- |
+| `config.ini` | Engine parameters (thread pool, network, security, cache) |
+| `repo.ini` | Repository definitions (main + community) |
+| `profile.json` | Declarative package profile (empty, versioned) |
+
+Existing files are **not** overwritten — only missing files are created. This is useful when bootstrapping a new root or restoring defaults after a wipe.
+
+Key bindings (editor mode):
 
 | Key | Action |
 | --- | ------ |
@@ -641,7 +659,7 @@ Entries in `repo.ini` are read at startup via zero-copy `MappedConfig`. The JSON
 | `utils` | `src/utils/` | Shared infrastructure — terminal output. | `UserInterface` |
 | `main` / `lib` | `src/main.rs`, `src/lib.rs` | Entry point, CLI parsing, public re-exports. | `Cli`, `Commands`, `EngineContext` |
 
-## Trait contracts — core domain
+## Trait contracts
 
 | Trait | Module | Method | Signature |
 | ----- | ------ | ------ | --------- |
@@ -739,7 +757,7 @@ Entries in `repo.ini` are read at startup via zero-copy `MappedConfig`. The JSON
 
 <details><summary id="code-structure">Code structure</summary>
 
-## Module relationships
+## Modules
 
 ```
   main.rs ────→ lib.rs ────→ commands ────→ core ────→ network
@@ -1716,7 +1734,7 @@ cargo test --release --all-features
 
 Integration tests are located in `tests/integration.rs`. They exercise full command pipelines against a temporary directory root, verifying ledger state transitions, file system layout, and error paths.
 
-## Linting and static analysis
+## Linting
 
 ```shell
 # Clippy (lint checks)

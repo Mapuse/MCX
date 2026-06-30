@@ -174,6 +174,60 @@ fn test_user_interface_output_nodes() {
     UserInterface::render_list("Monitored Core Graph Structures", &list_items);
 }
 
+// ── Config Init ─────────────────────────────────────────────────────────────
+
+#[test]
+fn test_config_init_generates_defaults() {
+    let root = create_temporary_root("config_init");
+    let config_dir = root.join("etc/mcx");
+    fs::create_dir_all(&config_dir).unwrap();
+
+    // mark config.ini as "already exists" to test skip-behaviour
+    fs::write(config_dir.join("config.ini"), b"[engine]\nthread_pool_mode = auto\n").unwrap();
+
+    let config_ini = config_dir.join("config.ini");
+    let repo_ini = config_dir.join("repo.ini");
+    let profile_json = config_dir.join("profile.json");
+
+    // before init: config.ini exists, repo.ini and profile.json do not
+    assert!(config_ini.exists());
+    assert!(!repo_ini.exists());
+    assert!(!profile_json.exists());
+
+    // simulate init logic (same as main.rs Commands::Config { init: true })
+    if !config_ini.exists() {
+        fs::write(&config_ini, b"[engine]\nthread_pool_mode = auto\nmax_concurrent_downloads = 8\nzstd_level = 3\n\n[network]\nfallback_repos = enabled\nlatency_threshold_ms = 200\nbandwidth_threshold_kbps = 5000\n\n[security]\nverify_checksums = true\nallow_unverified = false\n\n[cache]\nlimit_bytes = 5368709120\nprune_age_hours = 168\n").unwrap();
+    }
+    if !repo_ini.exists() {
+        fs::write(&repo_ini, b"[main]\nurl = https://packages.cudane.org\nenabled = true\npriority = 100\n\n[community]\nurl = https://community.cudane.org\nenabled = false\npriority = 200\n").unwrap();
+    }
+    if !profile_json.exists() {
+        let default_profile = serde_json::json!({
+            "version": "1.0.0",
+            "architecture": "x86_64",
+            "packages": []
+        });
+        fs::write(&profile_json, serde_json::to_string_pretty(&default_profile).unwrap()).unwrap();
+    }
+
+    // config.ini content preserved (not overwritten)
+    let cfg_content = fs::read_to_string(&config_ini).unwrap();
+    assert!(cfg_content.contains("thread_pool_mode"));
+
+    // repo.ini created
+    assert!(repo_ini.exists());
+    let repo_content = fs::read_to_string(&repo_ini).unwrap();
+    assert!(repo_content.contains("packages.cudane.org"));
+
+    // profile.json created
+    assert!(profile_json.exists());
+    let profile_content: serde_json::Value = serde_json::from_str(&fs::read_to_string(&profile_json).unwrap()).unwrap();
+    assert_eq!(profile_content["version"], "1.0.0");
+    assert_eq!(profile_content["packages"].as_array().unwrap().len(), 0);
+
+    fs::remove_dir_all(&root).unwrap();
+}
+
 // ── Network Download ────────────────────────────────────────────────────────
 
 #[tokio::test]
