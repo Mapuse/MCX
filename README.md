@@ -731,9 +731,9 @@ Entries in `repo.ini` are read at startup via zero-copy `MappedConfig`. The JSON
      d. Record in PackageTransaction
   3. DbTransaction::commit() → flush JSON, swap Mutex
 
-  ╔═════════════════════╗
-  ║  VERIFY / CLEANUP   ║
-  ╚═════════════════════╝
+  ╔════════════════════╗
+  ║  VERIFY / CLEANUP  ║
+  ╚════════════════════╝
   - ContentValidator::validate(manifest, root) → Result
   - CacheManager::prune() — evict old .xcs files
   - AutoHealer::diagnose() — check for common misconfigurations
