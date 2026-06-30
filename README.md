@@ -89,7 +89,7 @@ CLI parsing is handled by `clap` derive macros in `src/main.rs`. The `Cli` struc
 | Short | Long | Aliases | Struct | Module |
 | ----- | ---- | ------- | ------ | ------ |
 | `-i` | `--install` | `in`, `add` | `InstallCommand` | `commands::install` |
-| `-a` | `--add-local` | `local`, `package`, `xcs` | `AddLocalCommand` | `commands::add` |
+| `-a` | `--add` | `local`, `package`, `xcs` | `AddLocalCommand` | `commands::add` |
 | `-r` | `--remove` | `rm`, `uninstall`, `delete` | `RemoveCommand` | `commands::remove` |
 | `-s` | `--search` | `find`, `look` | `SearchCommand` | `commands::search` |
 | `-u` | `--update` | `refresh`, `sync` | `SyncCommand` / `InstallCommand` | `commands::sync` / `commands::install` |
@@ -117,11 +117,11 @@ Resolves the dependency graph for the target packages via `DependencySolver`, do
 | `packages` | `Vec<String>` positional | yes | Package names to install |
 | `--root` | global `-PATH-` | no | MCX root (default `/`) |
 
-### `-a` / `--add-local`
+### `-a` / `--add`
 
 ```
 mcx -a <file.xcs>
-mcx --add-local <file.xcs>
+mcx --add <file.xcs>
 mcx local <file.xcs>
 ```
 
