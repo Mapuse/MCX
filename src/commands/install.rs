@@ -1,24 +1,46 @@
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use anyhow::{Result, anyhow};
 use futures::future::join_all;
 use crate::core::solver::DependencySolver;
 use crate::core::db::Database;
 use crate::core::profiler::SystemProfile;
-use crate::network::download::Downloader;
+use crate::core::cgroup::CgroupController;
+use crate::core::overlay::OverlayManager;
+use crate::core::declarative::ProfileValidator;
+use crate::core::security::SecurityMonitor;
+use crate::network::pipeline::DownloadPipeline;
 use crate::archive::extract::Extractor;
 use crate::archive::hash::HashVerifier;
+use crate::utils::ui::UserInterface;
 
 pub struct InstallCommand {
     root: String,
     db: Arc<Database>,
+    cgroup_mgr: CgroupController,
+    overlay_mgr: OverlayManager,
+    security_mon: Option<Arc<SecurityMonitor>>,
+    profile_path: Option<PathBuf>,
 }
 
 impl InstallCommand {
     pub fn new(root: String, db: Arc<Database>) -> Self {
-        Self { root, db }
+        let overlay_base = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+        Self {
+            root,
+            db,
+            cgroup_mgr: CgroupController::new(),
+            overlay_mgr: OverlayManager::new(Path::new(&overlay_base)),
+            security_mon: None,
+            profile_path: None,
+        }
     }
+
+    pub fn with_cgroup(mut self, mgr: CgroupController) -> Self { self.cgroup_mgr = mgr; self }
+    pub fn with_overlay(mut self, mgr: OverlayManager) -> Self { self.overlay_mgr = mgr; self }
+    pub fn with_security(mut self, mon: Arc<SecurityMonitor>) -> Self { self.security_mon = Some(mon); self }
+    pub fn with_profile(mut self, path: PathBuf) -> Self { self.profile_path = Some(path); self }
 
     pub async fn execute(&self, packages: &[String]) -> Result<()> {
         if packages.is_empty() {
@@ -36,7 +58,8 @@ impl InstallCommand {
         let cache_dir = root_path.join("var/cache/mcx");
         fs::create_dir_all(&cache_dir)?;
 
-        let downloader = Downloader::new();
+        let pipeline = DownloadPipeline::new(None);
+        let downloader = pipeline;
 
         let mut pending: Vec<(crate::core::database::PackageMetadata, std::path::PathBuf)> = Vec::new();
 
@@ -55,8 +78,10 @@ impl InstallCommand {
                 let dl = downloader.clone();
                 let url = meta.source.clone();
                 let dest = target_path.clone();
+                let pkg = meta.pkg_name.clone();
+                let ver = meta.version.clone();
                 join_all(vec![tokio::spawn(async move {
-                    dl.download_package(&url, &dest).await
+                    dl.fetch(&url, &pkg, &ver, &dest).await
                 })]).await;
             }
         }
@@ -161,6 +186,51 @@ impl InstallCommand {
             }
         }
 
+        // sandbox setup for each installed package
+        for (meta, _) in &pending {
+            // cgroup: enforce resource limits (best-effort, may fail without root)
+            let _ = self.cgroup_mgr.enforce_resource_limits(&meta.pkg_name, 512, 80);
+
+            // overlay: create sandbox directory structure and mount script
+            if let Ok(merged) = self.overlay_mgr.create_isolated_overlay(
+                &meta.pkg_name,
+                root_path,
+            ) {
+                UserInterface::sandbox(&format!("Overlay sandbox for {} at {}", meta.pkg_name, merged.display()));
+                UserInterface::sandbox(&format!("Activate: sudo {}", self.overlay_mgr.overlays_base
+                    .join(sanitize(&meta.pkg_name))
+                    .join("mount-overlay.sh").display()));
+            }
+
+            // security monitor: register package
+            if let Some(ref mon) = self.security_mon {
+                mon.register_package(&meta.pkg_name);
+            }
+        }
+
+        // profile validation: detect drift between declared and actual state
+        if let Some(ref profile_path) = self.profile_path {
+            if profile_path.exists() {
+                match ProfileValidator::load_profile(profile_path) {
+                    Ok(profile) => {
+                        let current: Vec<String> = self.db.get_all_installed_packages()
+                            .unwrap_or_default()
+                            .iter()
+                            .map(|p| p.pkg_name.clone())
+                            .collect();
+                        let (to_install, to_remove) = ProfileValidator::compile_profile_diff(&current, &profile.packages);
+                        if !to_install.is_empty() || !to_remove.is_empty() {
+                            UserInterface::profile(&format!("Drift: {} to install, {} to remove",
+                                to_install.len(), to_remove.len()));
+                        }
+                    }
+                    Err(e) => {
+                        UserInterface::warning(&format!("Profile validation skipped: {}", e));
+                    }
+                }
+            }
+        }
+
         let mut transaction = self.db.begin_transaction()?;
         for (meta, _) in &pending {
             transaction.register_package_placement(meta)?;
@@ -169,4 +239,8 @@ impl InstallCommand {
 
         Ok(())
     }
+}
+
+fn sanitize(name: &str) -> String {
+    name.chars().map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' }).collect()
 }

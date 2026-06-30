@@ -4,6 +4,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use anyhow::{Result, Context, anyhow};
 use crate::core::db::Database;
+use crate::core::cgroup::CgroupController;
+use crate::core::overlay::OverlayManager;
+use crate::core::security::SecurityMonitor;
 
 pub struct RemoveCommand {
     root: PathBuf,
@@ -15,7 +18,7 @@ impl RemoveCommand {
         Self { root: PathBuf::from(root), db }
     }
 
-    pub fn execute(&self, packages: &[String]) -> Result<()> {
+    pub fn execute(&self, packages: &[String], cgroup_mgr: &CgroupController, overlay_mgr: &OverlayManager, security_mon: &SecurityMonitor) -> Result<()> {
         if packages.is_empty() {
             return Err(anyhow!("No target packages specified for removal transaction"));
         }
@@ -79,6 +82,13 @@ impl RemoveCommand {
 
         self.scour_system_residue(&all_targets)?;
         self.cleanup_dangling_symlinks(&self.root)?;
+
+        // sandbox cleanup for removed packages
+        for pkg in &all_targets {
+            let _ = cgroup_mgr.remove_resource_limits(pkg);
+            let _ = overlay_mgr.remove_isolated_overlay(pkg);
+            security_mon.unregister_package(pkg);
+        }
 
         transaction.commit()?;
         Ok(())

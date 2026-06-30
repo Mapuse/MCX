@@ -5,6 +5,7 @@ use futures_util::future::join_all;
 use crate::core::database::{PackageMetadata, RepositoryInfo};
 use crate::network::download::Downloader;
 use crate::archive::hash::HashVerifier;
+use crate::utils::ui::UserInterface;
 
 pub struct RepositoryManager {
     config_file: PathBuf,
@@ -127,7 +128,7 @@ impl RepositoryManager {
             match result {
                 Ok(Ok(name)) => {
                     synced += 1;
-                    println!("  Synced: {}", name);
+                    UserInterface::download(&format!("Repo synced: {}", name));
                 }
                 Ok(Err(e)) => errors.push(format!("{}", e)),
                 Err(e) => errors.push(format!("Join error: {}", e)),

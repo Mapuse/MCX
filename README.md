@@ -364,6 +364,10 @@ The blueprint is a JSON file describing the target system state. `mcx -b <path>`
 
 If validation fails, `mcx -b` exits with an error before any packages are touched.
 
+#### Automatic profile drift detection
+
+After every `install` and `remove` operation, if `etc/mcx/profile.json` exists, MCX automatically computes `compile_profile_diff()` between the declared profile and the current installed state. If drift is detected (packages to install or remove), a message is printed with the counts. This runs in the background without blocking the operation.
+
 ## Platform commands
 
 | Command (long flag) | Aliases | Struct | Module |
@@ -501,11 +505,75 @@ mcx rl
 
 Enumerates all configured repositories from `etc/mcx/repo.json` in `name -> url` format.
 
+## Repository management guide
+
+A repository is a remote source of package metadata and `.xcs` archives. MCX supports multiple named repositories.
+
+### Adding a repository
+
+```shell
+mcx --repo-add <name> <url>
+```
+
+Example:
+
+```shell
+mcx --repo-add cudane https://packages.cudane.org
+```
+
+This writes an entry to `etc/mcx/repo.json`:
+
+```json
+{
+  "cudane": "https://packages.cudane.org"
+}
+```
+
+### Removing a repository
+
+```shell
+mcx --repo-remove <name>
+```
+
+### Listing repositories
+
+```shell
+mcx --repo-list
+```
+
+Output:
+
+```
+  ┌── Configured repositories ─────────────────────────
+  ├─ cudane -> https://packages.cudane.org
+  └─ local   -> https://mirror.internal/mcx
+```
+
+### Resolution order
+
+When installing a package, each configured repository is queried in the order they appear in `repo.json`. The first repository that provides the package is used. If all repositories fail, the download pipeline falls through to swarm P2P and finally `git clone`.
+
+### Configuring without CLI
+
+Edit `etc/mcx/repo.ini` directly:
+
+```ini
+[main]
+url = https://packages.cudane.org
+enabled = true
+
+[local]
+url = https://mirror.internal/mcx
+enabled = true
+```
+
+Entries in `repo.ini` are read at startup via zero-copy `MappedConfig`. The JSON registry (`repo.json`) is managed exclusively through CLI commands.
+
 ## Global flags
 
 | Flag | Type | Default | Description |
 | ---- | ---- | ------- | ----------- |
-| `--root` | `PathBuf` | `/` | MCX root directory. All state paths (`etc/mcx/`, `var/lib/mcx/`, `var/cache/mcx/`, etc.) are resolved relative to this path. |
+| `--root` | `PathBuf` | `/` (root) or `~/.mcx/` (non-root) | MCX root directory. All state paths (`etc/mcx/`, `var/lib/mcx/`, `var/cache/mcx/`, etc.) are resolved relative to this path. Auto-detected at startup. |
 
 </details>
 
@@ -541,8 +609,9 @@ Enumerates all configured repositories from `etc/mcx/repo.json` in `name -> url`
                        │  ├─ swarm.rs     │  P2P hash registry
                        │  ├─ stream.rs    │  Squashfuse mount scripts
                        │  ├─ overlay.rs   │  Overlayfs per-package isolation
-                       │  ├─ cgroup.rs    │  cgroup v2 resource control
-                       │  ├─ rollback.rs  │  Generation-based atomic rollback
+                        │  ├─ cgroup.rs    │  cgroup v2 resource control
+                        │  ├─ security.rs  │  SecurityMonitor, PluginSlot runtime isolation
+                        │  ├─ rollback.rs  │  Generation-based atomic rollback
                        │  ├─ update.rs    │  Self-update binary replacement
                        │  ├─ vendor.rs    │  Offline package mirroring
                        │  ├─ completion.rs│  Shell completion generation
@@ -553,9 +622,10 @@ Enumerates all configured repositories from `etc/mcx/repo.json` in `name -> url`
            ┌────────────────────┼────────────────────┐
            ▼                    ▼                    ▼
  ┌──────────────────┐  ┌──────────────────┐  ┌──────────────────┐
- │  src/network/    │  │  src/archive/    │  │  src/utils/      │
- │  download.rs     │  │  extract.rs      │  │  ui.rs           │
- │  sync.rs         │  │  hash.rs         │  │  UserInterface   │
+  │  src/network/    │  │  src/archive/    │  │  src/utils/      │
+  │  download.rs     │  │  extract.rs      │  │  ui.rs           │
+  │  pipeline.rs     │  │  hash.rs         │  │  UserInterface   │
+  │  sync.rs         │  │  verify.rs       │  └──────────────────┘
  │  reqwest+rustls  │  │  verify.rs       │  └──────────────────┘
  └──────────────────┘  └──────────────────┘
 ```
@@ -565,8 +635,8 @@ Enumerates all configured repositories from `etc/mcx/repo.json` in `name -> url`
 | Module | Path | Responsibility | Public surface |
 | ------ | ---- | -------------- | -------------- |
 | `commands` | `src/commands/` | CLI command implementations — one file per command group. Each command struct implements `execute()` taking `EngineContext`. | `InstallCommand`, `RemoveCommand`, `SyncCommand`, `SearchCommand`, `AddLocalCommand`, `CleanCommand`, `ConfigEditorCommand`, `SystemCommand` |
-| `core` | `src/core/` | Domain logic — persistence, solver, lifecycle, plugins, profiling, configuration, repositories, history, delta engine, changelog, completion, declarative validation, privilege escalation, self-update, vendor mirroring, workspace management, content-addressable store, process snapshots, P2P swarm, streaming mounts, overlayfs isolation, cgroup control, generation-based rollback. | Config types, `Database`, `DependencySolver`, `LifecycleEngine`, `PluginRegistry`, `SystemProfile`, `HistoryEngine`, `RepositoryManager`, `CacheManager`, `DeltaEngine`, `PackageEntity`, `SelfUpdateManager`, `VendorManager`, `WorkspaceManager`, `ProfileValidator`, `CompletionEngine`, `SnapshotManager`, `SwarmManager`, `StreamManager`, `OverlayManager`, `CgroupController`, `RollbackManager`, `CasManager` |
-| `network` | `src/network/` | Remote data operations — HTTP download via `reqwest` + `rustls-tls`, parallel index sync. | `Downloader`, `NetworkSyncEngine` |
+| `core` | `src/core/` | Domain logic — persistence, solver, lifecycle, plugins, profiling, configuration, repositories, history, delta engine, changelog, completion, declarative validation, self-update, vendor mirroring, workspace management, content-addressable store, process snapshots, P2P swarm, streaming mounts, overlayfs isolation, cgroup control, generation-based rollback, security monitor, runtime isolation. | Config types, `Database`, `DependencySolver`, `LifecycleEngine`, `PluginRegistry`, `SystemProfile`, `HistoryEngine`, `RepositoryManager`, `CacheManager`, `DeltaEngine`, `PackageEntity`, `SelfUpdateManager`, `VendorManager`, `WorkspaceManager`, `ProfileValidator`, `CompletionEngine`, `SnapshotManager`, `SwarmManager`, `StreamManager`, `OverlayManager`, `CgroupController`, `RollbackManager`, `CasManager`, `SecurityMonitor` |
+| `network` | `src/network/` | Remote data operations — HTTP download via `reqwest` + `rustls-tls`, parallel index sync, download pipeline with HTTPS/P2P/git fallback. | `Downloader`, `DownloadPipeline`, `NetworkSyncEngine` |
 | `archive` | `src/archive/` | Artifact format handling — `.xcs` extraction, SHA-256 hashing, content verification. | `Extractor`, `HashVerifier`, `ContentValidator` |
 | `utils` | `src/utils/` | Shared infrastructure — terminal output. | `UserInterface` |
 | `main` / `lib` | `src/main.rs`, `src/lib.rs` | Entry point, CLI parsing, public re-exports. | `Cli`, `Commands`, `EngineContext` |
@@ -728,7 +798,7 @@ Every command struct implements `pub fn execute(&self, engine: &EngineContext) -
 | `package.rs` | `PackageEntity` | Unified package representation across all stages. | — |
 | `plugin.rs` | `PluginRegistry`, `PluginSlot<T>`, `Fetcher`, `Builder`, `Packer`, `CurlFetcher`, `DefaultBuilder`, `ZstdPacker` | Lock-free plugin hot-swap via `RwLock<Arc<T>>`. | — |
 | `profiler.rs` | `SystemProfile`, `DecisionEngine`, `AutoHealer`, `NetworkProber` | Host profiling, heuristic decisions, network latency probing. | — |
-| `sudo.rs` | — | Privilege escalation (stub). | — |
+| `sudo.rs` | — | (removed — replaced by `elevate_for()` in `main.rs`) | — |
 | `update.rs` | `SelfUpdateManager` | GitHub Releases check + binary self-replace. | `network::download` |
 | `vendor.rs` | `VendorManager` | Offline mirror: recursive download + caching. | `network::download` |
 | `workspace.rs` | `WorkspaceManager` | Multi-package workspace orchestration. | `solver.rs` |
@@ -752,7 +822,7 @@ Every command struct implements `pub fn execute(&self, engine: &EngineContext) -
 
 | File | Struct | Role | Public methods |
 | ---- | ------ | ---- | -------------- |
-| `ui.rs` | `UserInterface` | Terminal output with colour prefixes and structured formatting. | `display_info()`, `display_success()`, `display_error()`, `render_key_values()`, `render_list()` |
+| `ui.rs` | `UserInterface` | Terminal output with colour prefixes and structured formatting. | `info()`, `success()`, `error()`, `render_key_values()`, `render_list()` |
 
 </details>
 
@@ -1061,6 +1131,20 @@ Peer-to-peer package distribution using IPFS/IPLD content hashes:
 | `list_swarm_peers` | `core::swarm` | `() -> Result<Vec<SwarmPeer>>` |
 | `remove_swarm_entry` | `core::swarm` | `(pkg: &str) -> Result<()>` |
 
+## Download pipeline
+
+`DownloadPipeline` (in `network::pipeline.rs`) provides a three-stage fallback chain for every package download:
+
+1. **HTTPS (primary)** — `Downloader::download_package()` via `reqwest` with chunked parallel download for files > 5 MB.
+2. **Swarm P2P (fallback)** — on HTTPS failure, queries `SwarmManager` for the package content hash, finds peers advertising it, and downloads from a peer via HTTP.
+3. **Git clone (last resort)** — if both HTTPS and P2P fail, converts the URL to a repo URL and runs `git clone --depth 1`.
+
+Wired into `InstallCommand` as the download backend. Created with optional `SwarmManager`; when `None`, P2P stage is skipped silently.
+
+| Function | Module | Signature |
+| -------- | ------ | --------- |
+| `fetch` | `network::pipeline` | `(url: &str, pkg: &str, ver: &str, dest: &Path) -> Result<()>` |
+
 ## Streaming mounts
 
 `generate_stream_mount_script(pkg, version, url)` writes an executable shell script to `var/lib/mcx/stream/<pkg>.sh`:
@@ -1113,14 +1197,30 @@ Implementation writes to `/sys/fs/cgroup/mcx/<pkg>/`:
 
 Package names are sanitised (non-alphanumeric → `_`) for cgroup path safety.
 
-## Self-update
+## Security monitor
 
-`SelfUpdateManager` (in `core::update.rs`) checks GitHub Releases for a newer binary, downloads it, verifies the checksum, and replaces the running executable:
+`SecurityMonitor` (in `core::security.rs`) tracks all active packages and provides runtime isolation via lock-free `PluginSlot<T>`:
 
 | Function | Module | Signature |
 | -------- | ------ | --------- |
-| `SelfUpdateManager::check` | `core::update` | `(&self) -> Result<Option<Release>>` |
-| `SelfUpdateManager::update` | `core::update` | `(&self, release: &Release) -> Result<()>` |
+| `register_package` | `core::security` | `(pkg: &str)` |
+| `unregister_package` | `core::security` | `(pkg: &str)` |
+| `isolate_package` | `core::security` | `(pkg: &str) -> Result<()>` |
+| `is_package_isolated` | `core::security` | `(pkg: &str) -> bool` |
+| `swap_isolation_policy` | `core::security` | `(policy: Arc<dyn Fn(&str) -> bool>) -> Arc<dyn Fn(&str) -> bool>` |
+| `active_count` | `core::security` | `() -> usize` |
+
+Auto-registers every package on `install`, auto-unregisters on `remove`. The isolation policy can be hot-swapped at runtime — when a package is flagged, `isolate_package()` marks it for containment.
+
+## Self-update
+
+`SelfUpdateManager::build_from_source()` clones `https://codeberg.org/Cudane/MCX` into a temp directory, runs `cargo build --release --target x86_64-unknown-linux-musl`, verifies the built binary is functional (`--version`), then atomically renames it over `/system/bin/mcx`. If verification fails, the original binary is never touched.
+
+Escalates via `sudo` automatically when invoked as non-root.
+
+| Function | Module | Signature |
+| -------- | ------ | --------- |
+| `SelfUpdateManager::build_from_source` | `core::update` | `(repo_url: &str, target: &str, output_path: &Path) -> Result<PathBuf>` |
 
 Wired into CLI as `mcx --self-update`.
 
@@ -1548,11 +1648,27 @@ println!("Thread pool: {}", params.thread_pool_size);
 ## Complete directory tree
 
 ```
-<root>/
-└── etc/mcx/
-    ├── config.ini         # Engine config (mmap, zero-copy)
-    ├── repo.ini           # Repo definitions (mmap, zero-copy)
-    └── repo.json          # Repo registry (JSON, CLI-managed)
+<root>/                                  # / (root) or ~/.mcx/ (non-root)
+├── etc/mcx/
+│   ├── config.ini         # Engine config (mmap, zero-copy)
+│   ├── repo.ini           # Repo definitions (mmap, zero-copy)
+│   ├── repo.json          # Repo registry (JSON, CLI-managed)
+│   └── profile.json       # Declarative profile (optional, auto-validated)
+├── var/
+│   ├── lib/mcx/
+│   │   ├── active/        # Active package directories (one per pkg)
+│   │   ├── cas/           # Content-addressable library store (SHA-256)
+│   │   ├── deltas/        # Binary delta archives (.xcd per upgrade)
+│   │   ├── history.json   # Transaction ledger
+│   │   ├── rollback/      # Generation-based symlink snapshots
+│   │   ├── snapshots/     # Process memory checkpoints (.mem)
+│   │   ├── stream/        # Squashfuse mount scripts (.sh)
+│   │   ├── swarm/         # P2P hash registry + peer list (JSON)
+│   │   └── vendor/        # Offline package mirror
+│   ├── cache/mcx/         # Downloaded .xcs archives
+│   └── tmp/mcx/stage/     # Extraction staging area
+├── ~/.mcx/overlays/       # Per-package overlayfs dirs (upper/work/merged)
+└── /sys/fs/cgroup/mcx/    # cgroup v2 hierarchy (requires root)
 ```
 
 </details>

@@ -3,23 +3,59 @@ use std::io::{self, Write};
 pub struct UserInterface;
 
 impl UserInterface {
-    pub fn display_info(message: &str) {
+    pub fn info(message: &str) {
         println!(" [○] :: {}", message);
     }
 
-    pub fn display_error(message: &str) {
+    pub fn error(message: &str) {
         eprintln!(" [x] :: {}", message);
     }
 
-    pub fn display_success(message: &str) {
+    pub fn success(message: &str) {
         println!(" [√] :: {}", message);
     }
 
-    pub fn display_warning(message: &str) {
+    pub fn warning(message: &str) {
         println!(" [!] :: {}", message);
     }
 
-    pub fn display_progress(current: usize, total: usize, prefix: &str) {
+    pub fn version(message: &str) {
+        println!(" {}", message);
+    }
+
+    pub fn download(message: &str) {
+        println!(" [↓] :: {}", message);
+    }
+
+    pub fn cas(message: &str) {
+        println!(" [♻] :: {}", message);
+    }
+
+    pub fn sandbox(message: &str) {
+        println!(" [▣] :: {}", message);
+    }
+
+    pub fn cgroup(message: &str) {
+        println!(" [@] :: {}", message);
+    }
+
+    pub fn security(message: &str) {
+        println!(" [$] :: {}", message);
+    }
+
+    pub fn profile(message: &str) {
+        println!(" [⚙] :: {}", message);
+    }
+
+    pub fn snapshot(message: &str) {
+        println!(" [◉°] :: {}", message);
+    }
+
+    pub fn self_update(message: &str) {
+        println!(" [↑] :: {}", message);
+    }
+
+    pub fn progress(current: usize, total: usize, prefix: &str) {
         let percentage = if total > 0 { (current * 100) / total } else { 0 };
         let bar_width: usize = 18;
         let filled_blocks = if total > 0 { (current * bar_width) / total } else { 0 };
@@ -66,7 +102,7 @@ impl UserInterface {
         }
     }
 
-    pub fn render_table(title: &str, headers: &[&str], rows: &[Vec<String>]) {
+    pub fn table(title: &str, headers: &[&str], rows: &[Vec<String>]) {
         if headers.is_empty() { return; }
         
         let mut widths = vec![0; headers.len()];
@@ -147,7 +183,7 @@ impl UserInterface {
         }
     }
 
-    pub fn render_block_message(title: &str, lines: &[&str]) {
+    pub fn block(title: &str, lines: &[&str]) {
         let width: usize = 60;
         let fill_len = width.saturating_sub(title.len() + 5);
         println!("\n  ┌── {} {}", title, "─".repeat(fill_len));
@@ -157,7 +193,7 @@ impl UserInterface {
         println!("  └──{}", "─".repeat(width - 3));
     }
 
-    pub fn render_section_separator() {
+    pub fn separator() {
         println!("\n  ─{}", "─".repeat(70));
     }
 }

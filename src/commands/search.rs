@@ -32,7 +32,7 @@ impl SearchCommand {
         }
 
         if matches.is_empty() {
-            UserInterface::display_info(&format!("No packages found matching query: {}", query));
+            UserInterface::info(&format!("No packages found matching query: {}", query));
         } else {
             UserInterface::render_list(&format!("Search results for '{}'", query), &matches);
         }

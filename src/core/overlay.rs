@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Result, Context};
 
 pub struct OverlayManager {
-    overlays_base: PathBuf,
+    pub overlays_base: PathBuf,
 }
 
 impl OverlayManager {

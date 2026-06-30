@@ -10,7 +10,7 @@ pub fn root_access() {
     let uid = unsafe { libc::getuid() };
     
     if uid != 0 {
-        UserInterface::display_info("Using root access for this action...");
+        UserInterface::info("Using root access for this action...");
         
         let args: Vec<String> = env::args().skip(1).collect();
 

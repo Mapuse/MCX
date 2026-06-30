@@ -1,13 +1,23 @@
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use mcx::utils::ui::UserInterface;
 use mcx::core::database::{Database, PackageMetadata, ChecksumData, Dependency};
 use mcx::core::completion::CompletionEngine;
+use mcx::core::security::SecurityMonitor;
+use mcx::core::declarative::ProfileValidator;
+use mcx::core::cgroup::CgroupController;
+use mcx::core::overlay::OverlayManager;
+use mcx::core::swarm::{SwarmManager, SwarmPeer};
+use mcx::core::cas::CasStore;
+use mcx::core::rollback::RollbackManager;
+use mcx::core::lifecycle::{LifecycleEngine, DependencyGraph, PackageState, OrphanSet};
+
 use mcx::commands::remove::RemoveCommand;
 use mcx::commands::install::InstallCommand;
 use mcx::commands::configuration::ConfigTarget;
 use mcx::network::download::Downloader;
+use mcx::network::pipeline::DownloadPipeline;
 
 fn create_temporary_root(identifier: &str) -> PathBuf {
     let mut path = std::env::temp_dir();
@@ -16,362 +26,38 @@ fn create_temporary_root(identifier: &str) -> PathBuf {
     path
 }
 
+// ── Database / Transaction ──────────────────────────────────────────────────
+
 #[tokio::test]
 async fn test_atomic_database_write_and_conflict_prevention() {
     let root = create_temporary_root("conflict_prevention");
     let db = Database::open(&root).unwrap();
 
-    let package_a = PackageMetadata {pkg_name:"package-a".to_string(),version:"1.0.0".to_string(),license:"MIT".to_string(),source:"https://example.com/a".to_string(),checksum:ChecksumData{kind:"sha256".to_string(),value:"a591a6d40bf420404a011733cfb7b190d62c65bf0bcda32b57b277d9ad9f146e".to_string(),},dependencies:vec![],files:vec![PathBuf::from("usr/bin/shared-binary")], provides: Some(vec![]), conflicts: Some(vec![]) };
+    let package_a = PackageMetadata {
+        pkg_name: "package-a".to_string(), version: "1.0.0".to_string(),
+        license: "MIT".to_string(), source: "https://example.com/a".to_string(),
+        checksum: ChecksumData { kind: "sha256".to_string(), value: "a591a6d40bf420404a011733cfb7b190d62c65bf0bcda32b57b277d9ad9f146e".to_string() },
+        dependencies: vec![], files: vec![PathBuf::from("usr/bin/shared-binary")],
+        provides: Some(vec![]), conflicts: Some(vec![]),
+    };
 
     let mut tx_a = db.begin_transaction().unwrap();
     tx_a.register_package_placement(&package_a).unwrap();
     tx_a.commit().unwrap();
-
     assert!(db.is_package_installed("package-a").unwrap());
 
-    let package_b = PackageMetadata {pkg_name:"package-b".to_string(),version:"2.0.0".to_string(),license:"Apache-2.0".to_string(),source:"https://example.com/b".to_string(),checksum:ChecksumData{kind:"sha256".to_string(),value:"5891a6d40bf420404a011733cfb7b190d62c65bf0bcda32b57b277d9ad9f146f".to_string(),},dependencies:vec![],files:vec![PathBuf::from("usr/bin/shared-binary")], provides: Some(vec![]), conflicts: Some(vec![]) };
+    let package_b = PackageMetadata {
+        pkg_name: "package-b".to_string(), version: "2.0.0".to_string(),
+        license: "Apache-2.0".to_string(), source: "https://example.com/b".to_string(),
+        checksum: ChecksumData { kind: "sha256".to_string(), value: "5891a6d40bf420404a011733cfb7b190d62c65bf0bcda32b57b277d9ad9f146f".to_string() },
+        dependencies: vec![], files: vec![PathBuf::from("usr/bin/shared-binary")],
+        provides: Some(vec![]), conflicts: Some(vec![]),
+    };
 
     let mut tx_b = db.begin_transaction().unwrap();
     let result = tx_b.register_package_placement(&package_b);
     assert!(result.is_err());
 
-    fs::remove_dir_all(&root).unwrap();
-}
-
-#[tokio::test]
-async fn test_package_removal_and_filesystem_cleanup() {
-    let root = create_temporary_root("filesystem_cleanup");
-    
-    let binary_dir = root.join("usr/bin");
-    fs::create_dir_all(&binary_dir).unwrap();
-    let binary_file = binary_dir.join("app-binary");
-    fs::write(&binary_file, b"ELF").unwrap();
-
-    let db = Database::open(&root).unwrap();
-    let package = PackageMetadata {pkg_name:"app".to_string(),version:"1.5.2".to_string(),license:"GPL-3.0".to_string(),source:"https://example.com/app".to_string(),checksum:ChecksumData{kind:"sha256".to_string(),value:"9ee6a6d40bf420404a011733cfb7b190d62c65bf0bcda32b57b277d9ad9f146a".to_string(),},dependencies:vec![],files:vec![PathBuf::from("usr/bin/app-binary")], provides: Some(vec![]), conflicts: Some(vec![]) };
-
-    let mut tx = db.begin_transaction().unwrap();
-    tx.register_package_placement(&package).unwrap();
-    tx.commit().unwrap();
-
-    let db_share = Arc::new(db);
-    let command = RemoveCommand::new(root.to_string_lossy().into_owned(), db_share.clone());
-    command.execute(&["app".to_string()]).unwrap();
-
-    assert!(!db_share.is_package_installed("app").unwrap());
-    assert!(!binary_file.exists());
-
-    fs::remove_dir_all(&root).unwrap();
-}
-
-#[tokio::test]
-async fn test_shell_completion_engine_querying() {
-    let root = create_temporary_root("completion_engine");
-    let db = Database::open(&root).unwrap();
-
-    let package = PackageMetadata {pkg_name:"neovim".to_string(),version:"0.9.0".to_string(),license:"Apache-2.0".to_string(),source:"https://example.com/nvim".to_string(),checksum:ChecksumData{kind:"sha256".to_string(),value:"1111a6d40bf420404a011733cfb7b190d62c65bf0bcda32b57b277d9ad9f146e".to_string(),},dependencies:vec![],files:vec![], provides: Some(vec![]), conflicts: Some(vec![]) };
-
-    let mut tx = db.begin_transaction().unwrap();
-    tx.register_package_placement(&package).unwrap();
-    tx.commit().unwrap();
-
-    let engine = CompletionEngine::new(Arc::new(db));
-    
-    let subcommands = engine.complete_subcommand("inst");
-    assert!(subcommands.contains(&"install".to_string()));
-
-    let packages = engine.complete_installed_package("neo").unwrap();
-    assert!(packages.contains(&"neovim".to_string()));
-
-    fs::remove_dir_all(&root).unwrap();
-}
-
-#[test]
-fn test_user_interface_output_nodes() {
-    UserInterface::display_info("Core synchronization test channel opened");
-    UserInterface::display_success("Operation completed inside integration frame");
-    UserInterface::display_error("Simulated catastrophic deployment rollback");
-    UserInterface::display_warning("Alert safe status check bounds active");
-    UserInterface::display_progress(50, 100, "Extracting asset metadata tree");
-    
-    let list_items = vec![
-        "mcx-core-engine v1.0.0".to_string(),
-        "network-transport-ssl".to_string(),
-        "local-registry-ledger".to_string()
-    ];
-    UserInterface::render_list("Monitored Core Graph Structures", &list_items);
-}
-
-#[tokio::test]
-async fn test_network_downloader_endpoint_handling() {
-    let root = create_temporary_root("network_download");
-    let downloader = Downloader::new();
-    
-    let is_available = downloader.check_endpoint_availability("https://www.google.com").await;
-    assert!(is_available);
-
-    let destination = root.join("test_download.html");
-    let result = downloader.download_package("https://www.google.com", &destination).await;
-    assert!(result.is_ok());
-    assert!(destination.exists());
-    assert!(fs::metadata(&destination).unwrap().len() > 0);
-
-    fs::remove_dir_all(&root).unwrap();
-}
-
-#[tokio::test]
-async fn test_database_dependency_graph_relations() {
-    let root = create_temporary_root("database_relations");
-    let db = Database::open(&root).unwrap();
-
-    let base_package = PackageMetadata {pkg_name: "pkg_name".to_string(),version:"3.0.0".to_string(),license:"Apache-2.0".to_string(),source:"https://example.com/ssl".to_string(),checksum:ChecksumData{kind:"sha256".to_string(),value:"1234a6d40bf420404a011733cfb7b190d62c65bf0bcda32b57b277d9ad9f146e".to_string(),},dependencies:vec![],files:vec![], provides: Some(vec![]), conflicts: Some(vec![]) };
-
-    let mut tx = db.begin_transaction().unwrap();
-    tx.register_package_placement(&base_package).unwrap();
-    tx.commit().unwrap();
-
-    let dependent_package = PackageMetadata {
-        pkg_name: "curl".to_string(),
-        version: "8.0.0".to_string(),
-        license: "MIT".to_string(),
-        source: "https://example.com/curl".to_string(),
-        checksum: ChecksumData {
-            kind: "sha256".to_string(),
-            value: "5678a6d40bf420404a011733cfb7b190d62c65bf0bcda32b57b277d9ad9f146e".to_string(),
-        },
-        dependencies: vec![Dependency {
-            name: "openssl".to_string(),
-            dep_type: "runtime".to_string(),
-        }],
-        files: vec![],
-        provides: Some(vec![]),
-        conflicts: Some(vec![]),
-    };
-
-    let mut tx2 = db.begin_transaction().unwrap();
-    tx2.register_package_placement(&dependent_package).unwrap();
-    tx2.commit().unwrap();
-
-    assert!(db.has_dependent_packages("openssl").unwrap());
-    assert!(!db.has_dependent_packages("curl").unwrap());
-
-    fs::remove_dir_all(&root).unwrap();
-}
-
-#[tokio::test]
-async fn test_empty_installation_command_error() {
-    let root = create_temporary_root("install_command");
-    let db = Database::open(&root).unwrap();
-    let command = InstallCommand::new(root.to_string_lossy().into_owned(), Arc::new(db));
-    
-    let result = command.execute(&[]).await;
-    assert!(result.is_err());
-
-    fs::remove_dir_all(&root).unwrap();
-}
-
-#[tokio::test]
-async fn test_configuration_text_editor_spawning_and_mutation() {
-    let root = create_temporary_root("text_editor");
-    let config_dir = root.join("etc/mcx");
-    fs::create_dir_all(&config_dir).unwrap();
-    let config_file = config_dir.join("mcx.conf");
-    fs::write(&config_file, b"initial_key = initial_value\n").unwrap();
-
-    let root_str = root.to_string_lossy();
-    let _editor_command = mcx::commands::configuration::ConfigEditorCommand::new(&root_str, ConfigTarget::EngineConfig);
-    
-    let result = fs::write(&config_file, b"initial_key = mutated_value\n");
-    assert!(result.is_ok());
-
-    let updated_content = fs::read_to_string(&config_file).unwrap();
-    assert!(updated_content.contains("mutated_value"));
-    assert!(!updated_content.contains("initial_value"));
-
-    UserInterface::display_success("Configuration buffer inline mutation test completed");
-    fs::remove_dir_all(&root).unwrap();
-}
-
-#[tokio::test]
-async fn test_cyclic_dependency_deadlock_breaking() {
-    let root = create_temporary_root("cyclic_deadlock");
-    let db = Database::open(&root).unwrap();
-
-    let node_x = PackageMetadata {pkg_name:"node-x".to_string(),version:"1.0.0".to_string(),license:"Apache".to_string(),source:"https://example.com/x".to_string(),checksum:ChecksumData{kind:"sha256".to_string(),value:"0000".to_string()},dependencies:vec![Dependency{name:"node-y".to_string(),dep_type:"runtime".to_string()}],files:vec![], provides: Some(vec![]), conflicts: Some(vec![]) };
-
-    let node_y = PackageMetadata {pkg_name:"node-y".to_string(),version:"1.0.0".to_string(),license:"Apache".to_string(),source:"https://example.com/y".to_string(),checksum:ChecksumData{kind:"sha256".to_string(),value:"0000".to_string()},dependencies:vec![Dependency{name:"node-x".to_string(),dep_type:"runtime".to_string()}],files:vec![], provides: Some(vec![]), conflicts: Some(vec![]) };
-
-    let mut tx = db.begin_transaction().unwrap();
-    tx.register_package_placement(&node_x).unwrap();
-    tx.register_package_placement(&node_y).unwrap();
-    tx.commit().unwrap();
-
-    let solver = mcx::core::solver::DependencySolver::new(Arc::new(db))
-        .add_target("node-x");
-    let resolve_result = solver.solve();
-
-    assert!(resolve_result.is_err());
-    UserInterface::display_warning("Cyclic dependency network loop successfully detected and trapped");
-    fs::remove_dir_all(&root).unwrap();
-}
-
-#[tokio::test]
-async fn test_temporal_history_ledger_rollback() {
-    let root = create_temporary_root("temporal_rollback");
-    let db = Database::open(&root).unwrap();
-    let db_arc = Arc::new(db);
-    
-    let history_engine = mcx::core::history::HistoryEngine::new(&root, Arc::clone(&db_arc));
-    
-    let state_file = root.join("var/lib/mcx/history.json");
-    fs::create_dir_all(state_file.parent().unwrap()).unwrap();
-    fs::write(&state_file, b"[]").unwrap();
-    
-    let mutated_pkg = PackageMetadata {pkg_name:"ephemeral-module".to_string(),version:"1.0.0".to_string(),license:"MIT".to_string(),source:"https://example.com/eph".to_string(),checksum:ChecksumData{kind:"sha256".to_string(),value:"0000".to_string()},dependencies:vec![],files:vec![],provides:Some(vec![]),conflicts:Some(vec![])};
-
-    let mut tx = db_arc.begin_transaction().unwrap();
-    tx.register_package_placement(&mutated_pkg).unwrap();
-    tx.commit().unwrap();
-    
-    assert!(db_arc.is_package_installed("ephemeral-module").unwrap());
-
-    fs::write(&state_file, b"[]").unwrap();
-    let mut tx_rollback = db_arc.begin_transaction().unwrap();
-    tx_rollback.stage_package_removal("ephemeral-module").unwrap();
-    tx_rollback.commit().unwrap();
-
-    assert!(!db_arc.is_package_installed("ephemeral-module").unwrap());
-    let _ = history_engine;
-
-    UserInterface::display_success("Temporal state generation reversion committed successfully");
-    fs::remove_dir_all(&root).unwrap();
-}
-
-#[tokio::test]
-async fn test_dependency_solver_topological_sorting_and_resolution() {
-    let root = create_temporary_root("dependency_sorting");
-    let db = Database::open(&root).unwrap();
-
-    let dep_b = PackageMetadata {pkg_name:"library-b".to_string(),version:"1.0.0".to_string(),license:"MIT".to_string(),source:"https://example.com/b".to_string(),checksum:ChecksumData{kind:"sha256".to_string(),value:"0000".to_string()},dependencies:vec![],files:vec![], provides: Some(vec![]), conflicts: Some(vec![]) };
-
-    let dep_a = PackageMetadata {pkg_name:"library-a".to_string(),version:"1.0.0".to_string(),license:"MIT".to_string(),source:"https://example.com/a".to_string(),checksum:ChecksumData{kind:"sha256".to_string(),value:"0000".to_string()},dependencies:vec![Dependency{name:"library-b".to_string(),dep_type:"runtime".to_string()}],files:vec![], provides: Some(vec![]), conflicts: Some(vec![]) };
-
-    let target_pkg = PackageMetadata {pkg_name:"main-app".to_string(),version:"2.0.0".to_string(),license:"GPL".to_string(),source:"https://example.com/app".to_string(),checksum:ChecksumData{kind:"sha256".to_string(),value:"0000".to_string()},dependencies:vec![Dependency{name:"library-a".to_string(),dep_type:"runtime".to_string()}],files:vec![], provides: Some(vec![]), conflicts: Some(vec![]) };
-
-    let mut tx = db.begin_transaction().unwrap();
-    tx.register_package_placement(&dep_b).unwrap();
-    tx.register_package_placement(&dep_a).unwrap();
-    tx.register_package_placement(&target_pkg).unwrap();
-    tx.commit().unwrap();
-
-    let solver = mcx::core::solver::DependencySolver::new(Arc::new(db))
-        .add_target("main-app");
-    let ordered_plan = solver.solve().unwrap();
-
-    assert_eq!(ordered_plan.len(), 3);
-    assert_eq!(ordered_plan[0].pkg_name, "main-app");
-    assert_eq!(ordered_plan[1].pkg_name, "library-a");
-    assert_eq!(ordered_plan[2].pkg_name, "library-b");
-
-    UserInterface::display_success("Topological sorting verified inside transaction sequence");
-    fs::remove_dir_all(&root).unwrap();
-}
-
-#[tokio::test]
-async fn test_dependency_solver_library_provider_resolution() {
-    let root = create_temporary_root("dependency_library_resolution");
-    let db = Database::open(&root).unwrap();
-
-    let provider_pkg = PackageMetadata {
-        pkg_name: "gio-2.0".to_string(),
-        version: "1.0.0".to_string(),
-        license: "LGPL".to_string(),
-        source: "https://example.com/gio".to_string(),
-        checksum: ChecksumData { kind: "sha256".to_string(), value: "0000".to_string() },
-        dependencies: vec![],
-        files: vec![PathBuf::from("usr/lib/libgio-2.0.so.0")],
-        provides: Some(vec!["libgio-2.0.so.0".to_string()]),
-        conflicts: Some(vec![]),
-    };
-
-    let build_dep_pkg = PackageMetadata {
-        pkg_name: "glib-2.0".to_string(),
-        version: "2.0.0".to_string(),
-        license: "LGPL".to_string(),
-        source: "https://example.com/glib".to_string(),
-        checksum: ChecksumData { kind: "sha256".to_string(), value: "1111".to_string() },
-        dependencies: vec![],
-        files: vec![],
-        provides: Some(vec![]),
-        conflicts: Some(vec![]),
-    };
-
-    let json_glib_pkg = PackageMetadata {
-        pkg_name: "json-glib".to_string(),
-        version: "1.8.0".to_string(),
-        license: "MPL".to_string(),
-        source: "https://example.com/json-glib".to_string(),
-        checksum: ChecksumData { kind: "sha256".to_string(), value: "2222".to_string() },
-        dependencies: vec![
-            Dependency { name: "glib-2.0".to_string(), dep_type: "Build".to_string() },
-            Dependency { name: "libgio-2.0.so.0".to_string(), dep_type: "Library".to_string() },
-        ],
-        files: vec![],
-        provides: Some(vec![]),
-        conflicts: Some(vec![]),
-    };
-
-    let mut tx = db.begin_transaction().unwrap();
-    tx.register_package_placement(&provider_pkg).unwrap();
-    tx.register_package_placement(&build_dep_pkg).unwrap();
-    tx.register_package_placement(&json_glib_pkg).unwrap();
-    tx.commit().unwrap();
-
-    let solver = mcx::core::solver::DependencySolver::new(Arc::new(db))
-        .add_target("json-glib");
-    let ordered_plan = solver.solve().unwrap();
-
-    assert_eq!(ordered_plan.len(), 3);
-    assert_eq!(ordered_plan[0].pkg_name, "json-glib");
-    assert!(ordered_plan.iter().any(|p| p.pkg_name == "glib-2.0"));
-    assert!(ordered_plan.iter().any(|p| p.pkg_name == "gio-2.0"));
-
-    UserInterface::display_success("Library dependency provider resolution verified");
-    fs::remove_dir_all(&root).unwrap();
-}
-
-#[tokio::test]
-async fn test_corrupted_archive_hash_verification_failure() {
-    let root = create_temporary_root("hash_failure");
-    let cache_dir = root.join("var/cache/mcx");
-    fs::create_dir_all(&cache_dir).unwrap();
-
-    let archive_file = cache_dir.join("corrupted-package-1.0.0.xcs");
-    fs::write(&archive_file, b"corrupted payload data").unwrap();
-
-    let expected_valid_hash = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
-    let verification_result = mcx::archive::hash::HashVerifier::verify_integrity(&archive_file, expected_valid_hash);
-    
-    assert!(verification_result.is_err());
-    UserInterface::display_error("Security hazard mitigation: Checksum discrepancy intercepted");
-    fs::remove_dir_all(&root).unwrap();
-}
-
-#[tokio::test]
-async fn test_network_downloader_transient_failure_recovery() {
-    let root = create_temporary_root("network_fault");
-    let downloader = Downloader::new();
-    
-    let invalid_endpoint = "https://invalid-subdomain-unreachable-target-node.org/asset.xcs";
-    let destination = root.join("failed_output.xcs");
-    
-    let result = downloader.download_package(invalid_endpoint, &destination).await;
-    assert!(result.is_err());
-    
-    let availability = downloader.check_endpoint_availability(invalid_endpoint).await;
-    assert!(!availability);
-
-    UserInterface::display_warning("Network transport resilient layer safely logged transient drop");
     fs::remove_dir_all(&root).unwrap();
 }
 
@@ -386,6 +72,844 @@ async fn test_concurrent_transaction_serialization_isolation() {
     let tx_secondary = db.begin_transaction();
     assert!(tx_secondary.is_ok());
 
-    UserInterface::display_success("Multi-tenant register states isolated from thread corruption bounds");
     fs::remove_dir_all(&root).unwrap();
+}
+
+#[tokio::test]
+async fn test_empty_installation_command_error() {
+    let root = create_temporary_root("install_command");
+    let db = Database::open(&root).unwrap();
+    let command = InstallCommand::new(root.to_string_lossy().into_owned(), Arc::new(db));
+    let result = command.execute(&[]).await;
+    assert!(result.is_err());
+    fs::remove_dir_all(&root).unwrap();
+}
+
+// ── Remove + Sandbox Cleanup ────────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_package_removal_and_filesystem_cleanup() {
+    let root = create_temporary_root("filesystem_cleanup");
+    let binary_dir = root.join("usr/bin");
+    fs::create_dir_all(&binary_dir).unwrap();
+    let binary_file = binary_dir.join("app-binary");
+    fs::write(&binary_file, b"ELF").unwrap();
+
+    let db = Database::open(&root).unwrap();
+    let package = PackageMetadata {
+        pkg_name: "app".to_string(), version: "1.5.2".to_string(),
+        license: "GPL-3.0".to_string(), source: "https://example.com/app".to_string(),
+        checksum: ChecksumData { kind: "sha256".to_string(), value: "9ee6a6d40bf420404a011733cfb7b190d62c65bf0bcda32b57b277d9ad9f146a".to_string() },
+        dependencies: vec![], files: vec![PathBuf::from("usr/bin/app-binary")],
+        provides: Some(vec![]), conflicts: Some(vec![]),
+    };
+
+    let mut tx = db.begin_transaction().unwrap();
+    tx.register_package_placement(&package).unwrap();
+    tx.commit().unwrap();
+
+    let db_share = Arc::new(db);
+    let command = RemoveCommand::new(root.to_string_lossy().into_owned(), db_share.clone());
+    let cg = mcx::CgroupController::new();
+    let ov = mcx::OverlayManager::new(Path::new("/tmp"));
+    let sm = mcx::SecurityMonitor::new();
+    command.execute(&["app".to_string()], &cg, &ov, &sm).unwrap();
+
+    assert!(!db_share.is_package_installed("app").unwrap());
+    assert!(!binary_file.exists());
+    fs::remove_dir_all(&root).unwrap();
+}
+
+// ── Completion ──────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_shell_completion_engine_querying() {
+    let root = create_temporary_root("completion_engine");
+    let db = Database::open(&root).unwrap();
+
+    let package = PackageMetadata {
+        pkg_name: "neovim".to_string(), version: "0.9.0".to_string(),
+        license: "Apache-2.0".to_string(), source: "https://example.com/nvim".to_string(),
+        checksum: ChecksumData { kind: "sha256".to_string(), value: "1111a6d40bf420404a011733cfb7b190d62c65bf0bcda32b57b277d9ad9f146e".to_string() },
+        dependencies: vec![], files: vec![], provides: Some(vec![]), conflicts: Some(vec![]),
+    };
+
+    let mut tx = db.begin_transaction().unwrap();
+    tx.register_package_placement(&package).unwrap();
+    tx.commit().unwrap();
+
+    let engine = CompletionEngine::new(Arc::new(db));
+    let subcommands = engine.complete_subcommand("inst");
+    assert!(subcommands.contains(&"install".to_string()));
+
+    let packages = engine.complete_installed_package("neo").unwrap();
+    assert!(packages.contains(&"neovim".to_string()));
+
+    fs::remove_dir_all(&root).unwrap();
+}
+
+// ── UI ──────────────────────────────────────────────────────────────────────
+
+#[test]
+fn test_user_interface_output_nodes() {
+    UserInterface::info("Core synchronization test channel opened");
+    UserInterface::success("Operation completed inside integration frame");
+    UserInterface::error("Simulated catastrophic deployment rollback");
+    UserInterface::warning("Alert safe status check bounds active");
+    UserInterface::download("Download pipeline test message");
+    UserInterface::sandbox("Overlay sandbox test message");
+    UserInterface::security("Security monitor test message");
+    UserInterface::profile("Profile validator test message");
+    UserInterface::cgroup("Cgroup controller test message");
+    UserInterface::cas("CAS store test message");
+    UserInterface::self_update("Self-update test message");
+    UserInterface::version("mcx 3.0.0");
+    UserInterface::progress(50, 100, "Extracting asset metadata tree");
+
+    let list_items = vec![
+        "mcx-core-engine v3.0.0".to_string(),
+        "network-transport-ssl".to_string(),
+        "local-registry-ledger".to_string(),
+    ];
+    UserInterface::render_list("Monitored Core Graph Structures", &list_items);
+}
+
+// ── Network Download ────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_network_downloader_endpoint_handling() {
+    let root = create_temporary_root("network_download");
+    let downloader = Downloader::new();
+
+    let is_available = downloader.check_endpoint_availability("https://www.google.com").await;
+    assert!(is_available);
+
+    let destination = root.join("test_download.html");
+    let result = downloader.download_package("https://www.google.com", &destination).await;
+    assert!(result.is_ok());
+    assert!(destination.exists());
+    assert!(fs::metadata(&destination).unwrap().len() > 0);
+
+    fs::remove_dir_all(&root).unwrap();
+}
+
+#[tokio::test]
+async fn test_network_downloader_transient_failure_recovery() {
+    let root = create_temporary_root("network_fault");
+    let downloader = Downloader::new();
+
+    let invalid_endpoint = "https://invalid-subdomain-unreachable-target-node.org/asset.xcs";
+    let destination = root.join("failed_output.xcs");
+
+    let result = downloader.download_package(invalid_endpoint, &destination).await;
+    assert!(result.is_err());
+
+    let availability = downloader.check_endpoint_availability(invalid_endpoint).await;
+    assert!(!availability);
+
+    fs::remove_dir_all(&root).unwrap();
+}
+
+#[tokio::test]
+async fn test_download_pipeline_fallback_chain() {
+    let pipeline = DownloadPipeline::new(None);
+    let root = create_temporary_root("pipeline_fallback");
+    let dest = root.join("test.xcs");
+
+    // Invalid URL should fail through all 3 stages gracefully
+    let result = pipeline.fetch("https://invalid.nonexistent.local/pkg-1.0.0.xcs", "pkg", "1.0.0", &dest).await;
+    assert!(result.is_err());
+
+    fs::remove_dir_all(&root).unwrap();
+}
+
+// ── Database / Dependency Graph ─────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_database_dependency_graph_relations() {
+    let root = create_temporary_root("database_relations");
+    let db = Database::open(&root).unwrap();
+
+    let base_package = PackageMetadata {
+        pkg_name: "openssl".to_string(), version: "3.0.0".to_string(),
+        license: "Apache-2.0".to_string(), source: "https://example.com/ssl".to_string(),
+        checksum: ChecksumData { kind: "sha256".to_string(), value: "1234a6d40bf420404a011733cfb7b190d62c65bf0bcda32b57b277d9ad9f146e".to_string() },
+        dependencies: vec![], files: vec![], provides: Some(vec![]), conflicts: Some(vec![]),
+    };
+
+    let mut tx = db.begin_transaction().unwrap();
+    tx.register_package_placement(&base_package).unwrap();
+    tx.commit().unwrap();
+
+    let dependent_package = PackageMetadata {
+        pkg_name: "curl".to_string(), version: "8.0.0".to_string(),
+        license: "MIT".to_string(), source: "https://example.com/curl".to_string(),
+        checksum: ChecksumData { kind: "sha256".to_string(), value: "5678a6d40bf420404a011733cfb7b190d62c65bf0bcda32b57b277d9ad9f146e".to_string() },
+        dependencies: vec![Dependency { name: "openssl".to_string(), dep_type: "runtime".to_string() }],
+        files: vec![], provides: Some(vec![]), conflicts: Some(vec![]),
+    };
+
+    let mut tx2 = db.begin_transaction().unwrap();
+    tx2.register_package_placement(&dependent_package).unwrap();
+    tx2.commit().unwrap();
+
+    assert!(db.has_dependent_packages("openssl").unwrap());
+    assert!(!db.has_dependent_packages("curl").unwrap());
+
+    fs::remove_dir_all(&root).unwrap();
+}
+
+// ── Solver / Resolution ─────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_cyclic_dependency_deadlock_breaking() {
+    let root = create_temporary_root("cyclic_deadlock");
+    let db = Database::open(&root).unwrap();
+
+    let node_x = PackageMetadata {
+        pkg_name: "node-x".to_string(), version: "1.0.0".to_string(),
+        license: "Apache".to_string(), source: "https://example.com/x".to_string(),
+        checksum: ChecksumData { kind: "sha256".to_string(), value: "0000".to_string() },
+        dependencies: vec![Dependency { name: "node-y".to_string(), dep_type: "runtime".to_string() }],
+        files: vec![], provides: Some(vec![]), conflicts: Some(vec![]),
+    };
+
+    let node_y = PackageMetadata {
+        pkg_name: "node-y".to_string(), version: "1.0.0".to_string(),
+        license: "Apache".to_string(), source: "https://example.com/y".to_string(),
+        checksum: ChecksumData { kind: "sha256".to_string(), value: "0000".to_string() },
+        dependencies: vec![Dependency { name: "node-x".to_string(), dep_type: "runtime".to_string() }],
+        files: vec![], provides: Some(vec![]), conflicts: Some(vec![]),
+    };
+
+    let mut tx = db.begin_transaction().unwrap();
+    tx.register_package_placement(&node_x).unwrap();
+    tx.register_package_placement(&node_y).unwrap();
+    tx.commit().unwrap();
+
+    let solver = mcx::core::solver::DependencySolver::new(Arc::new(db)).add_target("node-x");
+    let resolve_result = solver.solve();
+    assert!(resolve_result.is_err());
+
+    fs::remove_dir_all(&root).unwrap();
+}
+
+#[tokio::test]
+async fn test_dependency_solver_topological_sorting_and_resolution() {
+    let root = create_temporary_root("dependency_sorting");
+    let db = Database::open(&root).unwrap();
+
+    let dep_b = PackageMetadata {
+        pkg_name: "library-b".to_string(), version: "1.0.0".to_string(),
+        license: "MIT".to_string(), source: "https://example.com/b".to_string(),
+        checksum: ChecksumData { kind: "sha256".to_string(), value: "0000".to_string() },
+        dependencies: vec![], files: vec![], provides: Some(vec![]), conflicts: Some(vec![]),
+    };
+
+    let dep_a = PackageMetadata {
+        pkg_name: "library-a".to_string(), version: "1.0.0".to_string(),
+        license: "MIT".to_string(), source: "https://example.com/a".to_string(),
+        checksum: ChecksumData { kind: "sha256".to_string(), value: "0000".to_string() },
+        dependencies: vec![Dependency { name: "library-b".to_string(), dep_type: "runtime".to_string() }],
+        files: vec![], provides: Some(vec![]), conflicts: Some(vec![]),
+    };
+
+    let target_pkg = PackageMetadata {
+        pkg_name: "main-app".to_string(), version: "2.0.0".to_string(),
+        license: "GPL".to_string(), source: "https://example.com/app".to_string(),
+        checksum: ChecksumData { kind: "sha256".to_string(), value: "0000".to_string() },
+        dependencies: vec![Dependency { name: "library-a".to_string(), dep_type: "runtime".to_string() }],
+        files: vec![], provides: Some(vec![]), conflicts: Some(vec![]),
+    };
+
+    let mut tx = db.begin_transaction().unwrap();
+    tx.register_package_placement(&dep_b).unwrap();
+    tx.register_package_placement(&dep_a).unwrap();
+    tx.register_package_placement(&target_pkg).unwrap();
+    tx.commit().unwrap();
+
+    let solver = mcx::core::solver::DependencySolver::new(Arc::new(db)).add_target("main-app");
+    let ordered_plan = solver.solve().unwrap();
+
+    assert_eq!(ordered_plan.len(), 3);
+    assert_eq!(ordered_plan[0].pkg_name, "main-app");
+    assert_eq!(ordered_plan[1].pkg_name, "library-a");
+    assert_eq!(ordered_plan[2].pkg_name, "library-b");
+
+    fs::remove_dir_all(&root).unwrap();
+}
+
+#[tokio::test]
+async fn test_dependency_solver_library_provider_resolution() {
+    let root = create_temporary_root("dependency_library_resolution");
+    let db = Database::open(&root).unwrap();
+
+    let provider_pkg = PackageMetadata {
+        pkg_name: "gio-2.0".to_string(), version: "1.0.0".to_string(),
+        license: "LGPL".to_string(), source: "https://example.com/gio".to_string(),
+        checksum: ChecksumData { kind: "sha256".to_string(), value: "0000".to_string() },
+        dependencies: vec![], files: vec![PathBuf::from("usr/lib/libgio-2.0.so.0")],
+        provides: Some(vec!["libgio-2.0.so.0".to_string()]), conflicts: Some(vec![]),
+    };
+
+    let build_dep_pkg = PackageMetadata {
+        pkg_name: "glib-2.0".to_string(), version: "2.0.0".to_string(),
+        license: "LGPL".to_string(), source: "https://example.com/glib".to_string(),
+        checksum: ChecksumData { kind: "sha256".to_string(), value: "1111".to_string() },
+        dependencies: vec![], files: vec![], provides: Some(vec![]), conflicts: Some(vec![]),
+    };
+
+    let json_glib_pkg = PackageMetadata {
+        pkg_name: "json-glib".to_string(), version: "1.8.0".to_string(),
+        license: "MPL".to_string(), source: "https://example.com/json-glib".to_string(),
+        checksum: ChecksumData { kind: "sha256".to_string(), value: "2222".to_string() },
+        dependencies: vec![
+            Dependency { name: "glib-2.0".to_string(), dep_type: "Build".to_string() },
+            Dependency { name: "libgio-2.0.so.0".to_string(), dep_type: "Library".to_string() },
+        ],
+        files: vec![], provides: Some(vec![]), conflicts: Some(vec![]),
+    };
+
+    let mut tx = db.begin_transaction().unwrap();
+    tx.register_package_placement(&provider_pkg).unwrap();
+    tx.register_package_placement(&build_dep_pkg).unwrap();
+    tx.register_package_placement(&json_glib_pkg).unwrap();
+    tx.commit().unwrap();
+
+    let solver = mcx::core::solver::DependencySolver::new(Arc::new(db)).add_target("json-glib");
+    let ordered_plan = solver.solve().unwrap();
+
+    assert_eq!(ordered_plan.len(), 3);
+    assert_eq!(ordered_plan[0].pkg_name, "json-glib");
+    assert!(ordered_plan.iter().any(|p| p.pkg_name == "glib-2.0"));
+    assert!(ordered_plan.iter().any(|p| p.pkg_name == "gio-2.0"));
+
+    fs::remove_dir_all(&root).unwrap();
+}
+
+// ── Hash Verification ───────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_corrupted_archive_hash_verification_failure() {
+    let root = create_temporary_root("hash_failure");
+    let cache_dir = root.join("var/cache/mcx");
+    fs::create_dir_all(&cache_dir).unwrap();
+
+    let archive_file = cache_dir.join("corrupted-package-1.0.0.xcs");
+    fs::write(&archive_file, b"corrupted payload data").unwrap();
+
+    let expected_valid_hash = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+    let verification_result = mcx::archive::hash::HashVerifier::verify_integrity(&archive_file, expected_valid_hash);
+    assert!(verification_result.is_err());
+
+    fs::remove_dir_all(&root).unwrap();
+}
+
+// ── History / Rollback ──────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_temporal_history_ledger_rollback() {
+    let root = create_temporary_root("temporal_rollback");
+    let db = Database::open(&root).unwrap();
+    let db_arc = Arc::new(db);
+
+    let history_engine = mcx::core::history::HistoryEngine::new(&root, Arc::clone(&db_arc));
+
+    let state_file = root.join("var/lib/mcx/history.json");
+    fs::create_dir_all(state_file.parent().unwrap()).unwrap();
+    fs::write(&state_file, b"[]").unwrap();
+
+    let mutated_pkg = PackageMetadata {
+        pkg_name: "ephemeral-module".to_string(), version: "1.0.0".to_string(),
+        license: "MIT".to_string(), source: "https://example.com/eph".to_string(),
+        checksum: ChecksumData { kind: "sha256".to_string(), value: "0000".to_string() },
+        dependencies: vec![], files: vec![], provides: Some(vec![]), conflicts: Some(vec![]),
+    };
+
+    let mut tx = db_arc.begin_transaction().unwrap();
+    tx.register_package_placement(&mutated_pkg).unwrap();
+    tx.commit().unwrap();
+    assert!(db_arc.is_package_installed("ephemeral-module").unwrap());
+
+    fs::write(&state_file, b"[]").unwrap();
+    let mut tx_rollback = db_arc.begin_transaction().unwrap();
+    tx_rollback.stage_package_removal("ephemeral-module").unwrap();
+    tx_rollback.commit().unwrap();
+    assert!(!db_arc.is_package_installed("ephemeral-module").unwrap());
+    let _ = history_engine;
+
+    fs::remove_dir_all(&root).unwrap();
+}
+
+#[tokio::test]
+async fn test_rollback_manager_generation_tracking() {
+    let root = create_temporary_root("rollback_generations");
+    let rollback = RollbackManager::new(&root);
+    assert!(rollback.initialize().is_ok());
+
+    let current = rollback.current_generation("test-pkg");
+    assert!(current.is_ok());
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+// ── Cgroup ──────────────────────────────────────────────────────────────────
+
+#[test]
+fn test_cgroup_controller_availability_check() {
+    let cg = CgroupController::new();
+    // Should not panic; availability depends on /sys/fs/cgroup
+    let _available = cg.is_cgroup_v2_available();
+    // Creating a cgroup may fail without root, but the call should not panic
+    let _ = cg.enforce_resource_limits("test-pkg", 256, 50);
+    let _ = cg.remove_resource_limits("test-pkg");
+}
+
+// ── Overlay ─────────────────────────────────────────────────────────────────
+
+#[test]
+fn test_overlay_manager_directory_creation_and_cleanup() {
+    let root = create_temporary_root("overlay_test");
+    let overlay = OverlayManager::new(&root);
+    assert!(overlay.initialize().is_ok());
+
+    let merged = overlay.create_isolated_overlay("test-pkg", &root);
+    assert!(merged.is_ok());
+
+    let overlays = overlay.list_overlays();
+    assert!(overlays.is_ok());
+    assert!(overlays.unwrap().iter().any(|p| p.to_string_lossy().contains("test-pkg")));
+
+    assert!(overlay.remove_isolated_overlay("test-pkg").is_ok());
+
+    let overlays_after = overlay.list_overlays().unwrap();
+    assert!(!overlays_after.iter().any(|p| p.to_string_lossy().contains("test-pkg")));
+
+    fs::remove_dir_all(&root).unwrap();
+}
+
+// ── Security Monitor ────────────────────────────────────────────────────────
+
+#[test]
+fn test_security_monitor_package_tracking_and_isolation() {
+    let sm = SecurityMonitor::new();
+    assert_eq!(sm.active_count(), 0);
+
+    sm.register_package("nginx");
+    sm.register_package("openssl");
+    assert_eq!(sm.active_count(), 2);
+
+    assert!(!sm.is_package_isolated("nginx"));
+    assert!(sm.isolate_package("nginx").is_ok());
+    assert!(sm.is_package_isolated("nginx"));
+
+    assert!(sm.check_package("nginx"));
+
+    sm.unregister_package("nginx");
+    assert_eq!(sm.active_count(), 1);
+
+    // swap isolation policy
+    let strict = Arc::new(|pkg: &str| -> bool { pkg != "evil" });
+    let old = sm.swap_isolation_policy(strict);
+    assert!(sm.check_package("good"));
+    assert!(!sm.check_package("evil"));
+    let _ = old;
+}
+
+// ── Swarm ───────────────────────────────────────────────────────────────────
+
+#[test]
+fn test_swarm_manager_hash_and_peer_tracking() {
+    let root = create_temporary_root("swarm_test");
+    let swarm = SwarmManager::new(&root);
+    assert!(swarm.initialize().is_ok());
+
+    assert!(swarm.register_swarm_hash("nginx", "1.25.0", "abc123").is_ok());
+    let hash = swarm.get_swarm_hash("nginx").unwrap();
+    assert_eq!(hash, Some("abc123".to_string()));
+
+    let peer = SwarmPeer {
+        address: "10.0.0.1:8080".to_string(),
+        peer_id: "peer-001".to_string(),
+        last_seen: 1000000,
+        advertised_hashes: vec!["abc123".to_string()],
+    };
+    assert!(swarm.register_swarm_peer(peer).is_ok());
+
+    let peers = swarm.list_swarm_peers().unwrap();
+    assert_eq!(peers.len(), 1);
+    assert_eq!(peers[0].peer_id, "peer-001");
+
+    assert!(swarm.remove_swarm_entry("nginx").is_ok());
+    let hash_after = swarm.get_swarm_hash("nginx").unwrap();
+    assert_eq!(hash_after, None);
+
+    fs::remove_dir_all(&root).unwrap();
+}
+
+// ── Profile Validator ───────────────────────────────────────────────────────
+
+#[test]
+fn test_profile_validator_load_and_diff() {
+    let root = create_temporary_root("profile_validator");
+    let profile_path = root.join("profile.json");
+
+    let profile_content = r#"{
+        "version": "1.0.0",
+        "architecture": "x86_64",
+        "packages": ["nginx", "openssl", "curl"]
+    }"#;
+    fs::write(&profile_path, profile_content).unwrap();
+
+    let profile = ProfileValidator::load_profile(&profile_path).unwrap();
+    assert_eq!(profile.version, "1.0.0");
+    assert_eq!(profile.packages.len(), 3);
+
+    let current = vec!["nginx".to_string(), "curl".to_string()];
+    let (to_install, to_remove) = ProfileValidator::compile_profile_diff(&current, &profile.packages);
+    assert_eq!(to_install, vec!["openssl"]);
+    assert!(to_remove.is_empty());
+
+    fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn test_profile_validator_rejects_invalid_blueprints() {
+    let root = create_temporary_root("profile_invalid");
+    let profile_path = root.join("bad.json");
+
+    // empty version
+    let bad = r#"{"version": "", "architecture": "x86_64", "packages": []}"#;
+    fs::write(&profile_path, bad).unwrap();
+    let result = ProfileValidator::load_profile(&profile_path);
+    assert!(result.is_err());
+
+    // duplicate packages
+    let dup = r#"{"version": "1.0", "architecture": "x86_64", "packages": ["nginx", "nginx"]}"#;
+    fs::write(&profile_path, dup).unwrap();
+    let result = ProfileValidator::load_profile(&profile_path);
+    assert!(result.is_err());
+
+    fs::remove_dir_all(&root).unwrap();
+}
+
+// ── CAS ─────────────────────────────────────────────────────────────────────
+
+#[test]
+fn test_cas_store_deduplication() {
+    let root = create_temporary_root("cas_dedup");
+    let lib_dir = root.join("usr/lib");
+    fs::create_dir_all(&lib_dir).unwrap();
+
+    // create identical files
+    let content = b"identical library content";
+    fs::write(lib_dir.join("libfoo.so.1"), content).unwrap();
+    fs::write(lib_dir.join("libfoo.so.2"), content).unwrap();
+    fs::write(lib_dir.join("libbar.so.1"), b"different content").unwrap();
+
+    let cas = CasStore::new(&root);
+    let stats = cas.deduplicate_libraries(&root).unwrap();
+
+    assert_eq!(stats.unique_files, 2);
+    assert_eq!(stats.total_files, 3);
+    assert!(stats.bytes_saved > 0);
+
+    fs::remove_dir_all(&root).unwrap();
+}
+
+// ── Delta Engine ────────────────────────────────────────────────────────────
+
+#[test]
+fn test_delta_engine_compute_and_persist() {
+    let root = create_temporary_root("delta_test");
+    let deltas_dir = root.join("var/lib/mcx/deltas");
+    fs::create_dir_all(&deltas_dir).unwrap();
+
+    let old_dir = root.join("old");
+    let new_dir = root.join("new");
+    fs::create_dir_all(&old_dir).unwrap();
+    fs::create_dir_all(&new_dir).unwrap();
+
+    fs::write(old_dir.join("keep.txt"), b"same").unwrap();
+    fs::write(old_dir.join("remove.txt"), b"gone").unwrap();
+    fs::write(new_dir.join("keep.txt"), b"same").unwrap();
+    fs::write(new_dir.join("add.txt"), b"new").unwrap();
+
+    let delta = mcx::core::delta::DeltaEngine::compute_delta(&old_dir, &new_dir, "test-pkg", "1.0.0", "2.0.0").unwrap();
+
+    assert_eq!(delta.manifest.added.len(), 1);
+    assert_eq!(delta.manifest.removed.len(), 1);
+    assert_eq!(delta.manifest.modified.len(), 0);
+
+    let persist = mcx::core::delta::DeltaEngine::write_delta(&delta, &deltas_dir.join("test-pkg-1.0.0-2.0.0.xcd"));
+    assert!(persist.is_ok());
+
+    fs::remove_dir_all(&root).unwrap();
+}
+
+// ── Config ──────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_configuration_text_editor_spawning_and_mutation() {
+    let root = create_temporary_root("text_editor");
+    let config_dir = root.join("etc/mcx");
+    fs::create_dir_all(&config_dir).unwrap();
+    let config_file = config_dir.join("mcx.conf");
+    fs::write(&config_file, b"initial_key = initial_value\n").unwrap();
+
+    let root_str = root.to_string_lossy();
+    let _editor_command = mcx::commands::configuration::ConfigEditorCommand::new(&root_str, ConfigTarget::EngineConfig);
+
+    let result = fs::write(&config_file, b"initial_key = mutated_value\n");
+    assert!(result.is_ok());
+
+    let updated_content = fs::read_to_string(&config_file).unwrap();
+    assert!(updated_content.contains("mutated_value"));
+    assert!(!updated_content.contains("initial_value"));
+
+    fs::remove_dir_all(&root).unwrap();
+}
+
+// ── Completion Script ───────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_completion_engine_shell_script_generation() {
+    let root = create_temporary_root("completion_gen");
+    let db = Database::open(&root).unwrap();
+    let engine = CompletionEngine::new(Arc::new(db));
+
+    let bash_script = engine.generate_shell_blueprint("bash");
+    assert!(bash_script.is_ok());
+    assert!(bash_script.unwrap().contains("mcx"));
+
+    let zsh_script = engine.generate_shell_blueprint("zsh");
+    assert!(zsh_script.is_ok());
+
+    let bad_shell = engine.generate_shell_blueprint("tcsh");
+    assert!(bad_shell.is_err());
+
+    fs::remove_dir_all(&root).unwrap();
+}
+
+// ── Snapshot (Proc-dependent; test init only) ───────────────────────────────
+
+#[test]
+fn test_snapshot_manager_initialization() {
+    let root = create_temporary_root("snapshot_init");
+    let snap = mcx::core::snapshot::SnapshotManager::new(&root);
+    assert!(snap.initialize().is_ok());
+
+    let snapshots = snap.list_snapshots("any-pkg").unwrap();
+    assert!(snapshots.is_empty());
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+// ── Stream ──────────────────────────────────────────────────────────────────
+
+#[test]
+fn test_stream_manager_script_generation() {
+    let root = create_temporary_root("stream_test");
+    let stream = mcx::core::stream::StreamManager::new(&root);
+    assert!(stream.initialize().is_ok());
+
+    let script = stream.generate_stream_mount_script("test-pkg", "1.0.0", "https://example.com/test.sqsh");
+    assert!(script.is_ok());
+    let content = fs::read_to_string(script.unwrap()).unwrap();
+    assert!(content.contains("squashfuse"));
+    assert!(content.contains("test-pkg"));
+
+    let list = stream.list_stream_scripts().unwrap();
+    assert!(list.iter().any(|p| p.to_string_lossy().contains("test-pkg")));
+
+    assert!(stream.remove_stream_script("test-pkg").is_ok());
+
+    fs::remove_dir_all(&root).unwrap();
+}
+
+// ── Workspace ───────────────────────────────────────────────────────────────
+
+#[test]
+fn test_workspace_manager_initialization_and_dirs() {
+    let root = create_temporary_root("workspace_test");
+    let ws = mcx::core::workspace::WorkspaceManager::new(&root);
+    assert!(ws.initialize().is_ok());
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+// ── Lifecycle Engine + Dependency Graph ─────────────────────────────────────
+
+#[test]
+fn test_lifecycle_engine_state_machine_full_walk() {
+    let mut eng = LifecycleEngine::new();
+
+    // register two packages
+    let gen_a = eng.register_package("core-lib", "2.1.0");
+    let gen_b = eng.register_package("app", "1.0.0");
+    assert!(gen_a > 0);
+    assert!(gen_b > gen_a);
+
+    // initial state
+    assert_eq!(eng.state("core-lib"), Some(PackageState::Unknown));
+    assert_eq!(eng.state("app"), Some(PackageState::Unknown));
+    assert!(eng.entry("core-lib").is_some());
+    assert!(eng.entry("missing").is_none());
+    assert_eq!(eng.installed_count(), 0);
+    assert_eq!(eng.removed_count(), 0);
+
+    // walk core-lib through the full lifecycle
+    assert!(eng.transition("core-lib", PackageState::Resolved).is_ok());
+    assert!(eng.transition("core-lib", PackageState::Staged).is_ok());
+    assert!(eng.transition("core-lib", PackageState::Installed).is_ok());
+    assert!(eng.transition("core-lib", PackageState::Active).is_ok());
+    assert_eq!(eng.state("core-lib"), Some(PackageState::Active));
+    assert_eq!(eng.installed_count(), 1);
+
+    // walk app through a shorter path
+    assert!(eng.transition("app", PackageState::Resolved).is_ok());
+    assert!(eng.transition("app", PackageState::Staged).is_ok());
+    assert!(eng.transition("app", PackageState::Installed).is_ok());
+    assert_eq!(eng.state("app"), Some(PackageState::Installed));
+    assert_eq!(eng.installed_count(), 2);
+
+    // mark core-lib for removal and remove
+    assert!(eng.transition("core-lib", PackageState::MarkedForRemoval).is_ok());
+    assert_eq!(eng.state("core-lib"), Some(PackageState::MarkedForRemoval));
+    assert!(eng.transition("core-lib", PackageState::Removed).is_ok());
+    assert_eq!(eng.state("core-lib"), Some(PackageState::Removed));
+    assert_eq!(eng.removed_count(), 1);
+    assert_eq!(eng.installed_count(), 1);
+
+    // purge
+    assert!(eng.transition("core-lib", PackageState::Purged).is_ok());
+    assert!(eng.state("core-lib").unwrap().is_terminal());
+
+    // invalid transition: Installed -> Resolved is not allowed by the matrix
+    assert!(eng.transition("app", PackageState::Resolved).is_err());
+
+    // transition to same state succeeds without error (returns id 0)
+    let noop = eng.transition("app", PackageState::Installed).unwrap();
+    assert_eq!(noop, 0);
+
+    // unregistered package
+    assert!(eng.transition("ghost", PackageState::Resolved).is_err());
+
+    // history: Unknown→Resolved→Staged→Installed→Active→MarkedForRemoval→Removed→Purged
+    let hist = eng.history("core-lib");
+    assert_eq!(hist.len(), 7);
+    assert_eq!(hist[0].from, PackageState::Unknown);
+    assert_eq!(hist[0].to, PackageState::Resolved);
+    assert_eq!(hist[6].from, PackageState::Removed);
+    assert_eq!(hist[6].to, PackageState::Purged);
+
+    let app_hist = eng.history("app");
+    // Installed -> Installed noop is NOT recorded (early return), so only 3 transitions
+    assert_eq!(app_hist.len(), 3);
+
+    // counts
+    assert_eq!(eng.transition_count(), 10);
+
+    // all_entries iterator
+    let names: Vec<&str> = eng.all_entries().map(|e| e.package.as_str()).collect();
+    assert!(names.contains(&"core-lib"));
+    assert!(names.contains(&"app"));
+}
+
+#[test]
+fn test_lifecycle_engine_pre_and_post_hooks_fire() {
+    let mut eng = LifecycleEngine::new();
+    eng.register_package("test-pkg", "1.0.0");
+
+    let pre_fired = std::sync::Arc::new(std::sync::Mutex::new(false));
+    let post_fired = std::sync::Arc::new(std::sync::Mutex::new(false));
+    let pre = pre_fired.clone();
+    let post = post_fired.clone();
+
+    eng.add_pre_hook(move |_, _, _| {
+        *pre.lock().unwrap() = true;
+        Ok(())
+    });
+    eng.add_post_hook(move |_, _, _| {
+        *post.lock().unwrap() = true;
+        Ok(())
+    });
+
+    assert!(!*pre_fired.lock().unwrap());
+    assert!(!*post_fired.lock().unwrap());
+
+    eng.transition("test-pkg", PackageState::Resolved).unwrap();
+
+    assert!(*pre_fired.lock().unwrap());
+    assert!(*post_fired.lock().unwrap());
+}
+
+#[test]
+fn test_lifecycle_engine_hook_rejection_aborts_transition() {
+    let mut eng = LifecycleEngine::new();
+    eng.register_package("blocked-pkg", "1.0.0");
+
+    eng.add_pre_hook(|_, _, _| {
+        Err(anyhow::anyhow!("hook blocked transition"))
+    });
+
+    let result = eng.transition("blocked-pkg", PackageState::Resolved);
+    assert!(result.is_err());
+    // state must still be Unknown because pre-hook aborted
+    assert_eq!(eng.state("blocked-pkg"), Some(PackageState::Unknown));
+}
+
+#[test]
+fn test_package_state_predicates() {
+    assert!(!PackageState::Unknown.is_terminal());
+    assert!(!PackageState::Resolved.is_terminal());
+    assert!(!PackageState::Installed.is_terminal());
+    assert!(PackageState::Purged.is_terminal());
+
+    assert!(PackageState::Installed.is_installed());
+    assert!(PackageState::Active.is_installed());
+    assert!(!PackageState::Unknown.is_installed());
+    assert!(!PackageState::Removed.is_installed());
+
+    assert!(PackageState::Removed.is_removed());
+    assert!(PackageState::Purged.is_removed());
+    assert!(!PackageState::Active.is_removed());
+}
+
+#[test]
+fn test_package_state_invalid_transitions() {
+    // direct transitions that violate the matrix
+    assert!(!PackageState::Unknown.can_transition_to(PackageState::Active));
+    assert!(!PackageState::Unknown.can_transition_to(PackageState::Purged));
+    assert!(!PackageState::Staged.can_transition_to(PackageState::Purged));
+    assert!(!PackageState::Removed.can_transition_to(PackageState::Installed));
+    assert!(!PackageState::Purged.can_transition_to(PackageState::Unknown));
+}
+
+#[test]
+fn test_dependency_graph_reachability_and_orphans() {
+    let mut dg = DependencyGraph::new();
+
+    dg.add_dep("app", "lib-a");
+    dg.add_dep("app", "lib-b");
+    dg.add_dep("lib-a", "lib-c");
+    dg.add_dep("lib-b", "lib-c");
+
+    let all = &["app", "lib-a", "lib-b", "lib-c", "unused-dep", "abandoned"];
+    let roots = &["app".to_string()];
+
+    let reachable = dg.reachable_from(roots);
+    assert!(reachable.contains(&"app".to_string()));
+    assert!(reachable.contains(&"lib-a".to_string()));
+    assert!(reachable.contains(&"lib-b".to_string()));
+    assert!(reachable.contains(&"lib-c".to_string()));
+
+    let OrphanSet { packages: orphans, reachable: reach, purged } = dg.orphans(roots, &all.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+
+    assert!(orphans.contains(&"unused-dep".to_string()));
+    assert!(orphans.contains(&"abandoned".to_string()));
+    assert!(!orphans.contains(&"app".to_string()));
+    assert!(reach.contains(&"app".to_string()));
+    assert!(reach.contains(&"lib-c".to_string()));
+    assert!(purged.is_empty());
 }

@@ -32,6 +32,7 @@ pub use core::plugin::{PluginRegistry, PluginSlot, Fetcher, Builder, Packer, Cur
 pub use core::profiler::{SystemProfile, DecisionEngine, DecisionMatrix, HeuristicVerdict, AutoHealer, NetworkProber};
 pub use core::repo::RepositoryManager;
 pub use core::rollback::RollbackManager;
+pub use core::security::SecurityMonitor;
 pub use core::snapshot::SnapshotManager;
 pub use core::stream::StreamManager;
 pub use core::swarm::SwarmManager;
@@ -42,6 +43,7 @@ pub use core::vendor::VendorManager;
 pub use core::workspace::WorkspaceManager;
 
 pub use network::download::Downloader;
+pub use network::pipeline::DownloadPipeline;
 pub use network::sync::NetworkSyncEngine;
 
 pub use utils::ui::UserInterface;

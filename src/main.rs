@@ -10,6 +10,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process;
 use std::sync::Arc;
+use std::io::Write;
 use crate::utils::ui::UserInterface;
 use crate::core::database::Database;
 use crate::core::config::ConfigManager;
@@ -24,10 +25,19 @@ use crate::commands::sync::SyncCommand;
 use crate::commands::system::SystemCommand;
 use crate::core::delta::DeltaEngine;
 
+fn default_root() -> String {
+    if is_root_process() {
+        "/".to_string()
+    } else {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp/.mcx".to_string());
+        PathBuf::from(home).join(".mcx").to_string_lossy().to_string()
+    }
+}
+
 #[derive(Parser)]
 #[command(name = "mcx", version = "3.0.0", disable_version_flag = true)]
 struct Cli {
-    #[arg(long, global = true, default_value = "/")]
+    #[arg(long, global = true, default_value_t = default_root())]
     root: String,
     #[arg(long = "version", short = 'v', help = "Print version")]
     version: bool,
@@ -194,7 +204,7 @@ impl EngineContext {
         let sys_profile = SystemProfile::probe();
 
         let config_mgr = ConfigManager::new(root)
-            .unwrap_or_else(|e| { eprintln!("Config error: {}", e); process::exit(1); });
+            .unwrap_or_else(|e| { UserInterface::error(&format!("Config error: {}", e)); process::exit(1); });
 
         let mut plugin_registry = PluginRegistry::new();
         plugin_registry.register_fetcher(Arc::new(CurlFetcher));
@@ -203,7 +213,7 @@ impl EngineContext {
 
         let db = match Database::open(root) {
             Ok(database) => Arc::new(database),
-            Err(e) => { eprintln!("{}", e); process::exit(1); }
+            Err(e) => { UserInterface::error(&format!("{}", e)); process::exit(1); }
         };
 
         let _ = crate::core::lifecycle::LifecycleEngine::new();
@@ -216,74 +226,135 @@ impl EngineContext {
 async fn main() {
     let args = Cli::parse();
     if args.version {
-        println!("mcx 3.0.0");
+        UserInterface::version("mcx 3.0.0");
         return;
     }
     let root_path = PathBuf::from(&args.root);
-
-    if elevate_if_needed(&root_path) {
-        return;
-    }
 
     let ctx = EngineContext::new(&root_path);
 
     let _ = &ctx.config_mgr;
     let _ = &ctx.plugin_registry;
+    let security_mon = Arc::new(crate::core::security::SecurityMonitor::new());
+    let overlay_base = std::env::var("HOME").unwrap_or_else(|_| "/root".to_string());
+    let cgroup_mgr = crate::core::cgroup::CgroupController::new();
+    let overlay_mgr = crate::core::overlay::OverlayManager::new(
+        &PathBuf::from(&overlay_base)
+    );
 
     match args.command {
         Commands::Install { packages } => {
-            UserInterface::display_info(&format!("Installing: {:?}", packages));
+            UserInterface::info(&format!("Installing: {:?}", packages));
             let decisions = DecisionEngine::evaluate_thread_strategy(
                 &ctx.sys_profile,
                 &NetworkProber::probe("https://packages.cudane.org", std::time::Duration::from_secs(5)).await,
                 &Default::default(),
             );
             if DecisionEngine::should_use_parallel(&decisions) {
-                UserInterface::display_info("Parallel install strategy selected");
+                UserInterface::info("Parallel install strategy selected");
             }
-            let cmd = InstallCommand::new(args.root.clone(), Arc::clone(&ctx.db));
+            let cmd = InstallCommand::new(args.root.clone(), Arc::clone(&ctx.db))
+                .with_cgroup(cgroup_mgr)
+                .with_overlay(overlay_mgr)
+                .with_security(Arc::clone(&security_mon));
             match cmd.execute(&packages).await {
                 Ok(_) => {
                     let cas = crate::core::cas::CasStore::new(&root_path);
                     if let Ok(stats) = cas.deduplicate_libraries(&root_path.join("usr/lib")) {
-                        UserInterface::display_info(&format!(
-                            "CAS dedup: {} unique files, {} bytes saved",
-                            stats.unique_files, stats.bytes_saved
-                        ));
+                    UserInterface::cas(&format!(
+                        "CAS dedup: {} unique files, {} bytes saved",
+                        stats.unique_files, stats.bytes_saved
+                    ));
                     }
-                    UserInterface::display_success("Installation committed.");
+                    UserInterface::separator();
+
+                    // profile validation after install
+                    let profile_path = root_path.join("etc/mcx/profile.json");
+                    if profile_path.exists() {
+                        match crate::core::declarative::ProfileValidator::load_profile(&profile_path) {
+                            Ok(profile) => {
+                                let current: Vec<String> = ctx.db.get_all_installed_packages()
+                                    .unwrap_or_default()
+                                    .iter()
+                                    .map(|p| p.pkg_name.clone())
+                                    .collect();
+                                let (to_install, to_remove) =
+                                    crate::core::declarative::ProfileValidator::compile_profile_diff(
+                                        &current, &profile.packages);
+                                if !to_install.is_empty() || !to_remove.is_empty() {
+                                    UserInterface::info(&format!(
+                                        "Profile drift: {} to install, {} to remove",
+                                        to_install.len(), to_remove.len()));
+                                }
+                            }
+                            Err(e) => {
+                                UserInterface::info(&format!("Profile check: {}", e));
+                            }
+                        }
+                    }
+                    UserInterface::security(&format!("Tracking {} active packages", security_mon.active_count()));
+                    UserInterface::success("Installation committed.");
                 }
-                Err(e) => { UserInterface::display_error(&format!("{e}")); process::exit(1); }
+                Err(e) => { UserInterface::error(&format!("{e}")); process::exit(1); }
             }
         }
         Commands::Remove { packages } => {
-            UserInterface::display_info(&format!("Removing: {:?}", packages));
+            UserInterface::info(&format!("Removing: {:?}", packages));
             let cmd = RemoveCommand::new(args.root.clone(), Arc::clone(&ctx.db));
-            match cmd.execute(&packages) {
-                Ok(_) => UserInterface::display_success("Packages removed."),
-                Err(e) => { UserInterface::display_error(&format!("{e}")); process::exit(1); }
+            match cmd.execute(&packages, &cgroup_mgr, &overlay_mgr, &security_mon) {
+                Ok(_) => {
+                    UserInterface::separator();
+
+                    // profile validation after removal
+                    let profile_path = root_path.join("etc/mcx/profile.json");
+                    if profile_path.exists() {
+                        match crate::core::declarative::ProfileValidator::load_profile(&profile_path) {
+                            Ok(profile) => {
+                                let current: Vec<String> = ctx.db.get_all_installed_packages()
+                                    .unwrap_or_default()
+                                    .iter()
+                                    .map(|p| p.pkg_name.clone())
+                                    .collect();
+                                let (to_install, to_remove) =
+                                    crate::core::declarative::ProfileValidator::compile_profile_diff(
+                                        &current, &profile.packages);
+                                if !to_install.is_empty() || !to_remove.is_empty() {
+                                    UserInterface::info(&format!(
+                                        "Profile drift: {} to install, {} to remove",
+                                        to_install.len(), to_remove.len()));
+                                }
+                            }
+                            Err(e) => {
+                                UserInterface::info(&format!("Profile check: {}", e));
+                            }
+                        }
+                    }
+                    UserInterface::security(&format!("Tracking {} active packages", security_mon.active_count()));
+                    UserInterface::success("Packages removed.");
+                }
+                Err(e) => { UserInterface::error(&format!("{e}")); process::exit(1); }
             }
         }
         Commands::Build { config } => {
-            UserInterface::display_info(&format!("Building from: {}", config));
+            UserInterface::info(&format!("Building from: {}", config));
             let ws = crate::core::workspace::WorkspaceManager::new(&root_path);
             if let Err(e) = ws.initialize() {
-                UserInterface::display_error(&format!("Workspace init failed: {e}"));
+                UserInterface::error(&format!("Workspace init failed: {e}"));
                 process::exit(1);
             }
             let cmd = SystemCommand::new(args.root.clone(), Arc::clone(&ctx.db));
             match cmd.rebuild(&config).await {
                 Ok(_) => {
                     if let Err(e) = ws.clean_global_workspaces() {
-                        UserInterface::display_error(&format!("Workspace cleanup failed: {e}"));
+                        UserInterface::error(&format!("Workspace cleanup failed: {e}"));
                     }
-                    UserInterface::display_success("System aligned.");
+                    UserInterface::success("System aligned.");
                 }
-                Err(e) => { UserInterface::display_error(&format!("{e}")); process::exit(1); }
+                Err(e) => { UserInterface::error(&format!("{e}")); process::exit(1); }
             }
         }
         Commands::AddLocal { file } => {
-            UserInterface::display_info(&format!("Installing local: {}", file));
+            UserInterface::info(&format!("Installing local: {}", file));
             let cmd = AddLocalCommand::new(args.root.clone(), Arc::clone(&ctx.db));
             match cmd.execute(&file) {
                 Ok(_) => {
@@ -294,7 +365,7 @@ async fn main() {
                             let pkg_path = staging.join(&last.pkg_name);
                             if pkg_path.exists() {
                                 if let Err(e) = std::fs::rename(&pkg_path, installed_root.join(&last.pkg_name)) {
-                                    UserInterface::display_error(&format!("Failed to move package from staging: {e}"));
+                                    UserInterface::error(&format!("Failed to move package from staging: {e}"));
                                     process::exit(1);
                                 }
                             }
@@ -305,29 +376,29 @@ async fn main() {
                     if gen_root.exists() {
                         let _ = rollback_mgr.enable_atomic_rollback("local", &gen_root);
                     }
-                    UserInterface::display_success("Local package installed.");
+                    UserInterface::success("Local package installed.");
                 }
-                Err(e) => { UserInterface::display_error(&format!("{e}")); process::exit(1); }
+                Err(e) => { UserInterface::error(&format!("{e}")); process::exit(1); }
             }
         }
         Commands::Search { query } => {
             let cmd = SearchCommand::new(Arc::clone(&ctx.db));
-            if let Err(e) = cmd.execute(&query) { eprintln!("{}", e); process::exit(1); }
+            if let Err(e) = cmd.execute(&query) { UserInterface::error(&format!("{}", e)); process::exit(1); }
         }
         Commands::Update { packages } => {
             if let Some(pkgs) = packages {
-                UserInterface::display_info(&format!("Updating specific packages: {:?}", pkgs));
+                UserInterface::info(&format!("Updating specific packages: {:?}", pkgs));
                 let cmd = InstallCommand::new(args.root.clone(), Arc::clone(&ctx.db));
                 match cmd.execute(&pkgs).await {
-                    Ok(_) => UserInterface::display_success("Packages updated."),
-                    Err(e) => { eprintln!("{}", e); process::exit(1); }
+                    Ok(_) => UserInterface::success("Packages updated."),
+                    Err(e) => { UserInterface::error(&format!("{}", e)); process::exit(1); }
                 }
             } else {
-                UserInterface::display_info("Syncing repositories in parallel...");
+                UserInterface::info("Syncing repositories in parallel...");
                 let cmd = SyncCommand::new(args.root.clone(), Arc::clone(&ctx.db));
                 match cmd.execute().await {
-                    Ok(_) => UserInterface::display_success("Repositories synced."),
-                    Err(e) => { eprintln!("{}", e); process::exit(1); }
+                    Ok(_) => UserInterface::success("Repositories synced."),
+                    Err(e) => { UserInterface::error(&format!("{}", e)); process::exit(1); }
                 }
             }
         }
@@ -339,7 +410,7 @@ async fn main() {
                     .unwrap_or_default().into_iter().map(|p| p.pkg_name).collect()
             };
 
-            UserInterface::display_info(&format!("Upgrading: {:?}", pkgs_to_upgrade));
+            UserInterface::info(&format!("Upgrading: {:?}", pkgs_to_upgrade));
 
             let active_base = root_path.join("var/lib/mcx/active");
             let backup_base = root_path.join("var/tmp/mcx/upgrade-backup");
@@ -377,24 +448,24 @@ async fn main() {
                                 let added = delta.manifest.added.len();
                                 let removed = delta.manifest.removed.len();
                                 let modified = delta.manifest.modified.len();
-                                UserInterface::display_info(&format!(
+                                UserInterface::info(&format!(
                                     "{}: {} → {} ({} added, {} removed, {} modified)",
                                     pkg_name, old_ver, new_ver, added, removed, modified,
                                 ));
                                 let xcd_path = deltas_dir.join(format!("{}-{}-{}.xcd", pkg_name, old_ver, new_ver));
                                 if let Err(e) = DeltaEngine::write_delta(&delta, &xcd_path) {
-                                    UserInterface::display_error(&format!("Delta persist failed: {e}"));
+                                    UserInterface::error(&format!("Delta persist failed: {e}"));
                                 }
                             }
                             Err(e) => {
-                                UserInterface::display_error(&format!("Delta compute failed for {}: {e}", pkg_name));
+                                UserInterface::error(&format!("Delta compute failed for {}: {e}", pkg_name));
                             }
                         }
                     }
                     let _ = fs::remove_dir_all(&backup_base);
-                    UserInterface::display_success("Upgrade complete.");
+                    UserInterface::success("Upgrade complete.");
                 }
-                Err(e) => { eprintln!("{}", e); process::exit(1); }
+                Err(e) => { UserInterface::error(&format!("{}", e)); process::exit(1); }
             }
         }
         Commands::Query { package } => {
@@ -436,6 +507,11 @@ async fn main() {
                     ];
                     UserInterface::render_key_values(&format!("Package: {}", meta.pkg_name), &pairs);
 
+                    let table_rows = vec![
+                        vec![meta.pkg_name.clone(), meta.version.clone(), meta.license.clone()],
+                    ];
+                    UserInterface::table("Package summary", &["Name", "Version", "License"], &table_rows);
+
                     if !dep_list.is_empty() {
                         UserInterface::render_list("Dependency tree", &dep_list);
                     }
@@ -449,7 +525,7 @@ async fn main() {
                         UserInterface::render_list("Installed files", &file_strings);
                     }
                 }
-                Err(_) => UserInterface::display_error("Not installed."),
+                Err(_) => UserInterface::error("Not installed."),
             }
         }
         Commands::Clean => {
@@ -458,9 +534,9 @@ async fn main() {
                 Ok(_) => {
                     let ws = crate::core::workspace::WorkspaceManager::new(&root_path);
                     let _ = ws.clean_global_workspaces();
-                    UserInterface::display_success("Cache cleared.");
+                    UserInterface::success("Cache cleared.");
                 }
-                Err(e) => { eprintln!("{}", e); process::exit(1); }
+                Err(e) => { UserInterface::error(&format!("{}", e)); process::exit(1); }
             }
         }
         Commands::Verify => {
@@ -469,7 +545,9 @@ async fn main() {
             let active_base = root_path.join("var/lib/mcx/active");
             let mut errors: Vec<String> = Vec::new();
 
-            for pkg in &all_pkgs {
+            let total = all_pkgs.len();
+            for (idx, pkg) in all_pkgs.iter().enumerate() {
+                UserInterface::progress(idx + 1, total, "Verifying packages");
                 for file in &pkg.files {
                     let full = root_path.join(file);
                     if !full.exists() {
@@ -486,6 +564,9 @@ async fn main() {
                     }
                 }
             }
+            // clear progress line
+            print!("\r\x1b[K");
+            let _ = std::io::stdout().flush();
 
             let dangling_count = count_dangling_symlinks(&root_path);
             if dangling_count > 0 {
@@ -493,12 +574,18 @@ async fn main() {
             }
 
             if errors.is_empty() {
-                UserInterface::display_success(&format!("All {} packages intact. No broken deps, no missing files, no dangling symlinks.", all_pkgs.len()));
+                UserInterface::block("Verification summary", &[
+                    &format!("{} packages checked", all_pkgs.len()),
+                    "No broken dependencies",
+                    "No missing files",
+                    "No dangling symlinks",
+                ]);
+                UserInterface::success(&format!("All {} packages intact.", all_pkgs.len()));
             } else {
                 for e in &errors {
-                    UserInterface::display_error(e);
+                    UserInterface::error(e);
                 }
-                UserInterface::display_error(&format!("{} issues found. Run mcx -f to repair.", errors.len()));
+                UserInterface::error(&format!("{} issues found. Run mcx -f to repair.", errors.len()));
             }
         }
         Commands::FixDeps => {
@@ -530,32 +617,32 @@ async fn main() {
 
             let mut fixed = 0usize;
             if !missing_deps.is_empty() {
-                UserInterface::display_info(&format!("Installing {} missing dependencies...", missing_deps.len()));
+                UserInterface::info(&format!("Installing {} missing dependencies...", missing_deps.len()));
                 let cmd = InstallCommand::new(args.root.clone(), Arc::clone(&ctx.db));
                 if let Err(e) = cmd.execute(&missing_deps).await {
-                    UserInterface::display_error(&format!("Dependency install failed: {e}"));
+                    UserInterface::error(&format!("Dependency install failed: {e}"));
                 } else {
                     fixed += missing_deps.len();
                 }
             }
 
             if !missing_files_pkgs.is_empty() {
-                UserInterface::display_info(&format!("Reinstalling {} packages with missing files...", missing_files_pkgs.len()));
+                UserInterface::info(&format!("Reinstalling {} packages with missing files...", missing_files_pkgs.len()));
                 let cmd = InstallCommand::new(args.root.clone(), Arc::clone(&ctx.db));
                 if let Err(e) = cmd.execute(&missing_files_pkgs).await {
-                    UserInterface::display_error(&format!("Reinstall failed: {e}"));
+                    UserInterface::error(&format!("Reinstall failed: {e}"));
                 } else {
                     fixed += missing_files_pkgs.len();
                 }
             }
 
             if fixed > 0 {
-                UserInterface::display_success(&format!("Repair complete: {} issues resolved.", fixed));
+                UserInterface::success(&format!("Repair complete: {} issues resolved.", fixed));
             } else {
-                UserInterface::display_success("All packages intact. No repair needed.");
+                UserInterface::success("All packages intact. No repair needed.");
             }
         }
-        Commands::Config => UserInterface::display_success("Configuration saved."),
+        Commands::Config => UserInterface::success("Configuration saved."),
 
         Commands::History { rollback, prune, current_gen } => {
             let rollback_mgr = crate::core::rollback::RollbackManager::new(&root_path);
@@ -568,18 +655,18 @@ async fn main() {
                 for name in &pkg_names {
                     match rollback_mgr.prune_generations(name, keep) {
                         Ok(n) => total += n,
-                        Err(e) => UserInterface::display_error(&format!("Prune failed for {}: {e}", name)),
+                        Err(e) => UserInterface::error(&format!("Prune failed for {}: {e}", name)),
                     }
                 }
-                UserInterface::display_success(&format!("Pruned {} old generations (keeping {})", total, keep));
+                UserInterface::success(&format!("Pruned {} old generations (keeping {})", total, keep));
             } else if let Some(pkg_name) = current_gen {
                 match rollback_mgr.current_generation(&pkg_name) {
-                    Ok(Some(generation_id)) => UserInterface::display_success(&format!("{}: current generation {}", pkg_name, generation_id.0)),
-                    Ok(None) => UserInterface::display_info("No generations recorded."),
-                    Err(e) => { UserInterface::display_error(&format!("{e}")); process::exit(1); }
+                    Ok(Some(generation_id)) => UserInterface::success(&format!("{}: current generation {}", pkg_name, generation_id.0)),
+                    Ok(None) => UserInterface::info("No generations recorded."),
+                    Err(e) => { UserInterface::error(&format!("{e}")); process::exit(1); }
                 }
             } else if let Some(tx_id) = rollback {
-                UserInterface::display_info(&format!("Rolling back to transaction {}", tx_id));
+                UserInterface::info(&format!("Rolling back to transaction {}", tx_id));
                 let history = crate::core::history::HistoryEngine::new(&root_path, Arc::clone(&ctx.db));
                 match tx_id.parse::<u64>() {
                     Ok(id) => {
@@ -588,27 +675,27 @@ async fn main() {
                                 for (action, targets) in &plan {
                                     match action {
                                         crate::core::changelog::ActionKind::Installation => {
-                                            UserInterface::display_info(&format!("Rollback: install {:?}", targets));
+                                            UserInterface::info(&format!("Rollback: install {:?}", targets));
                                         }
                                         crate::core::changelog::ActionKind::Removal => {
-                                            UserInterface::display_info(&format!("Rollback: remove {:?}", targets));
+                                            UserInterface::info(&format!("Rollback: remove {:?}", targets));
                                         }
                                         _ => {}
                                     }
                                 }
                             }
                             Err(e) => {
-                                UserInterface::display_error(&format!("Rollback plan failed: {e}"));
+                                UserInterface::error(&format!("Rollback plan failed: {e}"));
                                 process::exit(1);
                             }
                         }
                     }
                     Err(_) => {
-                        UserInterface::display_error("Invalid transaction ID");
+                        UserInterface::error("Invalid transaction ID");
                         process::exit(1);
                     }
                 }
-                UserInterface::display_success("Rollback complete.");
+                UserInterface::success("Rollback complete.");
             } else {
                 let history = crate::core::history::HistoryEngine::new(&root_path, Arc::clone(&ctx.db));
                 match history.fetch_ordered_log() {
@@ -619,7 +706,7 @@ async fn main() {
                         UserInterface::render_list("Transaction history", &items);
                     }
                     Err(e) => {
-                        UserInterface::display_error(&format!("History fetch failed: {e}"));
+                        UserInterface::error(&format!("History fetch failed: {e}"));
                         process::exit(1);
                     }
                 }
@@ -631,15 +718,15 @@ async fn main() {
             match mgr.add_repository(crate::core::database::RepositoryInfo {
                 name, url, checksum: None,
             }) {
-                Ok(_) => UserInterface::display_success("Repository added."),
-                Err(e) => { eprintln!("{}", e); process::exit(1); }
+                Ok(_) => UserInterface::success("Repository added."),
+                Err(e) => { UserInterface::error(&format!("{}", e)); process::exit(1); }
             }
         }
         Commands::RepoRemove { name } => {
             let mgr = crate::core::repo::RepositoryManager::new(&args.root);
             match mgr.remove_repository(&name) {
-                Ok(_) => UserInterface::display_success("Repository removed."),
-                Err(e) => { eprintln!("{}", e); process::exit(1); }
+                Ok(_) => UserInterface::success("Repository removed."),
+                Err(e) => { UserInterface::error(&format!("{}", e)); process::exit(1); }
             }
         }
         Commands::RepoList => {
@@ -652,80 +739,110 @@ async fn main() {
                         .collect::<Vec<_>>();
                     UserInterface::render_list("Repositories", &items);
                 }
-                Err(e) => { UserInterface::display_error(&format!("{e}")); process::exit(1); }
+                Err(e) => { UserInterface::error(&format!("{e}")); process::exit(1); }
             }
         }
 
         Commands::SelfUpdate => {
-            UserInterface::display_info("Building from source (codeberg.org/Cudane/MCX)...");
+            let output_path = PathBuf::from("/system/bin/mcx");
+            if !is_root_process() {
+                elevate_for("self-update");
+            }
+
+            UserInterface::self_update("Building from source (codeberg.org/Cudane/MCX)...");
             let tmp = std::env::temp_dir().join("mcx-self-update");
             let _ = fs::remove_dir_all(&tmp);
 
             let clone_status = std::process::Command::new("git")
                 .args(["clone", "https://codeberg.org/Cudane/MCX", &tmp.to_string_lossy()])
                 .status()
-                .unwrap_or_else(|_| { UserInterface::display_error("git not found"); process::exit(1); });
+                .unwrap_or_else(|_| { UserInterface::error("git not found"); process::exit(1); });
             if !clone_status.success() {
-                UserInterface::display_error("Clone failed");
+                UserInterface::error("Clone failed");
                 process::exit(1);
             }
 
-            UserInterface::display_info("Compiling (cargo build --release --target x86_64-unknown-linux-musl)...");
+            UserInterface::info("Compiling (cargo build --release --target x86_64-unknown-linux-musl)...");
             let build_status = std::process::Command::new("cargo")
                 .args(["build", "--release", "--target", "x86_64-unknown-linux-musl"])
                 .current_dir(&tmp)
                 .status()
-                .unwrap_or_else(|_| { UserInterface::display_error("cargo not found"); process::exit(1); });
+                .unwrap_or_else(|_| { UserInterface::error("cargo not found"); process::exit(1); });
             if !build_status.success() {
-                UserInterface::display_error("Build failed");
+                UserInterface::error("Build failed");
                 let _ = fs::remove_dir_all(&tmp);
                 process::exit(1);
             }
 
             let built = tmp.join("target/x86_64-unknown-linux-musl/release/mcx");
             if !built.exists() {
-                UserInterface::display_error("Built binary not found at target/x86_64-unknown-linux-musl/release/mcx");
+                UserInterface::error("Built binary not found");
                 let _ = fs::remove_dir_all(&tmp);
                 process::exit(1);
             }
 
-            let dest = PathBuf::from("/system/bin/mcx");
-            if let Some(parent) = dest.parent() {
+            // verify the built binary is functional before swapping
+            let verify = std::process::Command::new(&built)
+                .arg("--version")
+                .output();
+            match verify {
+                Ok(out) if out.status.success() => {
+                    let ver = String::from_utf8_lossy(&out.stdout);
+                    UserInterface::info(&format!("Built: {}", ver.trim()));
+                }
+                _ => {
+                    UserInterface::error("Built binary failed verification");
+                    let _ = fs::remove_dir_all(&tmp);
+                    process::exit(1);
+                }
+            }
+
+            // atomic swap: write to .new, rename over target (atomic on same filesystem)
+            let new_path = output_path.with_extension("mcx.new");
+            if let Some(parent) = new_path.parent() {
                 let _ = fs::create_dir_all(parent);
             }
-            if let Err(e) = fs::copy(&built, &dest) {
-                UserInterface::display_error(&format!("Failed to copy binary to /system/bin/mcx: {e}"));
+            if new_path.exists() {
+                let _ = fs::remove_file(&new_path);
+            }
+            fs::copy(&built, &new_path).unwrap_or_else(|e| {
+                UserInterface::error(&format!("Copy failed: {}", e));
                 let _ = fs::remove_dir_all(&tmp);
                 process::exit(1);
-            }
+            });
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
-                let _ = fs::set_permissions(&dest, fs::Permissions::from_mode(0o755));
+                let _ = fs::set_permissions(&new_path, fs::Permissions::from_mode(0o755));
             }
+            fs::rename(&new_path, &output_path).unwrap_or_else(|e| {
+                UserInterface::error(&format!("Atomic rename failed: {}", e));
+                let _ = fs::remove_dir_all(&tmp);
+                process::exit(1);
+            });
 
             let _ = fs::remove_dir_all(&tmp);
-            UserInterface::display_success("Update complete. Binary written to /system/bin/mcx");
+            UserInterface::self_update("Self-update complete. New binary at /system/bin/mcx");
         }
 
         Commands::Vendor { action } => {
             let vendor = crate::core::vendor::VendorManager::new(&root_path);
             if let Err(e) = vendor.initialize() {
-                UserInterface::display_error(&format!("Vendor init failed: {e}"));
+                UserInterface::error(&format!("Vendor init failed: {e}"));
                 process::exit(1);
             }
             match action {
                 VendorAction::Add { package, source } => {
                     let src = PathBuf::from(&source);
                     match vendor.register_vendor_package(&package, &src) {
-                        Ok(_) => UserInterface::display_success(&format!("Vendored {}", package)),
-                        Err(e) => { UserInterface::display_error(&format!("{e}")); process::exit(1); }
+                        Ok(_) => UserInterface::success(&format!("Vendored {}", package)),
+                        Err(e) => { UserInterface::error(&format!("{e}")); process::exit(1); }
                     }
                 }
                 VendorAction::Remove { package } => {
                     match vendor.remove_vendor_package(&package) {
-                        Ok(_) => UserInterface::display_success(&format!("Removed vendored {}", package)),
-                        Err(e) => { UserInterface::display_error(&format!("{e}")); process::exit(1); }
+                        Ok(_) => UserInterface::success(&format!("Removed vendored {}", package)),
+                        Err(e) => { UserInterface::error(&format!("{e}")); process::exit(1); }
                     }
                 }
                 VendorAction::List => {
@@ -747,7 +864,7 @@ async fn main() {
                     println!("{}", script);
                 }
                 Err(e) => {
-                    UserInterface::display_error(&format!("Completion generation failed: {e}"));
+                    UserInterface::error(&format!("Completion generation failed: {e}"));
                     process::exit(1);
                 }
             }
@@ -756,14 +873,14 @@ async fn main() {
         Commands::Snapshot { action } => {
             let snap_mgr = crate::core::snapshot::SnapshotManager::new(&root_path);
             if let Err(e) = snap_mgr.initialize() {
-                UserInterface::display_error(&format!("Snapshot init failed: {e}"));
+                UserInterface::error(&format!("Snapshot init failed: {e}"));
                 process::exit(1);
             }
             match action {
                 SnapshotAction::Take { package, pid } => {
                     match snap_mgr.checkpoint_process(&package, pid) {
-                        Ok(path) => UserInterface::display_success(&format!("Snapshot saved: {:?}", path)),
-                        Err(e) => { UserInterface::display_error(&format!("{e}")); process::exit(1); }
+                        Ok(path) => UserInterface::snapshot(&format!("Snapshot saved: {:?}", path)),
+                        Err(e) => { UserInterface::error(&format!("{e}")); process::exit(1); }
                     }
                 }
                 SnapshotAction::List { package } => {
@@ -772,20 +889,20 @@ async fn main() {
                             let items: Vec<String> = snapshots.iter().map(|p| p.to_string_lossy().to_string()).collect();
                             UserInterface::render_list(&format!("Snapshots for {}", package), &items);
                         }
-                        Err(e) => { UserInterface::display_error(&format!("{e}")); process::exit(1); }
+                        Err(e) => { UserInterface::error(&format!("{e}")); process::exit(1); }
                     }
                 }
                 SnapshotAction::Restore { package: _, snapshot, pid } => {
                     let snap_path = PathBuf::from(&snapshot);
                     match snap_mgr.restore_snapshot(&snap_path, pid) {
-                        Ok(_) => UserInterface::display_success("Snapshot restored."),
-                        Err(e) => { UserInterface::display_error(&format!("{e}")); process::exit(1); }
+                        Ok(_) => UserInterface::snapshot("Snapshot restored."),
+                        Err(e) => { UserInterface::error(&format!("{e}")); process::exit(1); }
                     }
                 }
                 SnapshotAction::Remove { package } => {
                     match snap_mgr.remove_snapshots(&package) {
-                        Ok(_) => UserInterface::display_success(&format!("Snapshots removed for {}", package)),
-                        Err(e) => { UserInterface::display_error(&format!("{e}")); process::exit(1); }
+                        Ok(_) => UserInterface::snapshot(&format!("Snapshots removed for {}", package)),
+                        Err(e) => { UserInterface::error(&format!("{e}")); process::exit(1); }
                     }
                 }
             }
@@ -794,27 +911,27 @@ async fn main() {
         Commands::Swarm { action } => {
             let swarm_mgr = crate::core::swarm::SwarmManager::new(&root_path);
             if let Err(e) = swarm_mgr.initialize() {
-                UserInterface::display_error(&format!("Swarm init failed: {e}"));
+                UserInterface::error(&format!("Swarm init failed: {e}"));
                 process::exit(1);
             }
             match action {
                 SwarmAction::RegisterHash { package, version, hash } => {
                     match swarm_mgr.register_swarm_hash(&package, &version, &hash) {
-                        Ok(_) => UserInterface::display_success(&format!("Swarm hash registered for {}", package)),
-                        Err(e) => { UserInterface::display_error(&format!("{e}")); process::exit(1); }
+                        Ok(_) => UserInterface::success(&format!("Swarm hash registered for {}", package)),
+                        Err(e) => { UserInterface::error(&format!("{e}")); process::exit(1); }
                     }
                 }
                 SwarmAction::GetHash { package } => {
                     match swarm_mgr.get_swarm_hash(&package) {
-                        Ok(Some(hash)) => UserInterface::display_success(&format!("{}: {}", package, hash)),
-                        Ok(None) => UserInterface::display_info("No swarm hash registered."),
-                        Err(e) => { UserInterface::display_error(&format!("{e}")); process::exit(1); }
+                        Ok(Some(hash)) => UserInterface::success(&format!("{}: {}", package, hash)),
+                        Ok(None) => UserInterface::info("No swarm hash registered."),
+                        Err(e) => { UserInterface::error(&format!("{e}")); process::exit(1); }
                     }
                 }
                 SwarmAction::RemoveHash { package } => {
                     match swarm_mgr.remove_swarm_entry(&package) {
-                        Ok(_) => UserInterface::display_success(&format!("Swarm hash removed for {}", package)),
-                        Err(e) => { UserInterface::display_error(&format!("{e}")); process::exit(1); }
+                        Ok(_) => UserInterface::success(&format!("Swarm hash removed for {}", package)),
+                        Err(e) => { UserInterface::error(&format!("{e}")); process::exit(1); }
                     }
                 }
                 SwarmAction::RegisterPeer { address, peer_id } => {
@@ -826,8 +943,8 @@ async fn main() {
                         advertised_hashes: Vec::new(),
                     };
                     match swarm_mgr.register_swarm_peer(peer) {
-                        Ok(_) => UserInterface::display_success("Peer registered."),
-                        Err(e) => { UserInterface::display_error(&format!("{e}")); process::exit(1); }
+                        Ok(_) => UserInterface::success("Peer registered."),
+                        Err(e) => { UserInterface::error(&format!("{e}")); process::exit(1); }
                     }
                 }
                 SwarmAction::ListPeers => {
@@ -838,31 +955,34 @@ async fn main() {
                                 .collect();
                             UserInterface::render_list("Swarm peers", &items);
                         }
-                        Err(e) => { UserInterface::display_error(&format!("{e}")); process::exit(1); }
+                        Err(e) => { UserInterface::error(&format!("{e}")); process::exit(1); }
                     }
                 }
             }
         }
 
         Commands::Overlay { action } => {
+            if !is_root_process() {
+                elevate_for("overlay");
+            }
             let overlay_mgr = crate::core::overlay::OverlayManager::new(&root_path.join(
                 std::env::var("HOME").unwrap_or_else(|_| "/root".to_string())
             ));
             if let Err(e) = overlay_mgr.initialize() {
-                UserInterface::display_error(&format!("Overlay init failed: {e}"));
+                UserInterface::error(&format!("Overlay init failed: {e}"));
                 process::exit(1);
             }
             match action {
                 OverlayAction::Create { package, lower } => {
                     match overlay_mgr.create_isolated_overlay(&package, PathBuf::from(&lower).as_path()) {
-                        Ok(merged) => UserInterface::display_success(&format!("Overlay created: {:?}", merged)),
-                        Err(e) => { UserInterface::display_error(&format!("{e}")); process::exit(1); }
+                        Ok(merged) => UserInterface::success(&format!("Overlay created: {:?}", merged)),
+                        Err(e) => { UserInterface::error(&format!("{e}")); process::exit(1); }
                     }
                 }
                 OverlayAction::Remove { package } => {
                     match overlay_mgr.remove_isolated_overlay(&package) {
-                        Ok(_) => UserInterface::display_success("Overlay removed."),
-                        Err(e) => { UserInterface::display_error(&format!("{e}")); process::exit(1); }
+                        Ok(_) => UserInterface::success("Overlay removed."),
+                        Err(e) => { UserInterface::error(&format!("{e}")); process::exit(1); }
                     }
                 }
                 OverlayAction::List => {
@@ -873,56 +993,59 @@ async fn main() {
                                 .collect();
                             UserInterface::render_list("Active overlays", &items);
                         }
-                        Err(e) => { UserInterface::display_error(&format!("{e}")); process::exit(1); }
+                        Err(e) => { UserInterface::error(&format!("{e}")); process::exit(1); }
                     }
                 }
             }
         }
 
         Commands::Cgroup { action } => {
+            if !is_root_process() {
+                elevate_for("cgroup");
+            }
             let cg_mgr = crate::core::cgroup::CgroupController::new();
             match action {
                 CgroupAction::Enforce { package, max_memory_mb, max_cpu_percent } => {
                     if !cg_mgr.is_cgroup_v2_available() {
-                        UserInterface::display_error("cgroup v2 not available on this system");
+                        UserInterface::error("cgroup v2 not available on this system");
                         process::exit(1);
                     }
                     match cg_mgr.enforce_resource_limits(&package, max_memory_mb, max_cpu_percent) {
-                        Ok(_) => UserInterface::display_success(&format!("Limits enforced for {}", package)),
-                        Err(e) => { UserInterface::display_error(&format!("{e}")); process::exit(1); }
+                        Ok(_) => UserInterface::cgroup(&format!("Limits enforced for {}", package)),
+                        Err(e) => { UserInterface::error(&format!("{e}")); process::exit(1); }
                     }
                 }
                 CgroupAction::EnforceMem { package, max_memory_mb } => {
                     if !cg_mgr.is_cgroup_v2_available() {
-                        UserInterface::display_error("cgroup v2 not available on this system");
+                        UserInterface::error("cgroup v2 not available on this system");
                         process::exit(1);
                     }
                     match cg_mgr.enforce_memory_limit(&package, max_memory_mb) {
-                        Ok(_) => UserInterface::display_success(&format!("Memory limit enforced for {}", package)),
-                        Err(e) => { UserInterface::display_error(&format!("{e}")); process::exit(1); }
+                        Ok(_) => UserInterface::cgroup(&format!("Memory limit enforced for {}", package)),
+                        Err(e) => { UserInterface::error(&format!("{e}")); process::exit(1); }
                     }
                 }
                 CgroupAction::EnforceCpu { package, max_cpu_percent } => {
                     if !cg_mgr.is_cgroup_v2_available() {
-                        UserInterface::display_error("cgroup v2 not available on this system");
+                        UserInterface::error("cgroup v2 not available on this system");
                         process::exit(1);
                     }
                     match cg_mgr.enforce_cpu_limit(&package, max_cpu_percent) {
-                        Ok(_) => UserInterface::display_success(&format!("CPU limit enforced for {}", package)),
-                        Err(e) => { UserInterface::display_error(&format!("{e}")); process::exit(1); }
+                        Ok(_) => UserInterface::cgroup(&format!("CPU limit enforced for {}", package)),
+                        Err(e) => { UserInterface::error(&format!("{e}")); process::exit(1); }
                     }
                 }
                 CgroupAction::Remove { package } => {
                     match cg_mgr.remove_resource_limits(&package) {
-                        Ok(_) => UserInterface::display_success(&format!("Limits removed for {}", package)),
-                        Err(e) => { UserInterface::display_error(&format!("{e}")); process::exit(1); }
+                        Ok(_) => UserInterface::cgroup(&format!("Limits removed for {}", package)),
+                        Err(e) => { UserInterface::error(&format!("{e}")); process::exit(1); }
                     }
                 }
                 CgroupAction::Status => {
                     if cg_mgr.is_cgroup_v2_available() {
-                        UserInterface::display_success("cgroup v2 available at /sys/fs/cgroup/mcx");
+                        UserInterface::cgroup("cgroup v2 available at /sys/fs/cgroup/mcx");
                     } else {
-                        UserInterface::display_info("cgroup v2 not available");
+                        UserInterface::info("cgroup v2 not available");
                     }
                 }
             }
@@ -931,20 +1054,20 @@ async fn main() {
         Commands::Stream { action } => {
             let stream_mgr = crate::core::stream::StreamManager::new(&root_path);
             if let Err(e) = stream_mgr.initialize() {
-                UserInterface::display_error(&format!("Stream init failed: {e}"));
+                UserInterface::error(&format!("Stream init failed: {e}"));
                 process::exit(1);
             }
             match action {
                 StreamAction::Generate { package, version, url } => {
                     match stream_mgr.generate_stream_mount_script(&package, &version, &url) {
-                        Ok(path) => UserInterface::display_success(&format!("Stream script generated: {:?}", path)),
-                        Err(e) => { UserInterface::display_error(&format!("{e}")); process::exit(1); }
+                        Ok(path) => UserInterface::success(&format!("Stream script generated: {:?}", path)),
+                        Err(e) => { UserInterface::error(&format!("{e}")); process::exit(1); }
                     }
                 }
                 StreamAction::Remove { package } => {
                     match stream_mgr.remove_stream_script(&package) {
-                        Ok(_) => UserInterface::display_success("Stream script removed."),
-                        Err(e) => { UserInterface::display_error(&format!("{e}")); process::exit(1); }
+                        Ok(_) => UserInterface::success("Stream script removed."),
+                        Err(e) => { UserInterface::error(&format!("{e}")); process::exit(1); }
                     }
                 }
                 StreamAction::List => {
@@ -955,7 +1078,7 @@ async fn main() {
                                 .collect();
                             UserInterface::render_list("Stream mount scripts", &items);
                         }
-                        Err(e) => { UserInterface::display_error(&format!("{e}")); process::exit(1); }
+                        Err(e) => { UserInterface::error(&format!("{e}")); process::exit(1); }
                     }
                 }
             }
@@ -963,26 +1086,18 @@ async fn main() {
     }
 }
 
-fn elevate_if_needed(root: &Path) -> bool {
-    if is_root_process() {
-        return false;
-    }
-    if has_write_access(root) {
-        return false;
-    }
-    let exe = match std::env::current_exe() {
-        Ok(e) => e,
-        Err(_) => return false,
-    };
-    let args: Vec<String> = std::env::args().skip(1).collect();
+fn elevate_for(command: &str) -> ! {
+    let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("mcx"));
+    let all_args: Vec<String> = std::env::args().collect();
     let status = std::process::Command::new("sudo")
         .arg(&exe)
-        .args(&args)
-        .status();
-    match status {
-        Ok(s) => std::process::exit(s.code().unwrap_or(1)),
-        Err(_) => false,
-    }
+        .args(&all_args[1..])
+        .status()
+        .unwrap_or_else(|e| {
+            UserInterface::error(&format!("sudo escalation failed for {}: {}", command, e));
+            process::exit(1);
+        });
+    process::exit(status.code().unwrap_or(1));
 }
 
 fn is_root_process() -> bool {
@@ -993,18 +1108,6 @@ fn is_root_process() -> bool {
         .and_then(|o| String::from_utf8(o.stdout).ok())
         .map(|s| s.trim() == "0")
         .unwrap_or(false)
-}
-
-fn has_write_access(root: &Path) -> bool {
-    let probe = root.join(".mcx-wt");
-    match std::fs::write(&probe, []) {
-        Ok(_) => {
-            let _ = std::fs::remove_file(&probe);
-            true
-        }
-        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => false,
-        Err(_) => true,
-    }
 }
 
 fn count_dangling_symlinks(root: &Path) -> usize {
