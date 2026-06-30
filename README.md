@@ -397,7 +397,7 @@ After every `install` and `remove` operation, if `etc/mcx/profile.json` exists, 
 | `--swarm` | `p2p` | `SwarmManager` | `core::swarm` |
 | `--overlay` | `ovl` | `OverlayManager` | `core::overlay` |
 | `--cgroup` | `cg` | `CgroupController` | `core::cgroup` |
-| `--stream` | `str` | `StreamManager` | `core::stream` |
+| `--stream` | `str` | `StreamManager` (zstd+tar) | `core::stream` |
 | `--repo-add` | `ra` | `RepositoryManager` | `core::repo` |
 | `--repo-remove` | `rr` | `RepositoryManager` | `core::repo` |
 | `--repo-list` | `rl` | `RepositoryManager` | `core::repo` |
@@ -481,7 +481,7 @@ mcx --stream remove <package>
 mcx --stream list
 ```
 
-Generates executable shell scripts at `var/lib/mcx/stream/<pkg>.sh` that mount remote squashfs images via `squashfuse` with HTTP range requests. Falls back to `wget` + `tar` if `squashfuse` is absent.
+Generates executable shell scripts at `var/lib/mcx/stream/<pkg>.sh` that download an `.xcs` archive via `curl` and decompress with `zstd` + `tar`, matching the native package format.
 
 ## Repository management
 
@@ -1165,15 +1165,17 @@ Wired into `InstallCommand` as the download backend. Created with optional `Swar
 
 ## Streaming mounts
 
-`generate_stream_mount_script(pkg, version, url)` writes an executable shell script to `var/lib/mcx/stream/<pkg>.sh`:
+`generate_stream_mount_script(pkg, version, url)` writes an executable shell script to `var/lib/mcx/stream/<pkg>.sh` that downloads and extracts the `.xcs` archive using `curl` + `zstd` + `tar`:
 
 ```sh
 #!/bin/sh
-URL="https://packages.cudane.org/stream/<pkg>.squashfs"
+URL="https://packages.cudane.org/stream/<pkg>-<version>.xcs"
 MOUNT="/mnt/<pkg>"
 CACHE="/var/cache/mcx/stream"
 mkdir -p "$MOUNT" "$CACHE"
-squashfuse "$URL" "$MOUNT" -o ro,allow_other,cache=cache_dir="$CACHE"
+ARCHIVE="$CACHE/<pkg>-<version>.xcs"
+curl -sL "$URL" -o "$ARCHIVE"
+zstd -d -c "$ARCHIVE" | tar -x -C "$MOUNT"
 ```
 
 | Function | Module | Signature |
