@@ -4,17 +4,16 @@ pub mod archive;
 pub mod utils;
 pub mod commands;
 
-use anyhow::Result;
 use clap::{Parser, Subcommand};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process;
 use std::sync::Arc;
-use std::io::Write;
 use crate::utils::ui::UserInterface;
 use crate::core::database::Database;
 use crate::core::config::ConfigManager;
 use crate::core::profiler::{SystemProfile, DecisionEngine, NetworkProber};
+use crate::core::plugin::{PluginManager, PluginHook, PluginEvent};
 use crate::core::plugin::{PluginRegistry, CurlFetcher, DefaultBuilder, ZstdPacker};
 use crate::commands::add::AddLocalCommand;
 use crate::commands::clean::CleanCommand;
@@ -23,7 +22,6 @@ use crate::commands::remove::RemoveCommand;
 use crate::commands::search::SearchCommand;
 use crate::commands::sync::SyncCommand;
 use crate::commands::system::SystemCommand;
-use crate::core::delta::DeltaEngine;
 
 fn default_root() -> String {
     if is_root_process() {
@@ -35,7 +33,7 @@ fn default_root() -> String {
 }
 
 #[derive(Parser)]
-#[command(name = "mcx", version = "3.0.0", disable_version_flag = true)]
+#[command(name = "mcx", version = "4.0.0", disable_version_flag = true)]
 struct Cli {
     #[arg(long, global = true, default_value_t = default_root())]
     root: String,
@@ -117,34 +115,16 @@ pub enum Commands {
     #[command(long_flag = "completion", aliases = ["comp"])]
     Completion { shell: String },
 
-    #[command(long_flag = "snapshot", aliases = ["snap"])]
-    Snapshot {
-        #[command(subcommand)]
-        action: SnapshotAction,
-    },
-
-    #[command(long_flag = "swarm", aliases = ["p2p"])]
-    Swarm {
-        #[command(subcommand)]
-        action: SwarmAction,
-    },
-
-    #[command(long_flag = "overlay", aliases = ["ovl"])]
-    Overlay {
-        #[command(subcommand)]
-        action: OverlayAction,
-    },
-
     #[command(long_flag = "cgroup", aliases = ["cg"])]
     Cgroup {
         #[command(subcommand)]
         action: CgroupAction,
     },
 
-    #[command(long_flag = "stream", aliases = ["str"])]
-    Stream {
+    #[command(short_flag = 'p', long_flag = "plugin", aliases = ["plg"])]
+    Plugin {
         #[command(subcommand)]
-        action: StreamAction,
+        action: PluginAction,
     },
 }
 
@@ -156,27 +136,14 @@ pub enum VendorAction {
 }
 
 #[derive(Subcommand)]
-pub enum SnapshotAction {
-    Take { package: String, pid: u32 },
-    List { package: String },
-    Restore { package: String, snapshot: String, pid: u32 },
-    Remove { package: String },
-}
-
-#[derive(Subcommand)]
-pub enum SwarmAction {
-    RegisterHash { package: String, version: String, hash: String },
-    GetHash { package: String },
-    RemoveHash { package: String },
-    RegisterPeer { address: String, peer_id: String },
-    ListPeers,
-}
-
-#[derive(Subcommand)]
-pub enum OverlayAction {
-    Create { package: String, lower: String },
-    Remove { package: String },
+pub enum PluginAction {
     List,
+    Info { name: String },
+    Run { name: String, hook: Option<String> },
+    Reload,
+    Daemon { name: String },
+    Add { source: String },
+    Remove { name: String },
 }
 
 #[derive(Subcommand)]
@@ -188,17 +155,11 @@ pub enum CgroupAction {
     Status,
 }
 
-#[derive(Subcommand)]
-pub enum StreamAction {
-    Generate { package: String, version: String, url: String },
-    Remove { package: String },
-    List,
-}
-
 struct EngineContext {
     db: Arc<Database>,
     config_mgr: ConfigManager,
     plugin_registry: PluginRegistry,
+    plugin_mgr: Arc<PluginManager>,
     sys_profile: SystemProfile,
 }
 
@@ -214,6 +175,8 @@ impl EngineContext {
         plugin_registry.register_builder(Arc::new(DefaultBuilder));
         plugin_registry.register_packer(Arc::new(ZstdPacker));
 
+        let plugin_mgr = Arc::new(PluginManager::new(root));
+
         let db = match Database::open(root) {
             Ok(database) => Arc::new(database),
             Err(e) => { UserInterface::error(&format!("{}", e)); process::exit(1); }
@@ -221,7 +184,7 @@ impl EngineContext {
 
         let _ = crate::core::lifecycle::LifecycleEngine::new();
 
-        Self { db, config_mgr, plugin_registry, sys_profile }
+        Self { db, config_mgr, plugin_registry, plugin_mgr, sys_profile }
     }
 }
 
@@ -229,7 +192,7 @@ impl EngineContext {
 async fn main() {
     let args = Cli::parse();
     if args.version {
-        UserInterface::version("mcx 3.0.0");
+        UserInterface::version("mcx 4.0.0");
         return;
     }
     let root_path = PathBuf::from(&args.root);
@@ -239,11 +202,7 @@ async fn main() {
     let _ = &ctx.config_mgr;
     let _ = &ctx.plugin_registry;
     let security_mon = Arc::new(crate::core::security::SecurityMonitor::new());
-    let overlay_base = std::env::var("HOME").unwrap_or_else(|_| "/root".to_string());
     let cgroup_mgr = crate::core::cgroup::CgroupController::new();
-    let overlay_mgr = crate::core::overlay::OverlayManager::new(
-        &PathBuf::from(&overlay_base)
-    );
 
     match args.command {
         Commands::Install { packages } => {
@@ -258,8 +217,8 @@ async fn main() {
             }
             let cmd = InstallCommand::new(args.root.clone(), Arc::clone(&ctx.db))
                 .with_cgroup(cgroup_mgr)
-                .with_overlay(overlay_mgr)
-                .with_security(Arc::clone(&security_mon));
+                .with_security(Arc::clone(&security_mon))
+                .with_plugin_mgr(Arc::clone(&ctx.plugin_mgr));
             match cmd.execute(&packages).await {
                 Ok(_) => {
                     let cas = crate::core::cas::CasStore::new(&root_path);
@@ -303,8 +262,9 @@ async fn main() {
         }
         Commands::Remove { packages } => {
             UserInterface::info(&format!("Removing: {:?}", packages));
-            let cmd = RemoveCommand::new(args.root.clone(), Arc::clone(&ctx.db));
-            match cmd.execute(&packages, &cgroup_mgr, &overlay_mgr, &security_mon) {
+            let cmd = RemoveCommand::new(args.root.clone(), Arc::clone(&ctx.db))
+                .with_plugin_mgr(Arc::clone(&ctx.plugin_mgr));
+            match cmd.execute(&packages, &cgroup_mgr, &security_mon) {
                 Ok(_) => {
                     UserInterface::separator();
 
@@ -391,7 +351,8 @@ async fn main() {
         Commands::Update { packages } => {
             if let Some(pkgs) = packages {
                 UserInterface::info(&format!("Updating specific packages: {:?}", pkgs));
-                let cmd = InstallCommand::new(args.root.clone(), Arc::clone(&ctx.db));
+                let cmd = InstallCommand::new(args.root.clone(), Arc::clone(&ctx.db))
+                    .with_plugin_mgr(Arc::clone(&ctx.plugin_mgr));
                 match cmd.execute(&pkgs).await {
                     Ok(_) => UserInterface::success("Packages updated."),
                     Err(e) => { UserInterface::error(&format!("{}", e)); process::exit(1); }
@@ -415,57 +376,10 @@ async fn main() {
 
             UserInterface::info(&format!("Upgrading: {:?}", pkgs_to_upgrade));
 
-            let active_base = root_path.join("var/lib/mcx/active");
-            let backup_base = root_path.join("var/tmp/mcx/upgrade-backup");
-            let deltas_dir = root_path.join("var/lib/mcx/deltas");
-            let _ = fs::remove_dir_all(&backup_base);
-
-            let mut old_state: Vec<(String, String, PathBuf)> = Vec::new();
-            for pkg in &pkgs_to_upgrade {
-                if let Ok(meta) = ctx.db.get_package_manifest(pkg) {
-                    let active_dir = active_base.join(pkg);
-                    if active_dir.exists() {
-                        let backup = backup_base.join(pkg);
-                        let _ = fs::remove_dir_all(&backup);
-                        let _ = recursive_copy(&active_dir, &backup);
-                        old_state.push((pkg.clone(), meta.version.clone(), backup));
-                    }
-                }
-            }
-
-            let cmd = InstallCommand::new(args.root.clone(), Arc::clone(&ctx.db));
+            let cmd = InstallCommand::new(args.root.clone(), Arc::clone(&ctx.db))
+                .with_plugin_mgr(Arc::clone(&ctx.plugin_mgr));
             match cmd.execute(&pkgs_to_upgrade).await {
                 Ok(_) => {
-                    let _ = fs::create_dir_all(&deltas_dir);
-                    for (pkg_name, old_ver, backup_dir) in &old_state {
-                        let new_active = active_base.join(pkg_name);
-                        if !new_active.exists() || !backup_dir.exists() {
-                            continue;
-                        }
-                        let new_ver = match ctx.db.get_package_manifest(pkg_name) {
-                            Ok(m) => m.version.clone(),
-                            _ => continue,
-                        };
-                        match DeltaEngine::compute_delta(backup_dir, &new_active, pkg_name, old_ver, &new_ver) {
-                            Ok(delta) => {
-                                let added = delta.manifest.added.len();
-                                let removed = delta.manifest.removed.len();
-                                let modified = delta.manifest.modified.len();
-                                UserInterface::info(&format!(
-                                    "{}: {} → {} ({} added, {} removed, {} modified)",
-                                    pkg_name, old_ver, new_ver, added, removed, modified,
-                                ));
-                                let xcd_path = deltas_dir.join(format!("{}-{}-{}.xcd", pkg_name, old_ver, new_ver));
-                                if let Err(e) = DeltaEngine::write_delta(&delta, &xcd_path) {
-                                    UserInterface::error(&format!("Delta persist failed: {e}"));
-                                }
-                            }
-                            Err(e) => {
-                                UserInterface::error(&format!("Delta compute failed for {}: {e}", pkg_name));
-                            }
-                        }
-                    }
-                    let _ = fs::remove_dir_all(&backup_base);
                     UserInterface::success("Upgrade complete.");
                 }
                 Err(e) => { UserInterface::error(&format!("{}", e)); process::exit(1); }
@@ -543,104 +457,83 @@ async fn main() {
             }
         }
         Commands::Verify => {
-            let all_pkgs = ctx.db.get_all_installed_packages().unwrap_or_default();
-            let installed_names: std::collections::HashSet<String> = all_pkgs.iter().map(|p| p.pkg_name.clone()).collect();
-            let active_base = root_path.join("var/lib/mcx/active");
-            let mut errors: Vec<String> = Vec::new();
+            let scanner = crate::core::integrity::IntegrityScanner::new(&root_path, Arc::clone(&ctx.db));
+            let report = scanner.verify_all();
 
-            let total = all_pkgs.len();
-            for (idx, pkg) in all_pkgs.iter().enumerate() {
-                UserInterface::progress(idx + 1, total, "Verifying packages");
-                for file in &pkg.files {
-                    let full = root_path.join(file);
-                    if !full.exists() {
-                        errors.push(format!("{}: missing file {}", pkg.pkg_name, file.display()));
-                    }
-                }
-                let pkg_active = active_base.join(&pkg.pkg_name);
-                if !pkg_active.exists() {
-                    errors.push(format!("{}: missing active directory", pkg.pkg_name));
-                }
-                for dep in &pkg.dependencies {
-                    if !installed_names.contains(&dep.name) {
-                        errors.push(format!("{}: missing dependency {}", pkg.pkg_name, dep.name));
-                    }
-                }
-            }
-            // clear progress line
-            print!("\r\x1b[K");
-            let _ = std::io::stdout().flush();
+            let mut items: Vec<String> = Vec::new();
+            items.push(format!("{} packages checked", report.total_packages));
 
-            let dangling_count = count_dangling_symlinks(&root_path);
-            if dangling_count > 0 {
-                errors.push(format!("{} dangling symlink(s) found", dangling_count));
-            }
+            let issue_count = report.missing_files.len() + report.corrupted_files.len()
+                + report.broken_deps.len() + report.dangling_symlinks + report.errors.len();
 
-            if errors.is_empty() {
-                UserInterface::block("Verification summary", &[
-                    &format!("{} packages checked", all_pkgs.len()),
-                    "No broken dependencies",
-                    "No missing files",
-                    "No dangling symlinks",
-                ]);
-                UserInterface::success(&format!("All {} packages intact.", all_pkgs.len()));
+            if issue_count == 0 {
+                items.push("No broken dependencies".into());
+                items.push("No missing files".into());
+                items.push("No dangling symlinks".into());
+                UserInterface::block("Verification summary", &items.iter().map(|s| s.as_str()).collect::<Vec<_>>());
+                UserInterface::success(&format!("All {} packages intact.", report.total_packages));
             } else {
-                for e in &errors {
+                for mf in &report.missing_files {
+                    UserInterface::error(&format!("{}: missing {}", mf.pkg, mf.path.display()));
+                }
+                for cf in &report.corrupted_files {
+                    UserInterface::error(&format!("{}: corrupted {} ({})", cf.pkg, cf.path.display(), cf.reason));
+                }
+                for bd in &report.broken_deps {
+                    UserInterface::error(&format!("{}: missing dep {}", bd.pkg, bd.missing_dep));
+                }
+                for e in &report.errors {
                     UserInterface::error(e);
                 }
-                UserInterface::error(&format!("{} issues found. Run mcx -f to repair.", errors.len()));
+                if report.dangling_symlinks > 0 {
+                    UserInterface::warning(&format!("{} dangling symlink(s) found", report.dangling_symlinks));
+                }
+                UserInterface::error(&format!("{} issues found. Run mcx -f to repair.", issue_count));
             }
         }
         Commands::FixDeps => {
-            let all_pkgs = ctx.db.get_all_installed_packages().unwrap_or_default();
-            let installed_names: Vec<String> = all_pkgs.iter().map(|p| p.pkg_name.clone()).collect();
-            let mut missing_deps = Vec::new();
-            let mut missing_files_pkgs = Vec::new();
+            ctx.plugin_mgr.fire_hook(PluginHook::PreFix, &PluginEvent {
+                hook: "pre-fix".into(),
+                package: None,
+                root: root_path.to_string_lossy().to_string(),
+                timestamp: chrono::Utc::now().to_rfc3339(),
+            });
 
-            for pkg in &all_pkgs {
-                let mut missing_files = false;
-                for file in &pkg.files {
-                    if !root_path.join(file).exists() {
-                        missing_files = true;
-                        break;
-                    }
-                }
-                if missing_files {
-                    missing_files_pkgs.push(pkg.pkg_name.clone());
-                }
+            let scanner = crate::core::integrity::IntegrityScanner::new(&root_path, Arc::clone(&ctx.db));
+            let result = scanner.repair_all();
 
-                for dep in &pkg.dependencies {
-                    if !installed_names.contains(&dep.name) {
-                        if !missing_deps.contains(&dep.name) {
-                            missing_deps.push(dep.name.clone());
-                        }
-                    }
-                }
+            let mut total = result.files_repaired + result.symlinks_cleaned;
+
+            if result.files_repaired > 0 {
+                UserInterface::success(&format!("Hard-link repair: {} files recreated from CAS", result.files_repaired));
+            }
+            if result.symlinks_cleaned > 0 {
+                UserInterface::success(&format!("Cleaned {} dangling symlinks", result.symlinks_cleaned));
+            }
+            for e in &result.errors {
+                UserInterface::error(e);
             }
 
-            let mut fixed = 0usize;
-            if !missing_deps.is_empty() {
-                UserInterface::info(&format!("Installing {} missing dependencies...", missing_deps.len()));
-                let cmd = InstallCommand::new(args.root.clone(), Arc::clone(&ctx.db));
-                if let Err(e) = cmd.execute(&missing_deps).await {
+            if !result.missing_deps.is_empty() {
+                UserInterface::info(&format!("Installing {} missing dependencies...", result.missing_deps.len()));
+                let cmd = InstallCommand::new(args.root.clone(), Arc::clone(&ctx.db))
+                    .with_plugin_mgr(Arc::clone(&ctx.plugin_mgr));
+                if let Err(e) = cmd.execute(&result.missing_deps).await {
                     UserInterface::error(&format!("Dependency install failed: {e}"));
                 } else {
-                    fixed += missing_deps.len();
+                    total += result.missing_deps.len();
                 }
             }
 
-            if !missing_files_pkgs.is_empty() {
-                UserInterface::info(&format!("Reinstalling {} packages with missing files...", missing_files_pkgs.len()));
-                let cmd = InstallCommand::new(args.root.clone(), Arc::clone(&ctx.db));
-                if let Err(e) = cmd.execute(&missing_files_pkgs).await {
-                    UserInterface::error(&format!("Reinstall failed: {e}"));
-                } else {
-                    fixed += missing_files_pkgs.len();
-                }
-            }
+            ctx.plugin_mgr.fire_hook(PluginHook::PostFix, &PluginEvent {
+                hook: "postfix".into(),
+                package: None,
+                root: root_path.to_string_lossy().to_string(),
+                timestamp: chrono::Utc::now().to_rfc3339(),
+            });
 
-            if fixed > 0 {
-                UserInterface::success(&format!("Repair complete: {} issues resolved.", fixed));
+            if total > 0 {
+                UserInterface::success(&format!("Repair complete: {} issues resolved.", total));
             } else {
                 UserInterface::success("All packages intact. No repair needed.");
             }
@@ -912,135 +805,6 @@ async fn main() {
             }
         }
 
-        Commands::Snapshot { action } => {
-            let snap_mgr = crate::core::snapshot::SnapshotManager::new(&root_path);
-            if let Err(e) = snap_mgr.initialize() {
-                UserInterface::error(&format!("Snapshot init failed: {e}"));
-                process::exit(1);
-            }
-            match action {
-                SnapshotAction::Take { package, pid } => {
-                    match snap_mgr.checkpoint_process(&package, pid) {
-                        Ok(path) => UserInterface::snapshot(&format!("Snapshot saved: {:?}", path)),
-                        Err(e) => { UserInterface::error(&format!("{e}")); process::exit(1); }
-                    }
-                }
-                SnapshotAction::List { package } => {
-                    match snap_mgr.list_snapshots(&package) {
-                        Ok(snapshots) => {
-                            let items: Vec<String> = snapshots.iter().map(|p| p.to_string_lossy().to_string()).collect();
-                            UserInterface::render_list(&format!("Snapshots for {}", package), &items);
-                        }
-                        Err(e) => { UserInterface::error(&format!("{e}")); process::exit(1); }
-                    }
-                }
-                SnapshotAction::Restore { package: _, snapshot, pid } => {
-                    let snap_path = PathBuf::from(&snapshot);
-                    match snap_mgr.restore_snapshot(&snap_path, pid) {
-                        Ok(_) => UserInterface::snapshot("Snapshot restored."),
-                        Err(e) => { UserInterface::error(&format!("{e}")); process::exit(1); }
-                    }
-                }
-                SnapshotAction::Remove { package } => {
-                    match snap_mgr.remove_snapshots(&package) {
-                        Ok(_) => UserInterface::snapshot(&format!("Snapshots removed for {}", package)),
-                        Err(e) => { UserInterface::error(&format!("{e}")); process::exit(1); }
-                    }
-                }
-            }
-        }
-
-        Commands::Swarm { action } => {
-            let swarm_mgr = crate::core::swarm::SwarmManager::new(&root_path);
-            if let Err(e) = swarm_mgr.initialize() {
-                UserInterface::error(&format!("Swarm init failed: {e}"));
-                process::exit(1);
-            }
-            match action {
-                SwarmAction::RegisterHash { package, version, hash } => {
-                    match swarm_mgr.register_swarm_hash(&package, &version, &hash) {
-                        Ok(_) => UserInterface::success(&format!("Swarm hash registered for {}", package)),
-                        Err(e) => { UserInterface::error(&format!("{e}")); process::exit(1); }
-                    }
-                }
-                SwarmAction::GetHash { package } => {
-                    match swarm_mgr.get_swarm_hash(&package) {
-                        Ok(Some(hash)) => UserInterface::success(&format!("{}: {}", package, hash)),
-                        Ok(None) => UserInterface::info("No swarm hash registered."),
-                        Err(e) => { UserInterface::error(&format!("{e}")); process::exit(1); }
-                    }
-                }
-                SwarmAction::RemoveHash { package } => {
-                    match swarm_mgr.remove_swarm_entry(&package) {
-                        Ok(_) => UserInterface::success(&format!("Swarm hash removed for {}", package)),
-                        Err(e) => { UserInterface::error(&format!("{e}")); process::exit(1); }
-                    }
-                }
-                SwarmAction::RegisterPeer { address, peer_id } => {
-                    let peer = crate::core::swarm::SwarmPeer {
-                        address,
-                        peer_id,
-                        last_seen: std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs(),
-                        advertised_hashes: Vec::new(),
-                    };
-                    match swarm_mgr.register_swarm_peer(peer) {
-                        Ok(_) => UserInterface::success("Peer registered."),
-                        Err(e) => { UserInterface::error(&format!("{e}")); process::exit(1); }
-                    }
-                }
-                SwarmAction::ListPeers => {
-                    match swarm_mgr.list_swarm_peers() {
-                        Ok(peers) => {
-                            let items: Vec<String> = peers.iter()
-                                .map(|p| format!("{} @ {} [{} hashes]", p.peer_id, p.address, p.advertised_hashes.len()))
-                                .collect();
-                            UserInterface::render_list("Swarm peers", &items);
-                        }
-                        Err(e) => { UserInterface::error(&format!("{e}")); process::exit(1); }
-                    }
-                }
-            }
-        }
-
-        Commands::Overlay { action } => {
-            if !is_root_process() {
-                elevate_for("overlay");
-            }
-            let overlay_mgr = crate::core::overlay::OverlayManager::new(&root_path.join(
-                std::env::var("HOME").unwrap_or_else(|_| "/root".to_string())
-            ));
-            if let Err(e) = overlay_mgr.initialize() {
-                UserInterface::error(&format!("Overlay init failed: {e}"));
-                process::exit(1);
-            }
-            match action {
-                OverlayAction::Create { package, lower } => {
-                    match overlay_mgr.create_isolated_overlay(&package, PathBuf::from(&lower).as_path()) {
-                        Ok(merged) => UserInterface::success(&format!("Overlay created: {:?}", merged)),
-                        Err(e) => { UserInterface::error(&format!("{e}")); process::exit(1); }
-                    }
-                }
-                OverlayAction::Remove { package } => {
-                    match overlay_mgr.remove_isolated_overlay(&package) {
-                        Ok(_) => UserInterface::success("Overlay removed."),
-                        Err(e) => { UserInterface::error(&format!("{e}")); process::exit(1); }
-                    }
-                }
-                OverlayAction::List => {
-                    match overlay_mgr.list_overlays() {
-                        Ok(overlays) => {
-                            let items: Vec<String> = overlays.iter()
-                                .map(|p| p.to_string_lossy().to_string())
-                                .collect();
-                            UserInterface::render_list("Active overlays", &items);
-                        }
-                        Err(e) => { UserInterface::error(&format!("{e}")); process::exit(1); }
-                    }
-                }
-            }
-        }
-
         Commands::Cgroup { action } => {
             if !is_root_process() {
                 elevate_for("cgroup");
@@ -1093,39 +857,137 @@ async fn main() {
             }
         }
 
-        Commands::Stream { action } => {
-            let stream_mgr = crate::core::stream::StreamManager::new(&root_path);
-            if let Err(e) = stream_mgr.initialize() {
-                UserInterface::error(&format!("Stream init failed: {e}"));
-                process::exit(1);
-            }
+        Commands::Plugin { action } => {
             match action {
-                StreamAction::Generate { package, version, url } => {
-                    match stream_mgr.generate_stream_mount_script(&package, &version, &url) {
-                        Ok(path) => UserInterface::success(&format!("Stream script generated: {:?}", path)),
-                        Err(e) => { UserInterface::error(&format!("{e}")); process::exit(1); }
+                PluginAction::List => {
+                    let plugins = ctx.plugin_mgr.list();
+                    if plugins.is_empty() {
+                        UserInterface::info("No external plugins installed.");
+                        UserInterface::info("Place plugins in <root>/var/lib/mcx/plugins/<name>/plugin.ini");
+                    } else {
+                        let summary: Vec<String> = plugins.iter().map(|p| {
+                            let m = p.manifest();
+                            format!("{} v{} [{}] ({}) — {}", m.name, m.version, m.plugin_type, m.language, m.description)
+                        }).collect();
+                        UserInterface::render_list("External plugins", &summary);
                     }
                 }
-                StreamAction::Remove { package } => {
-                    match stream_mgr.remove_stream_script(&package) {
-                        Ok(_) => UserInterface::success("Stream script removed."),
-                        Err(e) => { UserInterface::error(&format!("{e}")); process::exit(1); }
+                PluginAction::Info { name } => {
+                    match ctx.plugin_mgr.find(&name) {
+                        Some(p) => {
+                            let m = p.manifest();
+                            UserInterface::block(&format!("Plugin: {}", m.name), &[
+                                &format!("Version: {}", m.version),
+                                &format!("Description: {}", m.description),
+                                &format!("Language: {}", m.language),
+                                &format!("Type: {}", m.plugin_type),
+                                &format!("Command: {}", m.command),
+                                &format!("Trigger: {}", m.trigger.as_deref().unwrap_or("(manual)")),
+                                &format!("Author: {}", m.author.as_deref().unwrap_or("(unknown)")),
+                                &format!("Homepage: {}", m.homepage.as_deref().unwrap_or("(none)")),
+                                &format!("Timeout: {}s", m.timeout_secs.unwrap_or(30)),
+                            ]);
+                        }
+                        None => { UserInterface::error(&format!("Plugin '{}' not found", name)); process::exit(1); }
                     }
                 }
-                StreamAction::List => {
-                    match stream_mgr.list_stream_scripts() {
-                        Ok(scripts) => {
-                            let items: Vec<String> = scripts.iter()
-                                .map(|p| p.to_string_lossy().to_string())
-                                .collect();
-                            UserInterface::render_list("Stream mount scripts", &items);
+                PluginAction::Run { name, hook } => {
+                    let hook_str = hook.as_deref().unwrap_or("post-install");
+                    let hook_enum = PluginHook::from_str(hook_str).unwrap_or(PluginHook::PostInstall);
+                    let event = PluginEvent {
+                        hook: hook_enum.as_str().to_string(),
+                        package: None,
+                        root: root_path.to_string_lossy().to_string(),
+                        timestamp: chrono::Utc::now().to_rfc3339(),
+                    };
+                    match ctx.plugin_mgr.run_plugin_once(&name, &event) {
+                        Ok(result) => {
+                            if result.success {
+                                UserInterface::success(&format!("Plugin '{}' completed", name));
+                                if let Some(msg) = result.message {
+                                    println!("{}", msg);
+                                }
+                            } else {
+                                UserInterface::error(&format!("Plugin '{}' failed: {}", name, result.message.as_deref().unwrap_or("")));
+                            }
                         }
                         Err(e) => { UserInterface::error(&format!("{e}")); process::exit(1); }
+                    }
+                }
+                PluginAction::Reload => {
+                    ctx.plugin_mgr.reload(&root_path);
+                    UserInterface::success(&format!("{} plugins loaded", ctx.plugin_mgr.list().len()));
+                }
+                PluginAction::Daemon { name } => {
+                    match ctx.plugin_mgr.start_daemon(&name) {
+                        Ok(_) => UserInterface::success(&format!("Daemon '{}' started in background", name)),
+                        Err(e) => { UserInterface::error(&format!("{e}")); process::exit(1); }
+                    }
+                }
+                PluginAction::Add { source } => {
+                    let plugins_dir = root_path.join("var/lib/mcx/plugins");
+                    let source_path = PathBuf::from(&source);
+                    if source_path.is_dir() {
+                        let name = source_path.file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or("unnamed");
+                        let target = plugins_dir.join(name);
+                        if target.exists() {
+                            UserInterface::error(&format!("Plugin '{}' already exists at {:?}", name, target));
+                            process::exit(1);
+                        }
+                        match copy_dir(&source_path, &target) {
+                            Ok(_) => {
+                                ctx.plugin_mgr.reload(&root_path);
+                                UserInterface::success(&format!("Plugin '{}' added from {:?}", name, source_path));
+                            }
+                            Err(e) => { UserInterface::error(&format!("Failed to add plugin: {e}")); process::exit(1); }
+                        }
+                    } else {
+                        UserInterface::error(&format!("Source path '{}' is not a directory", source));
+                        process::exit(1);
+                    }
+                }
+                PluginAction::Remove { name } => {
+                    let plugins_dir = root_path.join("var/lib/mcx/plugins").join(&name);
+                    if !plugins_dir.exists() {
+                        UserInterface::error(&format!("Plugin '{}' not found at {:?}", name, plugins_dir));
+                        process::exit(1);
+                    }
+                    match std::fs::remove_dir_all(&plugins_dir) {
+                        Ok(_) => {
+                            ctx.plugin_mgr.reload(&root_path);
+                            UserInterface::success(&format!("Plugin '{}' removed", name));
+                        }
+                        Err(e) => { UserInterface::error(&format!("Failed to remove plugin: {e}")); process::exit(1); }
                     }
                 }
             }
         }
     }
+}
+
+fn copy_dir(src: &PathBuf, dst: &PathBuf) -> std::io::Result<()> {
+    if !dst.exists() {
+        std::fs::create_dir_all(dst)?;
+    }
+    copy_dir_recursive(src, dst, src)
+}
+
+fn copy_dir_recursive(src: &PathBuf, dst: &PathBuf, base: &PathBuf) -> std::io::Result<()> {
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let path = entry.path();
+        let relative = path.strip_prefix(base).unwrap();
+        let target = dst.join(relative);
+        if path.is_dir() {
+            std::fs::create_dir_all(&target)?;
+            copy_dir_recursive(&path, dst, base)?;
+        } else {
+            std::fs::copy(&path, &target)?;
+        }
+    }
+    Ok(())
 }
 
 fn elevate_for(command: &str) -> ! {
@@ -1152,45 +1014,4 @@ fn is_root_process() -> bool {
         .unwrap_or(false)
 }
 
-fn count_dangling_symlinks(root: &Path) -> usize {
-    let mut count = 0usize;
-    let dirs = ["usr", "etc", "var"];
-    for d in &dirs {
-        let target = root.join(d);
-        if !target.exists() {
-            continue;
-        }
-        if let Ok(entries) = std::fs::read_dir(&target) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.is_symlink() {
-                    if !path.exists() {
-                        count += 1;
-                    }
-                } else if path.is_dir() {
-                    count += count_dangling_symlinks(&path);
-                }
-            }
-        }
-    }
-    count
-}
 
-fn recursive_copy(src: &Path, dst: &Path) -> Result<()> {
-    fs::create_dir_all(dst)?;
-    for entry in fs::read_dir(src)? {
-        let entry = entry?;
-        let path = entry.path();
-        let rel = path.strip_prefix(src).unwrap();
-        let dest = dst.join(rel);
-        if path.is_dir() {
-            recursive_copy(&path, &dest)?;
-        } else if path.is_file() {
-            if let Some(parent) = dest.parent() {
-                fs::create_dir_all(parent)?;
-            }
-            fs::copy(&path, &dest)?;
-        }
-    }
-    Ok(())
-}

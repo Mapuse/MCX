@@ -18,7 +18,6 @@ pub struct UpgradePath {
     pub from_version: String,
     pub to_version: String,
     pub steps: Vec<UpgradeEdge>,
-    pub total_delta_bytes: u64,
     pub conflict_free: bool,
 }
 
@@ -105,33 +104,25 @@ impl DependencySolver {
         let current_version = semver_parse(&current.version);
 
         let available = self.db.get_all_available_packages()?;
-        let mut candidates: Vec<(PackageMetadata, u64)> = available.into_iter()
-            .filter(|meta| meta.pkg_name == package)
-            .filter_map(|meta| {
-                let ver = semver_parse(&meta.version);
-                if ver > current_version {
-                    let delta = self.estimate_delta_cost(&current, &meta);
-                    Some((meta, delta))
-                } else { None }
-            })
+        let mut candidates: Vec<PackageMetadata> = available.into_iter()
+            .filter(|meta| meta.pkg_name == package && semver_parse(&meta.version) > current_version)
             .collect();
 
-        candidates.sort_by(|a, b| a.1.cmp(&b.1));
+        candidates.sort_by(|a, b| semver_parse(&b.version).cmp(&semver_parse(&a.version)));
 
-        let best = candidates.first()
+        let best = candidates.into_iter().next()
             .ok_or_else(|| anyhow!("No upgrade available for '{}'", package))?;
 
         Ok(UpgradePath {
             package: package.to_string(),
             from_version: current.version.clone(),
-            to_version: best.0.version.clone(),
+            to_version: best.version.clone(),
             steps: vec![UpgradeEdge {
                 from_version: current.version.clone(),
-                to_version: best.0.version.clone(),
-                stability_index: 1.0 - (best.1 as f64 / (best.1 + 1).max(1) as f64),
+                to_version: best.version.clone(),
+                stability_index: 1.0,
             }],
-            total_delta_bytes: best.1,
-            conflict_free: !self.has_conflicts_with_installed(&best.0),
+            conflict_free: !self.has_conflicts_with_installed(&best),
         })
     }
 
@@ -145,7 +136,6 @@ impl DependencySolver {
             if targets.contains(&meta.pkg_name) {
                 if let Some(current) = installed_map.get(meta.pkg_name.as_str()) {
                     if current.version != meta.version {
-                        let delta = self.estimate_delta_cost(current, meta);
                         paths.push(UpgradePath {
                             package: meta.pkg_name.clone(),
                             from_version: current.version.clone(),
@@ -153,9 +143,8 @@ impl DependencySolver {
                             steps: vec![UpgradeEdge {
                                 from_version: current.version.clone(),
                                 to_version: meta.version.clone(),
-                                stability_index: 1.0 - (delta as f64 / (delta + 1).max(1) as f64),
+                                stability_index: 1.0,
                             }],
-                            total_delta_bytes: delta,
                             conflict_free: !self.has_conflicts_with_installed(meta),
                         });
                     }
@@ -320,13 +309,6 @@ impl DependencySolver {
             }
         }
         false
-    }
-
-    fn estimate_delta_cost(&self, _from: &PackageMetadata, _to: &PackageMetadata) -> u64 {
-        let from_files = _from.files.len();
-        let to_files = _to.files.len();
-        let diff = if to_files > from_files { to_files - from_files } else { from_files - to_files };
-        (diff as u64).max(1) * 4096
     }
 }
 

@@ -145,7 +145,7 @@ impl RepositoryManager {
                 let temp_path = sync_dir.join(format!("{}.tmp", repo_name));
                 let final_path = sync_dir.join(format!("{}.json", repo_name));
 
-                let result = match downloader.download_package(&repo_url, &temp_path).await {
+                let result = match downloader.package(&repo_url, &temp_path).await {
                     Ok(_) => {
                         if let Some(ref expected_hash) = checksum {
                             if let Err(e) = HashVerifier::verify_integrity(&temp_path, expected_hash) {

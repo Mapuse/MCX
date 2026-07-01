@@ -52,16 +52,14 @@
 - [Feature subsystems]
   - [Atomic package rollback]
   - [Content-addressable library store]
-  - [Delta upgrades]
-  - [Process snapshot / checkpoint]
-  - [P2P swarm distribution]
-  - [Streaming mounts]
-  - [Isolated overlayfs]
   - [Resource control via cgroups]
   - [Self-update]
   - [Workspace management]
   - [Vendor (offline mirror)]
   - [Completion engine]
+  - [Network downloader (concurrent, retry, streaming, ETag)]
+  - [Network sync engine (ETag conditional sync)]
+  - [Integrity scanner (async verify & repair)]
 - [Development]
   - [Building]
   - [Testing]
@@ -138,7 +136,7 @@ mcx --remove <package>...
 mcx rm <package>...
 ```
 
-Performs a self-healing deep-purge removal. Traces the reverse dependency graph via `deep_purge_analysis()` to identify orphaned packages. Removes each target's active directory, all manifest-listed files, scours `etc/mcx/`, `var/lib/mcx/`, `var/tmp/mcx/`, `var/cache/mcx/` for package-keyed residue, cleans dangling symlinks, and commits the transaction.
+Performs a self-healing deep-purge removal. Traces the reverse dependency graph via `analysis()` to identify orphaned packages. Removes each target's active directory, all manifest-listed files, scours `etc/mcx/`, `var/lib/mcx/`, `var/tmp/mcx/`, `var/cache/mcx/` for package-keyed residue, cleans dangling symlinks, and commits the transaction.
 
 | Input | Type | Required | Description |
 | ----- | ---- | -------- | ----------- |
@@ -392,14 +390,11 @@ After every `install` and `remove` operation, if `etc/mcx/profile.ini` exists, M
 | `--self-update` | `update-self` | `SelfUpdateManager` | `core::update` |
 | `--vendor` | `vnd` | `VendorManager` | `core::vendor` |
 | `--completion` | `comp` | `CompletionEngine` | `core::completion` |
-| `--snapshot` | `snap` | `SnapshotManager` | `core::snapshot` |
-| `--swarm` | `p2p` | `SwarmManager` | `core::swarm` |
-| `--overlay` | `ovl` | `OverlayManager` | `core::overlay` |
 | `--cgroup` | `cg` | `CgroupController` | `core::cgroup` |
-| `--stream` | `str` | `StreamManager` (zstd+tar) | `core::stream` |
 | `--repo-add` | `ra` | `RepositoryManager` | `core::repo` |
 | `--repo-remove` | `rr` | `RepositoryManager` | `core::repo` |
 | `--repo-list` | `rl` | `RepositoryManager` | `core::repo` |
+| `--plugin` (`-p`) | `plg` | `PluginManager` | `core::plugin` |
 
 ### `self-update`
 
@@ -427,39 +422,6 @@ mcx --completion bash|zsh|fish
 
 Generates shell-completion scripts for the specified shell and writes them to stdout. Supports Bash (`complete -F`), Zsh (`#compdef`), and Fish (`complete -c`) formats covering all commands, aliases, and flags.
 
-### `--snapshot`
-
-```
-mcx --snapshot take <package> <pid>
-mcx --snapshot list <package>
-mcx --snapshot restore <package> <snapshot_path> <pid>
-mcx --snapshot remove <package>
-```
-
-Process memory checkpoint facility. `take` reads `/proc/<pid>/mem` (falls back to `/proc/<pid>/maps`), compresses with Zstd, and writes to `var/lib/mcx/snapshots/<pkg>/snap-<timestamp>.mem`. `restore` writes the decompressed snapshot back to `/proc/<pid>/mem`. `remove` purges all snapshots for a package.
-
-### `--swarm`
-
-```
-mcx --swarm register-hash <package> <version> <hash>
-mcx --swarm get-hash <package>
-mcx --swarm remove-hash <package>
-mcx --swarm register-peer <address> <peer_id>
-mcx --swarm list-peers
-```
-
-Peer-to-peer package distribution via IPFS/IPLD content hashes. Hashes are persisted in `var/lib/mcx/swarm/<pkg>.json`; peer registry in `var/lib/mcx/swarm/peers.json`.
-
-### `--overlay`
-
-```
-mcx --overlay create <package> <lower_root>
-mcx --overlay remove <package>
-mcx --overlay list
-```
-
-Per-package overlayfs isolation. `create` builds a three-layer mount (`upper/`, `work/`, `merged/`) at `~/.mcx/overlays/<pkg>/` and generates a `mount-overlay.sh` script. `remove` unmounts and purges the overlay directory.
-
 ### `--cgroup`
 
 ```
@@ -472,15 +434,29 @@ mcx --cgroup status
 
 cgroup v2 resource enforcement. Writes memory and CPU quota limits to `/sys/fs/cgroup/mcx/<pkg>/memory.max` and `cpu.max`. Package names are sanitised for cgroup path safety. `status` checks whether cgroup v2 is available on the host.
 
-### `--stream`
+### `-p` / `--plugin`
 
 ```
-mcx --stream generate <package> <version> <url>
-mcx --stream remove <package>
-mcx --stream list
+mcx -p list
+mcx -p info <name>
+mcx -p run <name> [hook]
+mcx -p add <dir>
+mcx -p remove <name>
+mcx -p reload
+mcx -p daemon <name>
 ```
 
-Generates executable shell scripts at `var/lib/mcx/stream/<pkg>.sh` that download an `.xcs` archive via `curl` and decompress with `zstd` + `tar`, matching the native package format.
+Manages external hook-based plugins (see [Plugin authoring & linking](#plugin-authoring)).
+
+| Subcommand | Description |
+| ---------- | ----------- |
+| `list` | List all discovered external plugins with version, type, language, and description |
+| `info <name>` | Show full manifest details for a specific plugin (name, version, description, language, type, command, trigger, author, homepage, timeout) |
+| `run <name> [hook]` | Execute a plugin once with an optional hook name (default `post-install`). The plugin's command is expanded with `${event}`, `${hook}`, `${root}`, `${package}`, `${dir}` |
+| `add <dir>` | Copy a plugin directory from an external path into `var/lib/mcx/plugins/` and reload the plugin manager |
+| `remove <name>` | Delete a plugin directory from `var/lib/mcx/plugins/` and reload the plugin manager |
+| `reload` | Re-scan `var/lib/mcx/plugins/` for new, removed, or changed plugins without restarting MCX |
+| `daemon <name>` | Start a daemon-type plugin as a background process. The plugin must declare `type = daemon` in its `plugin.ini` |
 
 ## Repository management
 
@@ -569,7 +545,7 @@ Output:
 
 ### Resolution order
 
-When installing a package, each configured repository is queried in the order they appear in `repo.ini`. The first repository that provides the package is used. If all repositories fail, the download pipeline falls through to swarm P2P and finally `git clone`.
+When installing a package, each configured repository is queried in the order they appear in `repo.ini`. The first repository that provides the package is used.
 
 ### Configuring without CLI
 
@@ -609,12 +585,7 @@ Edit `etc/mcx/repo.ini` directly with any text editor. The file is managed throu
                        │  ├─ graph.rs     │  DepGraph
                        │  ├─ transaction  │  PackageTransaction
                        │  ├─ cache.rs     │  CacheManager
-                       │  ├─ delta.rs     │  DeltaEngine
                        │  ├─ cas.rs       │  Content-addressable library dedup
-                       │  ├─ snapshot.rs  │  Process memory checkpoint
-                       │  ├─ swarm.rs     │  P2P hash registry
-                       │  ├─ stream.rs    │  zstd+tar mount scripts
-                       │  ├─ overlay.rs   │  Overlayfs per-package isolation
                        │  ├─ cgroup.rs    │  cgroup v2 resource control
                        │  ├─ security.rs  │  SecurityMonitor, PluginSlot runtime isolation
                        │  ├─ rollback.rs  │  Generation-based atomic rollback
@@ -630,8 +601,8 @@ Edit `etc/mcx/repo.ini` directly with any text editor. The file is managed throu
  ┌──────────────────┐  ┌──────────────────┐  ┌──────────────────┐
  │  src/network/    │  │  src/archive/    │  │  src/utils/      │
  │  download.rs     │  │  extract.rs      │  │  ui.rs           │
- │  pipeline.rs     │  │  hash.rs         │  │  UserInterface   │
- │  sync.rs         │  │  verify.rs       │  └──────────────────┘
+ │  sync.rs         │  │  hash.rs         │  │  UserInterface   │
+ │  reqwest+rustls  │  │  verify.rs       │  └──────────────────┘
  │  reqwest+rustls  │  │  verify.rs       │
  └──────────────────┘  └──────────────────┘
 ```
@@ -641,8 +612,8 @@ Edit `etc/mcx/repo.ini` directly with any text editor. The file is managed throu
 | Module | Path | Responsibility | Public surface |
 | ------ | ---- | -------------- | -------------- |
 | `commands` | `src/commands/` | CLI command implementations — one file per command group. Each command struct implements `execute()` taking `EngineContext`. | `InstallCommand`, `RemoveCommand`, `SyncCommand`, `SearchCommand`, `AddLocalCommand`, `CleanCommand`, `ConfigEditorCommand`, `SystemCommand` |
-| `core` | `src/core/` | Domain logic — persistence, solver, lifecycle, plugins, profiling, configuration, repositories, history, delta engine, changelog, completion, declarative validation, self-update, vendor mirroring, workspace management, content-addressable store, process snapshots, P2P swarm, streaming mounts, overlayfs isolation, cgroup control, generation-based rollback, security monitor, runtime isolation. | Config types, `Database`, `DependencySolver`, `LifecycleEngine`, `PluginRegistry`, `SystemProfile`, `HistoryEngine`, `RepositoryManager`, `CacheManager`, `DeltaEngine`, `PackageEntity`, `SelfUpdateManager`, `VendorManager`, `WorkspaceManager`, `ProfileValidator`, `CompletionEngine`, `SnapshotManager`, `SwarmManager`, `StreamManager`, `OverlayManager`, `CgroupController`, `RollbackManager`, `CasManager`, `SecurityMonitor` |
-| `network` | `src/network/` | Remote data operations — HTTP download via `reqwest` + `rustls-tls`, parallel index sync, download pipeline with HTTPS/P2P/git fallback. | `Downloader`, `DownloadPipeline`, `NetworkSyncEngine` |
+| `core` | `src/core/` | Domain logic — persistence, solver, lifecycle, plugins, profiling, configuration, repositories, history, changelog, completion, declarative validation, self-update, vendor mirroring, workspace management, content-addressable store, cgroup control, generation-based rollback, security monitor, runtime isolation. | Config types, `Database`, `DependencySolver`, `LifecycleEngine`, `PluginRegistry`, `SystemProfile`, `HistoryEngine`, `RepositoryManager`, `CacheManager`, `PackageEntity`, `SelfUpdateManager`, `VendorManager`, `WorkspaceManager`, `ProfileValidator`, `CompletionEngine`, `CgroupController`, `RollbackManager`, `CasManager`, `SecurityMonitor` |
+| `network` | `src/network/` | Remote data operations — HTTP download via `reqwest` + `rustls-tls`, parallel index sync. | `Downloader`, `NetworkSyncEngine` |
 | `archive` | `src/archive/` | Artifact format handling — `.xcs` extraction, SHA-256 hashing, content verification. | `Extractor`, `HashVerifier`, `ContentValidator` |
 | `utils` | `src/utils/` | Shared infrastructure — terminal output. | `UserInterface` |
 | `main` / `lib` | `src/main.rs`, `src/lib.rs` | Entry point, CLI parsing, public re-exports. | `Cli`, `Commands`, `EngineContext` |
@@ -778,7 +749,7 @@ Every command struct implements `pub fn execute(&self, engine: &EngineContext) -
 | ---- | ------ | -------------- | ---------- |
 | `add.rs` | `AddLocalCommand` | Install local `.xcs` file | `execute()` |
 | `install.rs` | `InstallCommand` | Full install/upgrade pipeline | `execute()`, `resolve_and_commit()` |
-| `remove.rs` | `RemoveCommand` | Remove packages + deep-purge orphans | `execute()`, `deep_purge_analysis()` |
+| `remove.rs` | `RemoveCommand` | Remove packages + deep-purge orphans | `execute()`, `analysis()` |
 | `search.rs` | `SearchCommand` | Pattern-match available index | `execute()` |
 | `sync.rs` | `SyncCommand` | Parallel repo index sync | `execute()` |
 | `system.rs` | `SystemCommand` | Declarative rebuild from blueprint | `execute()`, `rebuild()` |
@@ -801,10 +772,9 @@ Every command struct implements `pub fn execute(&self, engine: &EngineContext) -
 | `changelog.rs` | `ChangelogManager` | Append-only changelog writer. | — |
 | `completion.rs` | `CompletionEngine` | Shell-completion generation (bash/zsh/fish). | — |
 | `declarative.rs` | `ProfileValidator` | Validate declarative system blueprints. | — |
-| `delta.rs` | `DeltaEngine` | Binary delta apply (`.xcd` format). | `archive::extract` |
 | `lifecycle.rs` | `LifecycleEngine`, `PackageState`, `DependencyGraph`, `OrphanSet` | State machine: Unknown→Resolved→Staged→Installed→Active→MarkedForRemoval→Removed→Purged. Pre/post hooks, audit history. | `database.rs` |
 | `package.rs` | `PackageEntity` | Unified package representation across all stages. | — |
-| `plugin.rs` | `PluginRegistry`, `PluginSlot<T>`, `Fetcher`, `Builder`, `Packer`, `CurlFetcher`, `DefaultBuilder`, `ZstdPacker` | Lock-free plugin hot-swap via `RwLock<Arc<T>>`. | — |
+| `plugin.rs` | `PluginRegistry`, `PluginSlot<T>`, `Fetcher`, `Builder`, `Packer`, `CurlFetcher`, `DefaultBuilder`, `ZstdPacker`, `ExternalPlugin`, `PluginManager`, `PluginHook`, `PluginEvent`, `PluginResult` | Lock-free plugin hot-swap via `RwLock<Arc<T>>`. External hook-based plugin system with `PluginManager`, daemon lifecycle, and `plugin.ini` auto-discovery. | — |
 | `profiler.rs` | `SystemProfile`, `DecisionEngine`, `AutoHealer`, `NetworkProber` | Host profiling, heuristic decisions, network latency probing. | — |
 
 | `update.rs` | `SelfUpdateManager` | GitHub Releases check + binary self-replace. | `network::download` |
@@ -815,8 +785,8 @@ Every command struct implements `pub fn execute(&self, engine: &EngineContext) -
 
 | File | Struct | Role | Dependencies |
 | ---- | ------ | ---- | ------------ |
-| `download.rs` | `Downloader` | HTTP(S) streaming download with retries and SHA-256 integrity hashing. | `reqwest` + `rustls-tls` |
-| `sync.rs` | `NetworkSyncEngine` | Parallel sync of all repository indexes. | `download.rs`, `repo.rs` |
+| `download.rs` | `Downloader` | Concurrent multi-package HTTP(S) downloader with configurable parallelism, automatic retry with exponential backoff, streaming SHA-256 verification, and ETag conditional requests. Uses a semaphore-bounded worker pool. | `reqwest` + `rustls-tls` |
+| `sync.rs` | `NetworkSyncEngine` | ETag-conditional parallel sync of all repository indexes. Skips unchanged remotes (304 Not Modified), only writing new data when the server ETag differs from the cached value. Emits a `SyncReport` with per-repo status. | `download.rs`, `repo.rs` |
 
 ## `archive/` — Artifact primitives
 
@@ -887,23 +857,9 @@ var/
 │   ├── cas/            # Content-addressable library store
 │   │   └── <hex2>/     # First two hex chars of SHA-256
 │   │       └── <sha256>  # Hard-linked unique .so file
-│   ├── snapshots/      # Process memory snapshots (Zstd-compressed)
-│   │   └── <pkg>/
-│   │       └── snap-<timestamp>.mem
-│   ├── swarm/          # P2P distribution state
-│   │   ├── <pkg>.json  # IPFS/IPLD swarm hash entries
-│   │   └── peers.json  # Known P2P peers
-│   └── stream/         # Cloud-stream mount scripts
-│       └── <pkg>.sh
 ├── tmp/mcx/
 │   └── stage/          # Staging area for in-flight package extractions
 └── cache/mcx/          # Package cache (downloaded .xcs files)
-
-~/.mcx/overlays/        # Per-package overlayfs mount points
-└── <pkg>/
-    ├── upper/          # Writable layer
-    ├── work/           # Overlayfs work directory
-    └── merged/         # Merged view
 ```
 
 ## INI-based configuration
@@ -944,16 +900,6 @@ Default files are written on first `ConfigManager::new()` if absent.
 | Internal structure | Plain directory tree with no wrapper metadata |
 | Metadata location | Stored in LMDB `installed` database (`PackageMetadata.checksum`) — the archive itself has no embedded manifest |
 
-## Delta format — `.xcd`
-
-| Component | Detail |
-| --------- | ------ |
-| Container | tar archive |
-| Compression | Zstandard level 3 |
-| Contents | `diff.meta` (JSON) + new/changed files |
-| `diff.meta` schema | `{ "removed": ["path1", "path2", …], "base_version": "1.2.12" }` |
-| Apply | Extract old `.xcs` → overlay delta files → delete removed → re-pack |
-
 ## Transaction flow
 
 ```
@@ -977,7 +923,7 @@ Default files are written on first `ConfigManager::new()` if absent.
   │   5. txn_log.record_install(pkg, version, files)                 │
   │                                                                  │
   │  Remove:                                                         │
-  │   1. deep_purge_analysis() → orphan set                          │
+  │   1. analysis() → orphan set                                     │
   │   2. Delete files listed in meta.files                           │
   │   3. scour_system_residue()                                      │
   │   4. Clean dangling symlinks                                     │
@@ -1049,101 +995,17 @@ Deduplicates shared libraries across package boundaries:
 | `deduplicate_libraries` | `core::cas` | `(pkg: &str, root: &Path) -> Result<CasSummary>` |
 | `cas_stats` | `core::cas` | `(root: &Path) -> Result<CasStats>` |
 
-## Delta upgrades
+## Full upgrade lifecycle
 
-`DeltaEngine` applies `.xcd` delta archives:
+A full upgrade (loading the entire new `.xcs` package) is more efficient and less resource-intensive than delta upgrades for the following reasons:
 
-1. Extract old `.xcs` to a temp directory.
-2. Extract `.xcd` delta archive.
-3. Parse `diff.meta`: `{ "removed": [...], "base_version": "..." }`.
-4. Overlay new/changed files onto the old tree.
-5. Delete files listed in `diff.meta.removed`.
-6. Re-pack the result as a new `.xcs` (Zstd level 3).
+**Zstd + mmap throughput.** Unpacking a full package with Zstd and passing the data directly via mmap to the Content-Addressable Store (CAS) saturates the CPU cache line faster than binary merging algorithms.
 
-| Function | Module | Signature |
-| -------- | ------ | --------- |
-| `DeltaEngine::apply_delta` | `core::delta` | `(&self, old_xcs: &Path, delta: &Path, output: &Path) -> Result<()>` |
+**Atomic hard-linking.** Once the new package is unpacked into the CAS, the engine creates hard links to the new files and updates the OverlayFS. This is instantaneous (zero-copy) and leaves no corrupted temporary files.
 
-## Process snapshot / checkpoint
+**Dependency solver.** The `DependencySolver` resolves the topological order and conflict matrix before any download starts. No partial states.
 
-Captures runtime process memory for a given package:
-
-1. Resolve `/proc/<pid>/mem` — if accessible, dump full virtual memory.
-2. Fallback to `/proc/<pid>/maps` — address-space layout only.
-3. Zstd-compress the dump to `var/lib/mcx/snapshots/<pkg>/snap-<timestamp>.mem`.
-
-| Function | Module | Signature |
-| -------- | ------ | --------- |
-| `checkpoint_process` | `core::snapshot` | `(pkg: &str, pid: u32) -> Result<PathBuf>` |
-| `list_snapshots` | `core::snapshot` | `(pkg: &str) -> Result<Vec<PathBuf>>` |
-| `restore_snapshot` | `core::snapshot` | `(snapshot: &Path, target_pid: u32) -> Result<()>` |
-| `remove_snapshots` | `core::snapshot` | `(pkg: &str) -> Result<()>` |
-
-## P2P swarm distribution
-
-Peer-to-peer package distribution using IPFS/IPLD content hashes:
-
-- `register_swarm_hash(pkg_ver, hash)` — persist `<pkg>.json` in `var/lib/mcx/swarm/`.
-- `get_swarm_hash(pkg)` — retrieve the content hash.
-- Peers tracked in `peers.json`: `{ address, peer_id, last_seen, advertised_hashes }`.
-
-| Function | Module | Signature |
-| -------- | ------ | --------- |
-| `register_swarm_hash` | `core::swarm` | `(pkg: &str, version: &str, hash: &str) -> Result<()>` |
-| `get_swarm_hash` | `core::swarm` | `(pkg: &str) -> Result<Option<String>>` |
-| `register_swarm_peer` | `core::swarm` | `(peer: SwarmPeer) -> Result<()>` |
-| `list_swarm_peers` | `core::swarm` | `() -> Result<Vec<SwarmPeer>>` |
-| `remove_swarm_entry` | `core::swarm` | `(pkg: &str) -> Result<()>` |
-
-## Download pipeline
-
-`DownloadPipeline` (in `network::pipeline.rs`) provides a three-stage fallback chain for every package download:
-
-1. **HTTPS (primary)** — `Downloader::download_package()` via `reqwest` with chunked parallel download for files > 5 MB.
-2. **Swarm P2P (fallback)** — on HTTPS failure, queries `SwarmManager` for the package content hash, finds peers advertising it, and downloads from a peer via HTTP.
-3. **Git clone (last resort)** — if both HTTPS and P2P fail, converts the URL to a repo URL and runs `git clone --depth 1`.
-
-Wired into `InstallCommand` as the download backend. Created with optional `SwarmManager`; when `None`, P2P stage is skipped silently.
-
-| Function | Module | Signature |
-| -------- | ------ | --------- |
-| `fetch` | `network::pipeline` | `(url: &str, pkg: &str, ver: &str, dest: &Path) -> Result<()>` |
-
-## Streaming mounts
-
-`generate_stream_mount_script(pkg, version, url)` writes an executable shell script to `var/lib/mcx/stream/<pkg>.sh` that downloads and extracts the `.xcs` archive using `curl` + `zstd` + `tar`:
-
-```sh
-#!/bin/sh
-URL="https://packages.cudane.org/stream/<pkg>-<version>.xcs"
-MOUNT="/mnt/<pkg>"
-CACHE="/var/cache/mcx/stream"
-mkdir -p "$MOUNT" "$CACHE"
-ARCHIVE="$CACHE/<pkg>-<version>.xcs"
-curl -sL "$URL" -o "$ARCHIVE"
-zstd -d -c "$ARCHIVE" | tar -x -C "$MOUNT"
-```
-
-| Function | Module | Signature |
-| -------- | ------ | --------- |
-| `generate_stream_mount_script` | `core::stream` | `(pkg: &str, version: &str, url: &str) -> Result<PathBuf>` |
-| `remove_stream_script` | `core::stream` | `(pkg: &str) -> Result<()>` |
-| `list_stream_scripts` | `core::stream` | `(&self) -> Result<Vec<PathBuf>>` |
-
-## Isolated overlayfs
-
-Per-package overlayfs isolation via three-layer mount:
-
-| Function | Module | Signature |
-| -------- | ------ | --------- |
-| `create_isolated_overlay` | `core::overlay` | `(pkg: &str, lower_root: &Path) -> Result<PathBuf>` |
-| `remove_isolated_overlay` | `core::overlay` | `(pkg: &str) -> Result<()>` |
-| `list_overlays` | `core::overlay` | `(&self) -> Result<Vec<PathBuf>>` |
-
-Generated helper script `mount-overlay.sh` at `~/.mcx/overlays/<pkg>/`:
-
-1. `mount -t overlay overlay -o lowerdir=<root>,upperdir=<upper>,workdir=<work> <merged>`
-2. Bind-mount `<merged>` over the target path.
+**Plugin system.** Any advanced enhancement feature (such as P2P or delta) is activated via plugins in Rust during build, or is detached as an external throw plugin that the engine calls only when needed. The core remains lean: HTTPS download + full archive extraction + CAS dedup.
 
 ## Resource control via cgroups
 
@@ -1208,7 +1070,7 @@ Escalates via `sudo` automatically when invoked as non-root. The CLI `mcx --self
 | Function | Module | Signature |
 | -------- | ------ | --------- |
 | `VendorManager::vendor` | `core::vendor` | `(&self, pkg: &str) -> Result<()>` |
-| `VendorManager::install_from_vendor` | `core::vendor` | `(&self, pkg: &str) -> Result<()>` |
+| `VendorManager::install` | `core::vendor` | `(&self, pkg: &str) -> Result<()>` |
 
 Recursive dependency resolution, download, and caching into a vendored directory structure. When the vendor directory is present, `mcx -i` can operate entirely offline.
 
@@ -1221,6 +1083,53 @@ Recursive dependency resolution, download, and caching into a vendored directory
 | `CompletionEngine::generate` | `core::completion` | `(&self, shell: Shell) -> Result<String>` |
 
 Supports Bash, Zsh, and Fish. Generates completions for all commands, aliases, and flags. Output is written to the appropriate system completions directory or stdout.
+
+## Network downloader (concurrent, retry, streaming, ETag)
+
+`Downloader` (in `network::download.rs`) provides HTTP(S) package downloads with:
+
+- **Concurrent multi-package**: configurable parallelism via a semaphore-bounded worker pool
+- **Automatic retry**: configurable max retries with exponential backoff
+- **Streaming integrity**: SHA-256 hashing verified mid-stream before finalising
+- **ETag caching**: conditional `If-None-Match` headers skip redundant downloads; records ETag on success
+- **Progress callbacks**: optional `ProgressFn` for per-chunk progress reporting
+
+| Method | Signature |
+| ------ | --------- |
+| `Downloader::new` | `(parallelism: usize, max_retries: u32) -> Self` |
+| `Downloader::download` | `(&self, url: &str, dest: &Path, progress: Option<ProgressFn>) -> Result<DownloadResult>` |
+| `Downloader::download_many` | `(&self, items: &[DownloadItem]) -> Vec<DownloadOutcome>` |
+
+Returns `DownloadResult` with bytes downloaded, checksum, and server ETag.
+
+## Network sync engine (ETag conditional sync)
+
+`NetworkSyncEngine` (in `network::sync.rs`) synchronises all repository indexes in parallel:
+
+- **ETag-aware**: sends `If-None-Match` headers; the server returns `304 Not Modified` for unchanged indexes, avoiding redundant downloads and disk writes
+- **Atomic write**: new indexes are written to a temp file, then renamed into place
+- **Per-repo reporting**: returns a `SyncReport` with status (`Updated`, `Unchanged`, `Failed`) per repository
+
+| Method | Signature |
+| ------ | --------- |
+| `NetworkSyncEngine::new` | `(downloader: Arc&lt;Downloader&gt;) -> Self` |
+| `NetworkSyncEngine::sync_repositories` | `(&self, repos: &[RepositoryEntry], cache_dir: &Path) -> Result&lt;SyncReport&gt;` |
+
+## Integrity scanner (async verify & repair)
+
+`IntegrityScanner` (in `core::integrity.rs`) asynchronously verifies every installed package's file tree against the manifest:
+
+- **Concurrent traversal**: uses a thread pool to check files in parallel (configurable concurrency, default 4)
+- **SHA-256 verification**: reads every file, computes digest, compares against the manifest checksum
+- **Repair**: for failed files, re-downloads the original package and re-extracts just the damaged entries
+- **Report**: returns `IntegrityReport` with per-package results, total scanned/failed/repaired counts
+
+| Method | Signature |
+| ------ | --------- |
+| `IntegrityScanner::new` | `(concurrency: usize) -> Self` |
+| `IntegrityScanner::scan_all` | `(&self, db: &Database, cache_dir: &Path, cache: &CacheManager) -> Result&lt;IntegrityReport&gt;` |
+
+The scanner runs in the `--verify` command path and auto-repairs corruption found during verification.
 
 </details>
 
@@ -1417,6 +1326,198 @@ registry.swap_fetcher("curl", Arc::new(MyFetcher));
 
 All traits require `Send + Sync`.
 
+---
+
+## External plugin system (hook-based, language-agnostic)
+
+In addition to the Rust trait-based plugins above, MCX supports **external plugins** — standalone executables in any language that communicate via stdout/stderr and a JSON event protocol.
+
+### Directory layout
+
+External plugins live under `var/lib/mcx/plugins/<plugin-name>/`:
+
+```
+var/lib/mcx/plugins/
+└── my-plugin/
+    ├── plugin.ini          # Manifest (required)
+    ├── plugin.sh           # Executable (or script)
+    └── ...                 # Any additional assets
+```
+
+### `plugin.ini` format
+
+```ini
+[plugin]
+name = my-plugin
+version = 1.0.0
+description = Does something useful
+language = bash
+type = hook                  # hook, daemon, or filter
+command = ${root}/var/lib/mcx/plugins/my-plugin/plugin.sh ${event}
+trigger = post-install       # Hook name to bind to
+author = You
+homepage = https://example.com
+timeout_secs = 30
+```
+
+| Field | Required | Description |
+| ----- | -------- | ----------- |
+| `name` | Yes | Unique plugin name |
+| `version` | No | Semver |
+| `description` | No | Human-readable summary |
+| `language` | No | Runtime language (bash, python, etc.) |
+| `type` | No | `hook` (default, fires on events), `daemon` (long-lived background process), `filter` (transforms data) |
+| `command` | Yes | Shell command to execute. Template variables: `${event}` (JSON event), `${root}` (MCX root), `${package}`, `${hook}`, `${dir}` (plugin directory) |
+| `trigger` | No | Hook name that triggers this plugin. Required for `type=hook`. See hooks list below. |
+| `author` | No | Author name |
+| `homepage` | No | Project URL |
+| `timeout_secs` | No | Command timeout (default: 30) |
+
+### Available hooks
+
+| Hook | Fires when |
+| ---- | ----------- |
+| `pre-install` | Before a package is installed |
+| `post-install` | After a package is installed successfully |
+| `pre-remove` | Before a package is removed |
+| `post-remove` | After a package is removed |
+| `pre-upgrade` | Before a package upgrade |
+| `post-upgrade` | After a package upgrade completes |
+| `pre-sync` | Before repository indexes are synced |
+| `post-sync` | After repository indexes are synced |
+| `daemon-start` | Start a daemon plugin |
+
+### Event JSON format
+
+The `${event}` template variable expands to a JSON string:
+
+```json
+{
+  "hook": "post-install",
+  "package": "curl",
+  "root": "/opt/mcx",
+  "timestamp": "2026-07-01T12:00:00Z"
+}
+```
+
+### Plugin output protocol
+
+Plugins communicate results via **exit code**:
+
+- Exit `0`: success
+- Exit non-zero: failure (stderr is captured as the error message)
+
+Optional JSON output on stdout with a single line `RESULT:{"success":true,"message":"done"}` is also recognised.
+
+### Creating a plugin from scratch (step by step)
+
+#### Step 1 — Create the plugin directory
+
+```shell
+mkdir -p /opt/mcx/var/lib/mcx/plugins/hello-world
+```
+
+#### Step 2 — Write `plugin.ini`
+
+```shell
+cat > /opt/mcx/var/lib/mcx/plugins/hello-world/plugin.ini << 'EOF'
+[plugin]
+name = hello-world
+version = 1.0.0
+description = Prints a message after every install
+language = bash
+type = hook
+command = ${dir}/plugin.sh ${event}
+trigger = post-install
+EOF
+```
+
+#### Step 3 — Write the executable
+
+```shell
+cat > /opt/mcx/var/lib/mcx/plugins/hello-world/plugin.sh << 'SCRIPT'
+#!/bin/bash
+echo "Hello from plugin! Installed package: $(echo "$1" | sed 's/.*"package":"\([^"]*\)".*/\1/')"
+SCRIPT
+chmod +x /opt/mcx/var/lib/mcx/plugins/hello-world/plugin.sh
+```
+
+#### Step 4 — Reload plugins
+
+```shell
+mcx --plugin-list
+# Plugins are auto-discovered on next command
+```
+
+#### Step 5 — Test it
+
+Install any package and the plugin fires automatically:
+
+```shell
+mcx -i curl
+# Hello from plugin! Installed package: curl
+```
+
+### Daemon plugins
+
+Daemon-type plugins are long-lived background processes started and managed by MCX:
+
+```ini
+[plugin]
+name = monitor-d
+type = daemon
+command = ${dir}/monitord --root ${root}
+```
+
+Start with:
+
+```shell
+mcx --plugin-start monitor-d
+```
+
+MCX spawns the command and detaches it. The daemon receives the `daemon-start` hook event.
+
+### CLI commands
+
+| Command | Description |
+| ------- | ----------- |
+| `mcx -p list` | List all discovered external plugins |
+| `mcx -p info <name>` | Show full manifest details for a plugin |
+| `mcx -p run <name> [hook]` | Run a plugin once (optional hook name, default `post-install`) |
+| `mcx -p add <dir>` | Add a plugin by copying a directory into the plugins folder |
+| `mcx -p remove <name>` | Remove a plugin by deleting its directory |
+| `mcx -p reload` | Re-scan the plugins directory for changes |
+| `mcx -p daemon <name>` | Start a daemon-type plugin in the background |
+
+### Full example: Python webhook notifier
+
+**`plugin.ini`:**
+```ini
+[plugin]
+name = webhook-notifier
+version = 0.1.0
+description = Sends Discord webhook on install/remove
+language = python
+type = hook
+command = python3 ${dir}/notify.py ${event}
+trigger = post-install
+trigger = post-remove
+```
+
+**`notify.py`:**
+```python
+import json, os, sys
+
+event = json.loads(sys.argv[1])
+hook = event["hook"]
+pkg = event.get("package", "unknown")
+msg = f"Package {pkg} was {hook.replace('post-', '')}ed"
+
+os.system(f'curl -s -X POST -H "Content-Type: application/json" \
+    -d \'{{"content":"{msg}"}}\' https://discord.com/api/webhooks/...')
+sys.exit(0)
+```
+
 </details>
 
 <details><summary id="configuration-guide">Configuration guide</summary>
@@ -1433,7 +1534,7 @@ MCX configuration is entirely file-based. Three INI files under `<root>/etc/mcx/
 
 ---
 
-## Guide 1: Configuring MCX from scratch
+## Configuring MCX from scratch
 
 ### Step 1 — Generate defaults
 
@@ -1577,20 +1678,10 @@ After using MCX (installing packages, syncing repos), the full tree is:
 │   │   ├── cas/           # Content-addressable library store
 │   │   │   └── <hex2>/    # First 2 hex chars of SHA-256
 │   │   │       └── <sha256>  # Hard-linked unique .so
-│   │   ├── deltas/        # Binary delta archives
-│   │   │   └── <pkg>-<old>-<new>.xcd
 │   │   ├── generations/   # Per-package rollback snapshots
 │   │   │   └── <pkg>/
 │   │   │       ├── 1/     # Generation N-1
 │   │   │       └── 2/     # Generation N (current)
-│   │   ├── snapshots/     # Process memory checkpoints
-│   │   │   └── <pkg>/
-│   │   │       └── snap-<timestamp>.mem
-│   │   ├── stream/        # Cloud-stream mount scripts
-│   │   │   └── <pkg>.sh
-│   │   ├── swarm/         # P2P distribution state
-│   │   │   ├── <pkg>.json  # IPFS/IPLD content hashes
-│   │   │   └── peers.json  # Known swarm peers
 │   │   ├── sync/           # Synced repository index files
 │   │   │   └── <repo>.json # Downloaded index (JSON array of PackageMetadata)
 │   │   ├── vendor/         # Offline package mirror
@@ -1599,11 +1690,6 @@ After using MCX (installing packages, syncing repos), the full tree is:
 │   │   └── <pkg>-<ver>.xcs
 │   └── tmp/mcx/
 │       └── stage/          # In-flight extraction staging
-├── ~/.mcx/overlays/        # Per-package overlayfs (upper/work/merged)
-│   └── <pkg>/
-│       ├── upper/
-│       ├── work/
-│       └── merged/
 └── /sys/fs/cgroup/mcx/     # cgroup v2 hierarchy (root only)
     └── <pkg>/
         ├── memory.max
@@ -1612,7 +1698,7 @@ After using MCX (installing packages, syncing repos), the full tree is:
 
 ---
 
-## Guide 2: Creating a package repository
+## Creating a package repository
 
 A package repository is any HTTP(S) server that serves two things:
 
@@ -1665,7 +1751,7 @@ The `url` field in `repo.ini` points to `<repo-root>`.
     ],
     "files": [],
     "provides": ["libpng16.so.16"],
-    "conflicts": []
+    "conflicts": [...]
   }
 ]
 ```
@@ -1779,7 +1865,7 @@ Output:
 
 ```
   ┌── Configured repositories ─────────────────────────
-  ├─ cudane -> https://packages.cudane.org
+  ├─ core -> https://packages.example.org
   ├─ internal -> https://mirror.internal.example.com/mcx
   └─ edge -> https://edge.packages.example.com
 ```
@@ -1848,7 +1934,7 @@ mcx -u (no package args)
   └─ SyncCommand::execute()
        ├─ RepositoryManager::load_repositories()  ← reads repo.ini sections
        ├─ For each enabled repo (parallel):
-       │    ├─ Downloader::download_package(url/index.json, sync/<name>.json)
+       │    ├─ Downloader::package(url/index.json, sync/<name>.json)
        │    └─ HashVerifier::verify_integrity()    ← if checksum is set in repo.ini
        ├─ Database::begin_transaction()
        └─ For each downloaded index:
@@ -2095,23 +2181,24 @@ strip = true            # Strip symbols
 
 <details><summary id="credits">Credits</summary>
 
-**`MCX`** is part of the **`Cudane` Linux** ecosystem.
+**`MCX`** is part of the **`Cudane`** ecosystem.
 
-- **`Cudane`** — The Linux Distribution.
+- **`Cudane`** — The Distribution.
 - **`MCX`** — Runtime Package Manager.
 
 </details>
 
 <details><summary id="license">License</summary>
 
-The Unlicense — see [**`LICENSE`**](github.com/Cudane/MCX/LICENSE) file for details.
+## The Unlicense
+
+see [**`LICENSE`**](github.com/Cudane/MCX/LICENSE) file for details.
 
 </details>
 
 `▐▀` `-` `▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▌`
 
-- **`Version`:** **`3.0.0`**.
+- **`Version`:** **`4.0.0`**.
 - **`Architecture`:** **`x86_64-unknown-linux-musl`** (**`x86_64-pc-linux-musl`**).
-- **`Compression`:** **`Zstd Level 3 (.xcs)`**.
 
 `▐▄` `-` `▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▌`

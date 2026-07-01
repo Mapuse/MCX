@@ -16,7 +16,7 @@ impl SelfUpdateManager {
         }
 
         let downloader = Downloader::new();
-        downloader.download_package(binary_url, dest).await?;
+        let _ = downloader.package(binary_url, dest).await?;
 
         if !dest.exists() {
             return Err(anyhow!("Downloaded binary not found at {:?}", dest));

@@ -5,27 +5,32 @@ use std::sync::Arc;
 use anyhow::{Result, Context, anyhow};
 use crate::core::db::Database;
 use crate::core::cgroup::CgroupController;
-use crate::core::overlay::OverlayManager;
 use crate::core::security::SecurityMonitor;
+use crate::core::plugin::{PluginManager, PluginHook, PluginEvent};
 
 pub struct RemoveCommand {
     root: PathBuf,
     db: Arc<Database>,
+    plugin_mgr: Option<Arc<PluginManager>>,
 }
 
 impl RemoveCommand {
     pub fn new(root: String, db: Arc<Database>) -> Self {
-        Self { root: PathBuf::from(root), db }
+        Self { root: PathBuf::from(root), db, plugin_mgr: None }
     }
 
-    pub fn execute(&self, packages: &[String], cgroup_mgr: &CgroupController, overlay_mgr: &OverlayManager, security_mon: &SecurityMonitor) -> Result<()> {
+    pub fn with_plugin_mgr(mut self, mgr: Arc<PluginManager>) -> Self { self.plugin_mgr = Some(mgr); self }
+
+    pub fn execute(&self, packages: &[String], cgroup_mgr: &CgroupController, security_mon: &SecurityMonitor) -> Result<()> {
         if packages.is_empty() {
             return Err(anyhow!("No target packages specified for removal transaction"));
         }
 
+        self.fire_hooks(PluginHook::PreRemove, packages);
+
         let mut transaction = self.db.begin_transaction()?;
 
-        let (orphans, _purged) = self.deep_purge_analysis(packages)?;
+        let (orphans, _purged) = self.analysis(packages)?;
 
         let all_targets: Vec<String> = packages.iter()
             .chain(orphans.iter())
@@ -86,15 +91,31 @@ impl RemoveCommand {
         // sandbox cleanup for removed packages
         for pkg in &all_targets {
             let _ = cgroup_mgr.remove_resource_limits(pkg);
-            let _ = overlay_mgr.remove_isolated_overlay(pkg);
             security_mon.unregister_package(pkg);
         }
 
         transaction.commit()?;
+
+        self.fire_hooks(PluginHook::PostRemove, packages);
+
         Ok(())
     }
 
-    fn deep_purge_analysis(&self, targets: &[String]) -> Result<(Vec<String>, Vec<String>)> {
+    fn fire_hooks(&self, hook: PluginHook, packages: &[String]) {
+        if let Some(ref mgr) = self.plugin_mgr {
+            for pkg in packages {
+                let event = PluginEvent {
+                    hook: hook.as_str().to_string(),
+                    package: Some(pkg.clone()),
+                    root: self.root.to_string_lossy().to_string(),
+                    timestamp: chrono::Utc::now().to_rfc3339(),
+                };
+                mgr.fire_hook(hook, &event);
+            }
+        }
+    }
+
+    fn analysis(&self, targets: &[String]) -> Result<(Vec<String>, Vec<String>)> {
         let all_installed = self.db.get_all_installed_packages()?;
         let target_set: HashSet<&str> = targets.iter().map(|s| s.as_str()).collect();
 

@@ -1,5 +1,5 @@
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use mcx::utils::ui::UserInterface;
 use mcx::core::database::{Database, PackageMetadata, ChecksumData, Dependency};
@@ -7,8 +7,6 @@ use mcx::core::completion::CompletionEngine;
 use mcx::core::security::SecurityMonitor;
 use mcx::core::declarative::ProfileValidator;
 use mcx::core::cgroup::CgroupController;
-use mcx::core::overlay::OverlayManager;
-use mcx::core::swarm::{SwarmManager, SwarmPeer};
 use mcx::core::cas::CasStore;
 use mcx::core::rollback::RollbackManager;
 use mcx::core::lifecycle::{LifecycleEngine, DependencyGraph, PackageState, OrphanSet};
@@ -17,7 +15,6 @@ use mcx::commands::remove::RemoveCommand;
 use mcx::commands::install::InstallCommand;
 use mcx::commands::configuration::ConfigTarget;
 use mcx::network::download::Downloader;
-use mcx::network::pipeline::DownloadPipeline;
 
 fn create_temporary_root(identifier: &str) -> PathBuf {
     let mut path = std::env::temp_dir();
@@ -112,9 +109,8 @@ async fn test_package_removal_and_filesystem_cleanup() {
     let db_share = Arc::new(db);
     let command = RemoveCommand::new(root.to_string_lossy().into_owned(), db_share.clone());
     let cg = mcx::CgroupController::new();
-    let ov = mcx::OverlayManager::new(Path::new("/tmp"));
     let sm = mcx::SecurityMonitor::new();
-    command.execute(&["app".to_string()], &cg, &ov, &sm).unwrap();
+    command.execute(&["app".to_string()], &cg, &sm).unwrap();
 
     assert!(!db_share.is_package_installed("app").unwrap());
     assert!(!binary_file.exists());
@@ -158,17 +154,16 @@ fn test_user_interface_output_nodes() {
     UserInterface::error("Simulated catastrophic deployment rollback");
     UserInterface::warning("Alert safe status check bounds active");
     UserInterface::download("Download pipeline test message");
-    UserInterface::sandbox("Overlay sandbox test message");
     UserInterface::security("Security monitor test message");
     UserInterface::profile("Profile validator test message");
     UserInterface::cgroup("Cgroup controller test message");
     UserInterface::cas("CAS store test message");
     UserInterface::self_update("Self-update test message");
-    UserInterface::version("mcx 3.0.0");
+    UserInterface::version("mcx 4.0.0");
     UserInterface::progress(50, 100, "Extracting asset metadata tree");
 
     let list_items = vec![
-        "mcx-core-engine v3.0.0".to_string(),
+        "mcx-core-engine v4.0.0".to_string(),
         "network-transport-ssl".to_string(),
         "local-registry-ledger".to_string(),
     ];
@@ -234,7 +229,7 @@ async fn test_network_downloader_endpoint_handling() {
     assert!(is_available);
 
     let destination = root.join("test_download.html");
-    let result = downloader.download_package("https://www.google.com", &destination).await;
+    let result = downloader.package("https://www.google.com", &destination).await;
     assert!(result.is_ok());
     assert!(destination.exists());
     assert!(fs::metadata(&destination).unwrap().len() > 0);
@@ -250,24 +245,11 @@ async fn test_network_downloader_transient_failure_recovery() {
     let invalid_endpoint = "https://invalid-subdomain-unreachable-target-node.org/asset.xcs";
     let destination = root.join("failed_output.xcs");
 
-    let result = downloader.download_package(invalid_endpoint, &destination).await;
+    let result = downloader.package(invalid_endpoint, &destination).await;
     assert!(result.is_err());
 
     let availability = downloader.check_endpoint_availability(invalid_endpoint).await;
     assert!(!availability);
-
-    fs::remove_dir_all(&root).unwrap();
-}
-
-#[tokio::test]
-async fn test_download_pipeline_fallback_chain() {
-    let pipeline = DownloadPipeline::new(None);
-    let root = create_temporary_root("pipeline_fallback");
-    let dest = root.join("test.xcs");
-
-    // Invalid URL should fail through all 3 stages gracefully
-    let result = pipeline.fetch("https://invalid.nonexistent.local/pkg-1.0.0.xcs", "pkg", "1.0.0", &dest).await;
-    assert!(result.is_err());
 
     fs::remove_dir_all(&root).unwrap();
 }
@@ -280,7 +262,7 @@ async fn test_database_dependency_graph_relations() {
     let db = Database::open(&root).unwrap();
 
     let base_package = PackageMetadata {
-        pkg_name: "openssl".to_string(), version: "3.0.0".to_string(),
+        pkg_name: "openssl".to_string(), version: "4.0.0".to_string(),
         license: "Apache-2.0".to_string(), source: "https://example.com/ssl".to_string(),
         checksum: ChecksumData { kind: "sha256".to_string(), value: "1234a6d40bf420404a011733cfb7b190d62c65bf0bcda32b57b277d9ad9f146e".to_string() },
         dependencies: vec![], files: vec![], provides: Some(vec![]), conflicts: Some(vec![]),
@@ -514,29 +496,6 @@ fn test_cgroup_controller_availability_check() {
     let _ = cg.remove_resource_limits("test-pkg");
 }
 
-// ── Overlay ─────────────────────────────────────────────────────────────────
-
-#[test]
-fn test_overlay_manager_directory_creation_and_cleanup() {
-    let root = create_temporary_root("overlay_test");
-    let overlay = OverlayManager::new(&root);
-    assert!(overlay.initialize().is_ok());
-
-    let merged = overlay.create_isolated_overlay("test-pkg", &root);
-    assert!(merged.is_ok());
-
-    let overlays = overlay.list_overlays();
-    assert!(overlays.is_ok());
-    assert!(overlays.unwrap().iter().any(|p| p.to_string_lossy().contains("test-pkg")));
-
-    assert!(overlay.remove_isolated_overlay("test-pkg").is_ok());
-
-    let overlays_after = overlay.list_overlays().unwrap();
-    assert!(!overlays_after.iter().any(|p| p.to_string_lossy().contains("test-pkg")));
-
-    fs::remove_dir_all(&root).unwrap();
-}
-
 // ── Security Monitor ────────────────────────────────────────────────────────
 
 #[test]
@@ -563,37 +522,6 @@ fn test_security_monitor_package_tracking_and_isolation() {
     assert!(sm.check_package("good"));
     assert!(!sm.check_package("evil"));
     let _ = old;
-}
-
-// ── Swarm ───────────────────────────────────────────────────────────────────
-
-#[test]
-fn test_swarm_manager_hash_and_peer_tracking() {
-    let root = create_temporary_root("swarm_test");
-    let swarm = SwarmManager::new(&root);
-    assert!(swarm.initialize().is_ok());
-
-    assert!(swarm.register_swarm_hash("nginx", "1.25.0", "abc123").is_ok());
-    let hash = swarm.get_swarm_hash("nginx").unwrap();
-    assert_eq!(hash, Some("abc123".to_string()));
-
-    let peer = SwarmPeer {
-        address: "10.0.0.1:8080".to_string(),
-        peer_id: "peer-001".to_string(),
-        last_seen: 1000000,
-        advertised_hashes: vec!["abc123".to_string()],
-    };
-    assert!(swarm.register_swarm_peer(peer).is_ok());
-
-    let peers = swarm.list_swarm_peers().unwrap();
-    assert_eq!(peers.len(), 1);
-    assert_eq!(peers[0].peer_id, "peer-001");
-
-    assert!(swarm.remove_swarm_entry("nginx").is_ok());
-    let hash_after = swarm.get_swarm_hash("nginx").unwrap();
-    assert_eq!(hash_after, None);
-
-    fs::remove_dir_all(&root).unwrap();
 }
 
 // ── Profile Validator ───────────────────────────────────────────────────────
@@ -662,36 +590,6 @@ fn test_cas_store_deduplication() {
     fs::remove_dir_all(&root).unwrap();
 }
 
-// ── Delta Engine ────────────────────────────────────────────────────────────
-
-#[test]
-fn test_delta_engine_compute_and_persist() {
-    let root = create_temporary_root("delta_test");
-    let deltas_dir = root.join("var/lib/mcx/deltas");
-    fs::create_dir_all(&deltas_dir).unwrap();
-
-    let old_dir = root.join("old");
-    let new_dir = root.join("new");
-    fs::create_dir_all(&old_dir).unwrap();
-    fs::create_dir_all(&new_dir).unwrap();
-
-    fs::write(old_dir.join("keep.txt"), b"same").unwrap();
-    fs::write(old_dir.join("remove.txt"), b"gone").unwrap();
-    fs::write(new_dir.join("keep.txt"), b"same").unwrap();
-    fs::write(new_dir.join("add.txt"), b"new").unwrap();
-
-    let delta = mcx::core::delta::DeltaEngine::compute_delta(&old_dir, &new_dir, "test-pkg", "1.0.0", "2.0.0").unwrap();
-
-    assert_eq!(delta.manifest.added.len(), 1);
-    assert_eq!(delta.manifest.removed.len(), 1);
-    assert_eq!(delta.manifest.modified.len(), 0);
-
-    let persist = mcx::core::delta::DeltaEngine::write_delta(&delta, &deltas_dir.join("test-pkg-1.0.0-2.0.0.xcd"));
-    assert!(persist.is_ok());
-
-    fs::remove_dir_all(&root).unwrap();
-}
-
 // ── Config ──────────────────────────────────────────────────────────────────
 
 #[tokio::test]
@@ -732,43 +630,6 @@ async fn test_completion_engine_shell_script_generation() {
 
     let bad_shell = engine.generate_shell_blueprint("tcsh");
     assert!(bad_shell.is_err());
-
-    fs::remove_dir_all(&root).unwrap();
-}
-
-// ── Snapshot (Proc-dependent; test init only) ───────────────────────────────
-
-#[test]
-fn test_snapshot_manager_initialization() {
-    let root = create_temporary_root("snapshot_init");
-    let snap = mcx::core::snapshot::SnapshotManager::new(&root);
-    assert!(snap.initialize().is_ok());
-
-    let snapshots = snap.list_snapshots("any-pkg").unwrap();
-    assert!(snapshots.is_empty());
-
-    let _ = fs::remove_dir_all(&root);
-}
-
-// ── Stream ──────────────────────────────────────────────────────────────────
-
-#[test]
-fn test_stream_manager_script_generation() {
-    let root = create_temporary_root("stream_test");
-    let stream = mcx::core::stream::StreamManager::new(&root);
-    assert!(stream.initialize().is_ok());
-
-    let script = stream.generate_stream_mount_script("test-pkg", "1.0.0", "https://example.com/test-pkg-1.0.0.xcs");
-    assert!(script.is_ok());
-    let content = fs::read_to_string(script.unwrap()).unwrap();
-    assert!(content.contains("zstd"));
-    assert!(content.contains("curl"));
-    assert!(content.contains("test-pkg"));
-
-    let list = stream.list_stream_scripts().unwrap();
-    assert!(list.iter().any(|p| p.to_string_lossy().contains("test-pkg")));
-
-    assert!(stream.remove_stream_script("test-pkg").is_ok());
 
     fs::remove_dir_all(&root).unwrap();
 }
@@ -958,4 +819,136 @@ fn test_dependency_graph_reachability_and_orphans() {
     assert!(reach.contains(&"app".to_string()));
     assert!(reach.contains(&"lib-c".to_string()));
     assert!(purged.is_empty());
+}
+
+// ── NetworkSyncEngine ────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_network_sync_engine_ldex() {
+    let root = create_temporary_root("sync_engine");
+    let sync_dir = root.join("var/lib/mcx/sync");
+    fs::create_dir_all(&sync_dir).unwrap();
+
+    let db = Database::open(&root).unwrap();
+    let engine = mcx::network::sync::NetworkSyncEngine::new(Arc::new(db), root.to_string_lossy().into_owned());
+
+    // no index exists yet
+    assert!(!engine.ldex("test-repo").unwrap());
+
+    // create one
+    fs::write(sync_dir.join("test-repo.json"), b"{}").unwrap();
+    assert!(engine.ldex("test-repo").unwrap());
+
+    fs::remove_dir_all(&root).unwrap();
+}
+
+// ── IntegrityScanner ─────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_integrity_scanner_clean_root() {
+    let root = create_temporary_root("integrity_clean");
+    fs::create_dir_all(&root.join("var/lib/mcx/active")).unwrap();
+    let db = Database::open(&root).unwrap();
+    let scanner = mcx::core::integrity::IntegrityScanner::new(&root, Arc::new(db));
+    let report = scanner.verify_all();
+    assert_eq!(report.total_packages, 0);
+    assert!(report.errors.is_empty());
+    fs::remove_dir_all(&root).unwrap();
+}
+
+#[tokio::test]
+async fn test_integrity_scanner_detects_missing_files() {
+    let root = create_temporary_root("integrity_missing");
+    fs::create_dir_all(&root.join("var/lib/mcx/active/test-pkg")).unwrap();
+    fs::create_dir_all(&root.join("usr/bin")).unwrap();
+
+    let db = Database::open(&root).unwrap();
+    let pkg = PackageMetadata {
+        pkg_name: "test-pkg".into(), version: "1.0".into(),
+        license: "MIT".into(), source: "https://example.com".into(),
+        checksum: ChecksumData { kind: "sha256".into(), value: "0000".into() },
+        dependencies: vec![],
+        files: vec![PathBuf::from("usr/bin/test-bin")],
+        provides: Some(vec![]), conflicts: Some(vec![]),
+    };
+    let mut tx = db.begin_transaction().unwrap();
+    tx.register_package_placement(&pkg).unwrap();
+    tx.commit().unwrap();
+
+    let scanner = mcx::core::integrity::IntegrityScanner::new(&root, Arc::new(db));
+    let report = scanner.verify_all();
+    assert_eq!(report.total_packages, 1);
+    assert_eq!(report.missing_files.len(), 1);
+    assert_eq!(report.missing_files[0].pkg, "test-pkg");
+
+    fs::remove_dir_all(&root).unwrap();
+}
+
+// ── ExternalPlugin / PluginManager ───────────────────────────────────────────
+
+#[tokio::test]
+async fn test_plugin_manager_discovery_and_list() {
+    let root = create_temporary_root("plugin_mgr");
+    let plugins_dir = root.join("var/lib/mcx/plugins");
+    fs::create_dir_all(&plugins_dir.join("alpha")).unwrap();
+    fs::write(plugins_dir.join("alpha/plugin.ini"), "[plugin]\nname = alpha\ncommand = echo a\ntrigger = post-install\n").unwrap();
+    fs::create_dir_all(&plugins_dir.join("beta")).unwrap();
+    fs::write(plugins_dir.join("beta/plugin.ini"), "[plugin]\nname = beta\ncommand = echo b\ntrigger = pre-remove\n").unwrap();
+
+    let mgr = mcx::core::plugin::PluginManager::new(&root);
+    let list = mgr.list();
+    assert_eq!(list.len(), 2);
+
+    let alpha = mgr.find("alpha").unwrap();
+    assert_eq!(alpha.manifest().name, "alpha");
+    assert_eq!(alpha.manifest().trigger.as_deref(), Some("post-install"));
+
+    let beta = mgr.find("beta").unwrap();
+    assert_eq!(beta.manifest().trigger.as_deref(), Some("pre-remove"));
+
+    let missing = mgr.find("nonexistent");
+    assert!(missing.is_none());
+
+    fs::remove_dir_all(&root).unwrap();
+}
+
+#[tokio::test]
+async fn test_plugin_manager_run_plugin_once() {
+    let root = create_temporary_root("plugin_run");
+    let plugins_dir = root.join("var/lib/mcx/plugins");
+    fs::create_dir_all(&plugins_dir.join("greeter")).unwrap();
+    fs::write(plugins_dir.join("greeter/plugin.ini"),
+        "[plugin]\nname = greeter\ncommand = echo '{\"success\":true,\"message\":\"hello\"}'\n").unwrap();
+
+    let mgr = mcx::core::plugin::PluginManager::new(&root);
+    let event = mcx::core::plugin::PluginEvent {
+        hook: "test".into(),
+        package: Some("pkg".into()),
+        root: root.to_string_lossy().into_owned(),
+        timestamp: "now".into(),
+    };
+    let result = mgr.run_plugin_once("greeter", &event).unwrap();
+    assert!(result.success);
+    assert!(result.message.unwrap_or_default().contains("hello"));
+
+    let err = mgr.run_plugin_once("nonexistent", &event);
+    assert!(err.is_err());
+
+    fs::remove_dir_all(&root).unwrap();
+}
+
+#[tokio::test]
+async fn test_plugin_start_daemon_rejects_hook_type() {
+    let root = create_temporary_root("plugin_daemon_reject");
+    let plugins_dir = root.join("var/lib/mcx/plugins");
+    fs::create_dir_all(&plugins_dir.join("hooker")).unwrap();
+    fs::write(plugins_dir.join("hooker/plugin.ini"),
+        "[plugin]\nname = hooker\ncommand = echo hi\ntype = hook\n").unwrap();
+
+    let mgr = mcx::core::plugin::PluginManager::new(&root);
+    let result = mgr.start_daemon("hooker");
+    assert!(result.is_err());
+    assert!(result.unwrap_err().to_string().contains("not a daemon plugin"));
+
+    fs::remove_dir_all(&root).unwrap();
 }

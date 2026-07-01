@@ -135,6 +135,10 @@ impl Database {
         Err(anyhow!("Package '{}' not found in registry", pkg_name))
     }
 
+    pub fn env_read_txn(&self) -> Result<heed::RoTxn<'_>> {
+        Ok(self.env.read_txn()?)
+    }
+
     pub fn get_configured_repositories(&self) -> Result<Vec<RepositoryInfo>> {
         Err(anyhow!("Not supported via LMDB; use RepositoryManager"))
     }

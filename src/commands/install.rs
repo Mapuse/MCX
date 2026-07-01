@@ -7,10 +7,10 @@ use crate::core::solver::DependencySolver;
 use crate::core::db::Database;
 use crate::core::profiler::SystemProfile;
 use crate::core::cgroup::CgroupController;
-use crate::core::overlay::OverlayManager;
 use crate::core::declarative::ProfileValidator;
 use crate::core::security::SecurityMonitor;
-use crate::network::pipeline::DownloadPipeline;
+use crate::core::plugin::{PluginManager, PluginHook, PluginEvent};
+use crate::network::download::Downloader;
 use crate::archive::extract::Extractor;
 use crate::archive::hash::HashVerifier;
 use crate::utils::ui::UserInterface;
@@ -19,33 +19,34 @@ pub struct InstallCommand {
     root: String,
     db: Arc<Database>,
     cgroup_mgr: CgroupController,
-    overlay_mgr: OverlayManager,
     security_mon: Option<Arc<SecurityMonitor>>,
     profile_path: Option<PathBuf>,
+    plugin_mgr: Option<Arc<PluginManager>>,
 }
 
 impl InstallCommand {
     pub fn new(root: String, db: Arc<Database>) -> Self {
-        let overlay_base = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
         Self {
             root,
             db,
             cgroup_mgr: CgroupController::new(),
-            overlay_mgr: OverlayManager::new(Path::new(&overlay_base)),
             security_mon: None,
             profile_path: None,
+            plugin_mgr: None,
         }
     }
 
     pub fn with_cgroup(mut self, mgr: CgroupController) -> Self { self.cgroup_mgr = mgr; self }
-    pub fn with_overlay(mut self, mgr: OverlayManager) -> Self { self.overlay_mgr = mgr; self }
     pub fn with_security(mut self, mon: Arc<SecurityMonitor>) -> Self { self.security_mon = Some(mon); self }
     pub fn with_profile(mut self, path: PathBuf) -> Self { self.profile_path = Some(path); self }
+    pub fn with_plugin_mgr(mut self, mgr: Arc<PluginManager>) -> Self { self.plugin_mgr = Some(mgr); self }
 
     pub async fn execute(&self, packages: &[String]) -> Result<()> {
         if packages.is_empty() {
             return Err(anyhow!("Target specification empty"));
         }
+
+        self.fire_hooks(PluginHook::PreInstall, packages);
 
         let sys_profile = SystemProfile::probe();
         let mut solver = DependencySolver::new(Arc::clone(&self.db));
@@ -58,8 +59,7 @@ impl InstallCommand {
         let cache_dir = root_path.join("var/cache/mcx");
         fs::create_dir_all(&cache_dir)?;
 
-        let pipeline = DownloadPipeline::new(None);
-        let downloader = pipeline;
+        let downloader = Downloader::new();
 
         let mut pending: Vec<(crate::core::database::PackageMetadata, std::path::PathBuf)> = Vec::new();
 
@@ -78,10 +78,9 @@ impl InstallCommand {
                 let dl = downloader.clone();
                 let url = meta.source.clone();
                 let dest = target_path.clone();
-                let pkg = meta.pkg_name.clone();
-                let ver = meta.version.clone();
                 join_all(vec![tokio::spawn(async move {
-                    dl.fetch(&url, &pkg, &ver, &dest).await
+                    let _ = dl.package(&url, &dest).await?;
+                    Ok::<(), anyhow::Error>(())
                 })]).await;
             }
         }
@@ -191,17 +190,6 @@ impl InstallCommand {
             // cgroup: enforce resource limits (best-effort, may fail without root)
             let _ = self.cgroup_mgr.enforce_resource_limits(&meta.pkg_name, 512, 80);
 
-            // overlay: create sandbox directory structure and mount script
-            if let Ok(merged) = self.overlay_mgr.create_isolated_overlay(
-                &meta.pkg_name,
-                root_path,
-            ) {
-                UserInterface::sandbox(&format!("Overlay sandbox for {} at {}", meta.pkg_name, merged.display()));
-                UserInterface::sandbox(&format!("Activate: sudo {}", self.overlay_mgr.overlays_base
-                    .join(sanitize(&meta.pkg_name))
-                    .join("mount-overlay.sh").display()));
-            }
-
             // security monitor: register package
             if let Some(ref mon) = self.security_mon {
                 mon.register_package(&meta.pkg_name);
@@ -237,10 +225,23 @@ impl InstallCommand {
         }
         transaction.commit()?;
 
+        self.fire_hooks(PluginHook::PostInstall, packages);
+
         Ok(())
+    }
+
+    fn fire_hooks(&self, hook: PluginHook, packages: &[String]) {
+        if let Some(ref mgr) = self.plugin_mgr {
+            for pkg in packages {
+                let event = PluginEvent {
+                    hook: hook.as_str().to_string(),
+                    package: Some(pkg.clone()),
+                    root: self.root.clone(),
+                    timestamp: chrono::Utc::now().to_rfc3339(),
+                };
+                mgr.fire_hook(hook, &event);
+            }
+        }
     }
 }
 
-fn sanitize(name: &str) -> String {
-    name.chars().map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' }).collect()
-}

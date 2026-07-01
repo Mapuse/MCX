@@ -47,10 +47,6 @@ impl UserInterface {
         println!(" [⚙] :: {}", message);
     }
 
-    pub fn snapshot(message: &str) {
-        println!(" [◉°] :: {}", message);
-    }
-
     pub fn self_update(message: &str) {
         println!(" [↑] :: {}", message);
     }
