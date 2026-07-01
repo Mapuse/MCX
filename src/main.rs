@@ -1013,5 +1013,3 @@ fn is_root_process() -> bool {
         .map(|s| s.trim() == "0")
         .unwrap_or(false)
 }
-
-
