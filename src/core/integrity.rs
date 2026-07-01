@@ -4,6 +4,8 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use anyhow::{Result, Context};
 use sha2::{Sha256, Digest};
+use sha1::Sha1;
+use md5::Md5;
 use std::sync::Arc;
 use crate::core::db::{Database, PackageMetadata};
 
@@ -61,7 +63,7 @@ impl IntegrityScanner {
                 });
                 continue;
             }
-            let actual = match hash_file(&full_path) {
+            let actual = match hash_file(&full_path, &pkg.checksum.kind) {
                 Ok(h) => h,
                 Err(_) => {
                     report.corrupted_files.push(CorruptedFile {
@@ -72,7 +74,12 @@ impl IntegrityScanner {
                     continue;
                 }
             };
-            if actual != pkg.checksum.value && full_path.to_string_lossy().contains(&pkg.pkg_name) {
+            if actual != pkg.checksum.value {
+                report.corrupted_files.push(CorruptedFile {
+                    pkg: pkg.pkg_name.clone(),
+                    path: file.clone(),
+                    reason: format!("Hash mismatch ({}): got {}, expected {}", pkg.checksum.kind, actual, pkg.checksum.value),
+                });
             }
         }
 
@@ -225,18 +232,44 @@ pub struct RepairResult {
     pub errors: Vec<String>,
 }
 
-fn hash_file(path: &Path) -> Result<String> {
+fn hash_file(path: &Path, kind: &str) -> Result<String> {
     let mut file = fs::File::open(path)
         .with_context(|| format!("Failed to open {:?}", path))?;
-    let mut hasher = Sha256::new();
     let mut buffer = vec![0u8; 65536];
-    loop {
-        let n = file.read(&mut buffer)
-            .with_context(|| format!("Read error during hash: {:?}", path))?;
-        if n == 0 { break; }
-        hasher.update(&buffer[..n]);
+
+    match kind {
+        "sha256" | "sha-256" => {
+            let mut hasher = Sha256::new();
+            loop {
+                let n = file.read(&mut buffer)
+                    .with_context(|| format!("Read error during hash: {:?}", path))?;
+                if n == 0 { break; }
+                hasher.update(&buffer[..n]);
+            }
+            Ok(format!("{:x}", hasher.finalize()))
+        }
+        "sha1" | "sha-1" => {
+            let mut hasher = Sha1::new();
+            loop {
+                let n = file.read(&mut buffer)
+                    .with_context(|| format!("Read error during hash: {:?}", path))?;
+                if n == 0 { break; }
+                hasher.update(&buffer[..n]);
+            }
+            Ok(format!("{:x}", hasher.finalize()))
+        }
+        "md5" => {
+            let mut hasher = Md5::new();
+            loop {
+                let n = file.read(&mut buffer)
+                    .with_context(|| format!("Read error during hash: {:?}", path))?;
+                if n == 0 { break; }
+                hasher.update(&buffer[..n]);
+            }
+            Ok(format!("{:x}", hasher.finalize()))
+        }
+        other => Err(anyhow::anyhow!("Unsupported checksum kind: '{}'", other)),
     }
-    Ok(format!("{:x}", hasher.finalize()))
 }
 
 #[cfg(test)]
@@ -250,9 +283,35 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
         let f = dir.join("data.bin");
         fs::write(&f, b"hello world").unwrap();
-        let hash = hash_file(&f).unwrap();
+        let hash = hash_file(&f, "sha256").unwrap();
         // SHA-256 of "hello world"
         assert_eq!(hash, "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_hash_file_sha1() {
+        let dir = std::env::temp_dir().join(format!("mcx_test_hash_sha1_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("data.bin");
+        fs::write(&f, b"hello world").unwrap();
+        let hash = hash_file(&f, "sha1").unwrap();
+        // SHA-1 of "hello world"
+        assert_eq!(hash, "2aae6c35c94fcfb415dbe95f408b9ce91ee846ed");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_hash_file_md5() {
+        let dir = std::env::temp_dir().join(format!("mcx_test_hash_md5_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("data.bin");
+        fs::write(&f, b"hello world").unwrap();
+        let hash = hash_file(&f, "md5").unwrap();
+        // MD5 of "hello world"
+        assert_eq!(hash, "5eb63bbbe01eeed093cb22bb8f5acdc3");
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -263,7 +322,7 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
         let f = dir.join("empty.bin");
         fs::write(&f, b"").unwrap();
-        let hash = hash_file(&f).unwrap();
+        let hash = hash_file(&f, "sha256").unwrap();
         assert_eq!(hash, "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
         let _ = fs::remove_dir_all(&dir);
     }
@@ -273,8 +332,20 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("mcx_test_hash_missing_{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         let f = dir.join("nope.bin");
-        let err = hash_file(&f).unwrap_err();
+        let err = hash_file(&f, "sha256").unwrap_err();
         assert!(err.to_string().contains("Failed to open"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_hash_file_unsupported_kind() {
+        let dir = std::env::temp_dir().join(format!("mcx_test_hash_badkind_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("data.bin");
+        fs::write(&f, b"test").unwrap();
+        let err = hash_file(&f, "blake2").unwrap_err();
+        assert!(err.to_string().contains("Unsupported checksum kind"));
         let _ = fs::remove_dir_all(&dir);
     }
 

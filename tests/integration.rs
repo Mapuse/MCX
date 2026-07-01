@@ -430,7 +430,7 @@ async fn test_corrupted_archive_hash_verification_failure() {
     fs::write(&archive_file, b"corrupted payload data").unwrap();
 
     let expected_valid_hash = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
-    let verification_result = mcx::archive::hash::HashVerifier::verify_integrity(&archive_file, expected_valid_hash);
+    let verification_result = mcx::archive::hash::HashVerifier::verify_integrity(&archive_file, "sha256", expected_valid_hash);
     assert!(verification_result.is_err());
 
     fs::remove_dir_all(&root).unwrap();

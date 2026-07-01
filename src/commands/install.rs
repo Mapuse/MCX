@@ -96,7 +96,7 @@ impl InstallCommand {
                 let ext = Extractor::new(&self.root);
 
                 handles.push(tokio::task::spawn_blocking(move || -> Result<()> {
-                    HashVerifier::verify_integrity(&path_clone, &meta_clone.checksum.kind)?;
+                    HashVerifier::verify_integrity(&path_clone, &meta_clone.checksum.kind, &meta_clone.checksum.value)?;
                     let root_path = Path::new(&root);
                     let stage_dir = root_path.join("var/tmp/mcx/stage");
                     let installed_root = root_path.join("var/lib/mcx/active");
@@ -147,7 +147,7 @@ impl InstallCommand {
             let installed_root = root_path.join("var/lib/mcx/active");
 
             for (meta, path) in &pending {
-                HashVerifier::verify_integrity(path, &meta.checksum.kind)?;
+                HashVerifier::verify_integrity(path, &meta.checksum.kind, &meta.checksum.value)?;
 
                 let pkg_stage = stage_dir.join(&meta.pkg_name);
                 if pkg_stage.exists() { fs::remove_dir_all(&pkg_stage)?; }

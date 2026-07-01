@@ -148,7 +148,7 @@ impl RepositoryManager {
                 let result = match downloader.package(&repo_url, &temp_path).await {
                     Ok(_) => {
                         if let Some(ref expected_hash) = checksum {
-                            if let Err(e) = HashVerifier::verify_integrity(&temp_path, expected_hash) {
+                            if let Err(e) = HashVerifier::verify_integrity(&temp_path, "sha256", expected_hash) {
                                 let _ = fs::remove_file(&temp_path);
                                 Err(format!("{}: checksum mismatch: {}", repo_name, e))
                             } else {
