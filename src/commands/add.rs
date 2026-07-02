@@ -58,7 +58,7 @@ impl AddLocalCommand {
 
         
         let metadata_file = stage_dir.join("metadata.json");
-        let (pkg_name, version, license, checksum_kind, checksum_value) = if metadata_file.exists() {
+        let (pkg_name, version, license, checksum_type, checksum_value) = if metadata_file.exists() {
             let content = fs::read_to_string(&metadata_file)?;
             #[derive(serde::Deserialize)]
             struct EmbeddedMeta {
@@ -94,7 +94,7 @@ impl AddLocalCommand {
             license,
             files: installed_files,
             dependencies: Vec::new(),
-            checksum: crate::core::database::ChecksumData { kind: checksum_kind, value: checksum_value },
+            checksum: crate::core::database::ChecksumData { kind: checksum_type, value: checksum_value },
             provides: Some(Vec::new()),
             conflicts: Some(Vec::new()),
         };

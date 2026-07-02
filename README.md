@@ -828,7 +828,7 @@ LMDB provides memory-mapped, zero-copy reads and full ACID transactions with sin
 | `source` | `String` | URL or path of the source artifact |
 | `files` | `Vec<PathBuf>` | Relative paths of installed files |
 | `dependencies` | `Vec<Dependency>` | Dependency specs (`name`, `dep_type`) |
-| `checksum` | `ChecksumData` | `{ kind: String, value: String }` |
+| `checksum` | `ChecksumData` | `{ type: String, value: String }` |
 | `provides` | `Option<Vec<String>>` | Virtual package names provided by this package |
 | `conflicts` | `Option<Vec<String>>` | Package names this package conflicts with |
 
@@ -1727,7 +1727,7 @@ The `url` field in `repo.ini` points to `<repo-root>`.
     "license": "Zlib",
     "source": "https://repo.example.com/pool/zlib/zlib-1.3.1.xcs",
     "checksum": {
-      "kind": "sha256",
+      "type": "sha256",
       "value": "a1b2c3d4e5f67890abcdef1234567890abcdef1234567890abcdef1234567890"
     },
     "dependencies": [
@@ -1743,7 +1743,7 @@ The `url` field in `repo.ini` points to `<repo-root>`.
     "license": "libpng-2.0",
     "source": "https://repo.example.com/pool/libpng/libpng-1.6.40.xcs",
     "checksum": {
-      "kind": "sha256",
+      "type": "sha256",
       "value": "fedcba0987654321fedcba0987654321fedcba0987654321fedcba0987654321"
     },
     "dependencies": [
@@ -1762,7 +1762,7 @@ The `url` field in `repo.ini` points to `<repo-root>`.
 | `version` | string | yes | Semantic version |
 | `license` | string | yes | SPDX identifier or custom |
 | `source` | string | yes | Download URL for the `.xcs` archive |
-| `checksum` | object | yes | `{ kind: "sha256", value: "<hex>" }` |
+| `checksum` | object | yes | `{ type: "sha256", value: "<hex>" }` |
 | `dependencies` | array | yes | List of `{ name, dep_type }` objects. `dep_type` is typically `"runtime"`, `"build"`, or `"library"`. |
 | `files` | array | yes | Populated after installation; empty in the index is fine |
 | `provides` | array | no | Virtual package names this package provides (e.g., `libz.so.1`) |
@@ -1800,7 +1800,7 @@ for xcs in pool/*/*.xcs; do
     "version": "$ver",
     "license": "Unknown",
     "source": "https://repo.example.com/pool/$pkg/$pkg-$ver.xcs",
-    "checksum": { "kind": "sha256", "value": "$hash" },
+    "checksum": { "type": "sha256", "value": "$hash" },
     "dependencies": [],
     "files": [],
     "provides": [],
@@ -2192,7 +2192,7 @@ strip = true            # Strip symbols
 
 ## The Unlicense
 
-see [**`LICENSE`**](github.com/Cudane/MCX/LICENSE) file for details.
+see [**`LICENSE`**](https://codeberg.org/Cudane/MCX/LICENSE) file for details.
 
 </details>
 
