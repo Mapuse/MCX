@@ -2047,39 +2047,39 @@ println!("Target packages: {:?}", profile.packages);
 
 | Profile | Command | Flags | Use case |
 | ------- | ------- | ----- | -------- |
-| Debug | `cargo build` | — | Development iteration, fast compile |
-| Release | `cargo build --release` | `opt-level = "z"`, `lto = true`, `codegen-units = 1`, `panic = "abort"`, `strip = true` | Production binary, minimised size |
+| Debug | `cargo +nightly -Zjson-target-spec -Zbuild-std build --target x86_64-pc-linux-musl.json` | — | Development iteration, fast compile |
+| Release | `cargo +nightly -Zjson-target-spec -Zbuild-std build --release --target x86_64-pc-linux-musl.json` | `opt-level = "z"`, `lto = true`, `codegen-units = 1`, `panic = "abort"`, `strip = true` | Production binary, minimised size |
 | Check | `cargo check` | — | Compile-only verification, no artifacts |
-| Release with debug | `cargo build --profile release` | same as Release + debug symbols preserved | Profiling with `perf`, flamegraph |
+| Release with debug | `cargo +nightly -Zjson-target-spec -Zbuild-std build --profile release --target x86_64-pc-linux-musl.json` | same as Release + debug symbols preserved | Profiling with `perf`, flamegraph |
 
 ```shell
 # Compile-only verification (fastest)
-cargo check
+cargo  +nightly -Zjson-target-spec -Zbuild-std check --target x86_64-pc-linux-musl.json
 
 # Debug build
-cargo build
+cargo +nightly -Zjson-target-spec -Zbuild-std build --target x86_64-pc-linux-musl.json
 
 # Release build (optimised for size)
-cargo build --release
+cargo +nightly -Zjson-target-spec -Zbuild-std build --release --target x86_64-pc-linux-musl.json
 ```
 
 ## Testing
 
 ```shell
 # Run all tests (unit + integration)
-cargo test
+cargo +nightly -Zjson-target-spec -Zbuild-std test --target x86_64-pc-linux-musl.json
 
 # Run with stdout/stderr visible
-cargo test -- --nocapture
+cargo +nightly -Zjson-target-spec -Zbuild-std test -- -nocapture --target x86_64-pc-linux-musl.json
 
 # Run a specific test by name
-cargo test -- test_install_package
+cargo +nightly -Zjson-target-spec -Zbuild-std test -- test_install_package --target x86_64-pc-linux-musl.json
 
 # Run integration tests only
-cargo test --test integration
+cargo +nightly -Zjson-target-spec -Zbuild-std test --test integration --target x86_64-pc-linux-musl.json
 
 # Run with all features and release mode
-cargo test --release --all-features
+cargo +nightly -Zjson-target-spec -Zbuild-std test --release --all-features --target x86_64-pc-linux-musl.json
 ```
 
 Integration tests are located in `tests/integration.rs`. They exercise full command pipelines against a temporary directory root, verifying ledger state transitions, file system layout, and error paths.
@@ -2199,6 +2199,6 @@ see [**`LICENSE`**](https://codeberg.org/Cudane/MCX/LICENSE) file for details.
 `▐▀` `-` `▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▌`
 
 - **`Version`:** **`4.0.0`**.
-- **`Architecture`:** **`x86_64-unknown-linux-musl`** (**`x86_64-pc-linux-musl`**).
+- **`Architecture`:** **`x86_64-pc-linux-musl`** (**`amd64`**).
 
 `▐▄` `-` `▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▌`

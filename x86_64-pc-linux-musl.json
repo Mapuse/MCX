@@ -12,6 +12,6 @@
   "position-independent-executables": true,
   "crt-static-default": true,
   "crt-static-respected": true,
-  "target-pointer-width": "64",
+  "target-pointer-width": 64,
   "vendor": "pc"
 }
