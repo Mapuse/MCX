@@ -276,7 +276,7 @@ async fn test_database_dependency_graph_relations() {
         pkg_name: "curl".to_string(), version: "8.0.0".to_string(),
         license: "MIT".to_string(), source: "https://example.com/curl".to_string(),
         checksum: ChecksumData { kind: "sha256".to_string(), value: "5678a6d40bf420404a011733cfb7b190d62c65bf0bcda32b57b277d9ad9f146e".to_string() },
-        dependencies: vec![Dependency { name: "openssl".to_string(), dep_type: "runtime".to_string() }],
+        dependencies: vec![Dependency { name: "openssl".to_string(), dep_type: "runtime".to_string(), libraries: None }],
         files: vec![], provides: Some(vec![]), conflicts: Some(vec![]),
     };
 
@@ -301,7 +301,7 @@ async fn test_cyclic_dependency_deadlock_breaking() {
         pkg_name: "node-x".to_string(), version: "1.0.0".to_string(),
         license: "Apache".to_string(), source: "https://example.com/x".to_string(),
         checksum: ChecksumData { kind: "sha256".to_string(), value: "0000".to_string() },
-        dependencies: vec![Dependency { name: "node-y".to_string(), dep_type: "runtime".to_string() }],
+        dependencies: vec![Dependency { name: "node-y".to_string(), dep_type: "runtime".to_string(), libraries: None }],
         files: vec![], provides: Some(vec![]), conflicts: Some(vec![]),
     };
 
@@ -309,7 +309,7 @@ async fn test_cyclic_dependency_deadlock_breaking() {
         pkg_name: "node-y".to_string(), version: "1.0.0".to_string(),
         license: "Apache".to_string(), source: "https://example.com/y".to_string(),
         checksum: ChecksumData { kind: "sha256".to_string(), value: "0000".to_string() },
-        dependencies: vec![Dependency { name: "node-x".to_string(), dep_type: "runtime".to_string() }],
+        dependencies: vec![Dependency { name: "node-x".to_string(), dep_type: "runtime".to_string(), libraries: None }],
         files: vec![], provides: Some(vec![]), conflicts: Some(vec![]),
     };
 
@@ -319,8 +319,10 @@ async fn test_cyclic_dependency_deadlock_breaking() {
     tx.commit().unwrap();
 
     let solver = mcx::core::solver::DependencySolver::new(Arc::new(db)).add_target("node-x");
-    let resolve_result = solver.solve();
-    assert!(resolve_result.is_err());
+    let resolve_result = solver.solve_with_analysis();
+    assert!(resolve_result.is_ok());
+    let verdict = resolve_result.unwrap();
+    assert!(verdict.cycles_broken > 0, "Expected cycle to be detected and broken");
 
     fs::remove_dir_all(&root).unwrap();
 }
@@ -341,7 +343,7 @@ async fn test_dependency_solver_topological_sorting_and_resolution() {
         pkg_name: "library-a".to_string(), version: "1.0.0".to_string(),
         license: "MIT".to_string(), source: "https://example.com/a".to_string(),
         checksum: ChecksumData { kind: "sha256".to_string(), value: "0000".to_string() },
-        dependencies: vec![Dependency { name: "library-b".to_string(), dep_type: "runtime".to_string() }],
+        dependencies: vec![Dependency { name: "library-b".to_string(), dep_type: "runtime".to_string(), libraries: None }],
         files: vec![], provides: Some(vec![]), conflicts: Some(vec![]),
     };
 
@@ -349,7 +351,7 @@ async fn test_dependency_solver_topological_sorting_and_resolution() {
         pkg_name: "main-app".to_string(), version: "2.0.0".to_string(),
         license: "GPL".to_string(), source: "https://example.com/app".to_string(),
         checksum: ChecksumData { kind: "sha256".to_string(), value: "0000".to_string() },
-        dependencies: vec![Dependency { name: "library-a".to_string(), dep_type: "runtime".to_string() }],
+        dependencies: vec![Dependency { name: "library-a".to_string(), dep_type: "runtime".to_string(), libraries: None }],
         files: vec![], provides: Some(vec![]), conflicts: Some(vec![]),
     };
 
@@ -395,8 +397,8 @@ async fn test_dependency_solver_library_provider_resolution() {
         license: "MPL".to_string(), source: "https://example.com/json-glib".to_string(),
         checksum: ChecksumData { kind: "sha256".to_string(), value: "2222".to_string() },
         dependencies: vec![
-            Dependency { name: "glib-2.0".to_string(), dep_type: "Build".to_string() },
-            Dependency { name: "libgio-2.0.so.0".to_string(), dep_type: "Library".to_string() },
+            Dependency { name: "glib-2.0".to_string(), dep_type: "Build".to_string(), libraries: None },
+            Dependency { name: "libgio-2.0.so.0".to_string(), dep_type: "Library".to_string(), libraries: None },
         ],
         files: vec![], provides: Some(vec![]), conflicts: Some(vec![]),
     };

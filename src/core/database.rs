@@ -17,6 +17,7 @@ pub struct ChecksumData {
 pub struct Dependency {
     pub name: String,
     pub dep_type: String,
+    pub libraries: Option<Vec<String>>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]

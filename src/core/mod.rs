@@ -44,7 +44,7 @@ pub use profiler::{SystemProfile, DecisionEngine, DecisionMatrix, HeuristicVerdi
 pub use repo::RepositoryManager;
 pub use rollback::RollbackManager;
 pub use security::SecurityMonitor;
-pub use solver::DependencySolver;
+pub use solver::{DependencySolver, compute_depsig, scan_package_directory, build_dependency_graph};
 pub use update::SelfUpdateManager;
 pub use transaction::PackageTransaction;
 pub use vendor::VendorManager;

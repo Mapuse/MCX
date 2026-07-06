@@ -33,7 +33,7 @@ pub use core::repo::RepositoryManager;
 pub use core::rollback::RollbackManager;
 pub use core::security::SecurityMonitor;
 pub use core::update::SelfUpdateManager;
-pub use core::solver::{DependencySolver, ResolutionVerdict, UpgradePath};
+pub use core::solver::{DependencySolver, ResolutionVerdict, UpgradePath, compute_depsig, scan_package_directory, build_dependency_graph};
 pub use core::transaction::PackageTransaction;
 pub use core::vendor::VendorManager;
 pub use core::workspace::WorkspaceManager;
