@@ -564,11 +564,11 @@ Edit `etc/mcx/repo.ini` directly with any text editor. The file is managed throu
 ## Module dependency graph
 
 ```
-┌───────────────┐      ┌──────────────────┐
+┌───────────────┐       ┌──────────────────┐
 │  src/main.rs  │─────▶│ src/commands/    │  CLI dispatch & argument parsing
-└───────────────┘      │ install, remove, │
-                       │ search, sync, …  │
-                       └────────┬─────────┘
+└───────────────┘       │ install, remove, │
+                        │ search, sync, …  │
+                        └────────┬─────────┘
                                 │
                                 ▼
                        ┌──────────────────┐
