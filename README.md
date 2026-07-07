@@ -607,12 +607,81 @@ Edit `etc/mcx/repo.ini` directly with any text editor. The file is managed throu
  └──────────────────┘  └──────────────────┘
 ```
 
+## Multi-arch support
+
+MCX supports building and deploying packages for both `amd64` (x86_64) and `arm64` (aarch64) architectures, as well as a `"native"` fallback.
+
+### Architecture types
+
+The `Architecture` enum (`src/core/arch.rs`) defines three variants:
+
+| Variant | String value | Matches on host |
+| ------- | ------------ | --------------- |
+| `Amd64` | `"amd64"` / `"x86_64"` | x86_64 hosts only |
+| `Arm64` | `"arm64"` / `"aarch64"` | aarch64 hosts only |
+| `Native` | `"native"` | Any host (wildcard) |
+
+### Host detection
+
+On startup, `Architecture::host()` auto-detects the running architecture by reading `/proc/sys/kernel/arch` (Linux) and falling back to `uname -m`. The detected value is stored in the profiler's `SystemProfile.architecture` field and used throughout the engine.
+
+### Package metadata
+
+Each `PackageMetadata` record carries an `architecture` field (default: `"native"`). This field is:
+
+- **Propagated from repository indexes.** When syncing repository data, packages whose architecture does not match the host are silently skipped.
+- **Checked during install.** If a package specifies `"amd64"` but the host is `arm64`, the install is rejected with a clear error.
+- **Displayed in query output.** `mcx -q <pkg>` shows the architecture alongside version and license.
+- **Used by the dependency solver.** Only packages matching the host architecture are considered during dependency resolution.
+
+### Repository index format
+
+Repository `index.json` files can include an `"architecture"` field per package:
+
+```json
+{
+  "pkg_name": "curl",
+  "version": "8.0.0",
+  "architecture": "amd64",
+  "license": "MIT",
+  "source": "https://repo.example.com/curl-8.0.0.xcs",
+  "checksum": { "kind": "sha256", "value": "abc…" },
+  "dependencies": [],
+  "files": ["usr/bin/curl", "usr/lib/libcurl.so.4"],
+  "provides": [],
+  "conflicts": []
+}
+```
+
+Omitting the field or setting it to `"native"` makes the package available on any architecture.
+
+### Profile declarations
+
+In `profile.ini`, the `architecture` field accepts values parsed by the `Architecture` enum:
+
+```ini
+[profile]
+version = 1.0.0
+architecture = x86_64
+packages = curl, openssl
+```
+
+Invalid architecture strings are caught at parse time with a descriptive error.
+
+### Host profile probing
+
+The profiler (`SystemProfile::probe()`) now includes an `architecture: Architecture` field alongside CPU, RAM, and OS information. This enables decision-engine heuristics that are aware of cross-architecture scenarios.
+
+### Package entity
+
+The `PackageEntity` struct (used for embedded `metadata.json` manifests) also carries an `architecture` field with the same semantics, defaulting to `"native"` when absent.
+
 ## Module inventory
 
 | Module | Path | Responsibility | Public surface |
 | ------ | ---- | -------------- | -------------- |
 | `commands` | `src/commands/` | CLI command implementations — one file per command group. Each command struct implements `execute()` taking `EngineContext`. | `InstallCommand`, `RemoveCommand`, `SyncCommand`, `SearchCommand`, `AddLocalCommand`, `CleanCommand`, `ConfigEditorCommand`, `SystemCommand` |
-| `core` | `src/core/` | Domain logic — persistence, solver, lifecycle, plugins, profiling, configuration, repositories, history, changelog, completion, declarative validation, self-update, vendor mirroring, workspace management, content-addressable store, cgroup control, generation-based rollback, security monitor, runtime isolation. | Config types, `Database`, `DependencySolver`, `LifecycleEngine`, `PluginRegistry`, `SystemProfile`, `HistoryEngine`, `RepositoryManager`, `CacheManager`, `PackageEntity`, `SelfUpdateManager`, `VendorManager`, `WorkspaceManager`, `ProfileValidator`, `CompletionEngine`, `CgroupController`, `RollbackManager`, `CasManager`, `SecurityMonitor` |
+| `core` | `src/core/` | Domain logic — architecture detection, persistence, solver, lifecycle, plugins, profiling, configuration, repositories, history, changelog, completion, declarative validation, self-update, vendor mirroring, workspace management, content-addressable store, cgroup control, generation-based rollback, security monitor, runtime isolation. | `Architecture` enum, config types, `Database`, `DependencySolver`, `LifecycleEngine`, `PluginRegistry`, `SystemProfile`, `HistoryEngine`, `RepositoryManager`, `CacheManager`, `PackageEntity`, `SelfUpdateManager`, `VendorManager`, `WorkspaceManager`, `ProfileValidator`, `CompletionEngine`, `CgroupController`, `RollbackManager`, `CasManager`, `SecurityMonitor` |
 | `network` | `src/network/` | Remote data operations — HTTP download via `reqwest` + `rustls-tls`, parallel index sync. | `Downloader`, `NetworkSyncEngine` |
 | `archive` | `src/archive/` | Artifact format handling — `.xcs` extraction, SHA-256 hashing, content verification. | `Extractor`, `HashVerifier`, `ContentValidator` |
 | `utils` | `src/utils/` | Shared infrastructure — terminal output. | `UserInterface` |
@@ -760,6 +829,7 @@ Every command struct implements `pub fn execute(&self, engine: &EngineContext) -
 
 | File | Exports | Role | Dependencies |
 | ---- | ------- | ---- | ------------ |
+| `arch.rs` | `Architecture` enum, `host_architecture()`, `package_matches_host()` | Multi-arch detection, validation, and compatibility checking. Defines `Amd64`, `Arm64`, and `Native` variants with host auto-detection via `/proc/sys/kernel/arch` or `uname -m`. | — |
 | `config.rs` | `MappedConfig<'a>`, `ConfigManager`, `CalibratedParams` | Mmap INI parser with `PhantomData` lifetime tracking. `ConfigManager` embeds `config.ini` + `repo.ini`. | `memmap2` |
 | `database.rs` | `Database`, `DbTransaction`, `PackageMetadata` | LMDB-backed package registry via `heed` + `bincode`. Three named databases: installed, available, virtual_provides. | `heed`, `bincode` |
 | `repo.rs` | `RepositoryManager` | CRUD for `etc/mcx/repo.ini` (INI format). Synced indexes remain JSON on disk. | — |
@@ -831,6 +901,7 @@ LMDB provides memory-mapped, zero-copy reads and full ACID transactions with sin
 | `checksum` | `ChecksumData` | `{ type: String, value: String }` |
 | `provides` | `Option<Vec<String>>` | Virtual package names provided by this package |
 | `conflicts` | `Option<Vec<String>>` | Package names this package conflicts with |
+| `architecture` | `String` | Target architecture (`"amd64"`, `"arm64"`, or `"native"`). Defaults to `"native"` for backward compatibility. When set to a specific arch, packages are only installed on matching hosts. `"native"` matches any host architecture. |
 
 ## On-disk layout
 

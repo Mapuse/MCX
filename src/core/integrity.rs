@@ -388,6 +388,7 @@ mod tests {
             files: vec![PathBuf::from("usr/bin/test-binary")],
             provides: Some(vec![]),
             conflicts: Some(vec![]),
+            architecture: "native".to_string(),
         };
         let mut tx = db.begin_transaction().unwrap();
         tx.register_package_placement(&pkg).unwrap();
@@ -423,6 +424,7 @@ mod tests {
             files: vec![PathBuf::from("usr/bin/test-binary")],
             provides: Some(vec![]),
             conflicts: Some(vec![]),
+            architecture: "native".to_string(),
         };
         let mut tx = db.begin_transaction().unwrap();
         tx.register_package_placement(&pkg).unwrap();
