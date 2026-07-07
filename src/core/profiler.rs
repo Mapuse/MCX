@@ -1,6 +1,7 @@
 use std::fs;
 use std::path::Path;
 use std::time::{Instant, Duration};
+use crate::core::arch::Architecture;
 use crate::core::config::CalibratedParams;
 
 #[derive(Debug, Clone)]
@@ -13,6 +14,7 @@ pub struct SystemProfile {
     pub os_name: String,
     pub is_musl: bool,
     pub has_sandbox: bool,
+    pub architecture: Architecture,
 }
 
 #[derive(Debug, Clone)]
@@ -53,7 +55,8 @@ impl SystemProfile {
         let os_name = Self::read_os();
         let is_musl = Self::detect_musl();
         let has_sandbox = Self::detect_sandbox();
-        Self { cpu_count, cpu_model, total_ram_mb, available_ram_mb, kernel, os_name, is_musl, has_sandbox }
+        let architecture = Architecture::host();
+        Self { cpu_count, cpu_model, total_ram_mb, available_ram_mb, kernel, os_name, is_musl, has_sandbox, architecture }
     }
 
     fn read_cpu_model() -> String {

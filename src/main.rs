@@ -417,6 +417,7 @@ async fn main() {
                         ("Package", meta.pkg_name.as_str()),
                         ("Version", meta.version.as_str()),
                         ("License", meta.license.as_str()),
+                        ("Architecture", &meta.architecture),
                         ("Source", meta.source.as_str()),
                         ("Files", &file_count),
                         ("Dependencies", &dep_count),
@@ -425,9 +426,9 @@ async fn main() {
                     UserInterface::render_key_values(&format!("Package: {}", meta.pkg_name), &pairs);
 
                     let table_rows = vec![
-                        vec![meta.pkg_name.clone(), meta.version.clone(), meta.license.clone()],
+                        vec![meta.pkg_name.clone(), meta.version.clone(), meta.architecture.clone(), meta.license.clone()],
                     ];
-                    UserInterface::table("Package summary", &["Name", "Version", "License"], &table_rows);
+                    UserInterface::table("Package summary", &["Name", "Version", "Architecture", "License"], &table_rows);
 
                     if !dep_list.is_empty() {
                         UserInterface::render_list("Dependency tree", &dep_list);
@@ -564,7 +565,9 @@ async fn main() {
 
                 let profile_ini = config_dir.join("profile.ini");
                 if !profile_ini.exists() {
-                    fs::write(&profile_ini, b"[profile]\nversion = 1.0.0\narchitecture = x86_64\npackages = \n").unwrap_or_else(|e| {
+                    let default_arch = crate::core::arch::host_architecture().to_string();
+                    let profile_content = format!("[profile]\nversion = 1.0.0\narchitecture = {}\npackages = \n", default_arch);
+                    fs::write(&profile_ini, profile_content).unwrap_or_else(|e| {
                         UserInterface::error(&format!("Failed to write profile.ini: {e}"));
                         process::exit(1);
                     });

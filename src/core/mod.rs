@@ -1,3 +1,4 @@
+pub mod arch;
 pub mod cache;
 pub mod cas;
 pub mod cgroup;
@@ -25,6 +26,7 @@ pub mod workspace;
 
 pub use database as db;
 
+pub use arch::{Architecture, host_architecture};
 pub use cache::CacheManager;
 pub use cas::CasStore;
 pub use cgroup::CgroupController;

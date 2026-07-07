@@ -1,12 +1,14 @@
 use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
+use std::str::FromStr;
 use anyhow::{Result, anyhow};
+use crate::core::arch::Architecture;
 
 #[derive(Clone, Debug)]
 pub struct SystemProfile {
     pub version: String,
-    pub architecture: String,
+    pub architecture: Architecture,
     pub packages: Vec<String>,
 }
 
@@ -22,7 +24,7 @@ impl ProfileValidator {
 
     fn parse_ini_profile(content: &str) -> Result<SystemProfile> {
         let mut version = String::new();
-        let mut architecture = String::new();
+        let mut architecture = Architecture::Amd64;
         let mut packages = Vec::new();
 
         for line in content.lines() {
@@ -38,7 +40,7 @@ impl ProfileValidator {
                 let value = line[eq_pos + 1..].trim();
                 match key {
                     "version" => version = value.to_string(),
-                    "architecture" => architecture = value.to_string(),
+                    "architecture" => architecture = Architecture::from_str(value)?,
                     "packages" => {
                         packages = value.split(',')
                             .map(|s| s.trim().to_string())
@@ -64,9 +66,6 @@ impl ProfileValidator {
     fn validate_blueprint(profile: &SystemProfile) -> Result<()> {
         if profile.version.trim().is_empty() {
             return Err(anyhow!("Profile version field is empty"));
-        }
-        if profile.architecture.trim().is_empty() {
-            return Err(anyhow!("Target architecture context is undefined"));
         }
         let mut unique_packages = HashSet::new();
         for pkg in &profile.packages {

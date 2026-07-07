@@ -20,6 +20,10 @@ pub struct Dependency {
     pub libraries: Option<Vec<String>>,
 }
 
+fn default_arch() -> String {
+    "native".to_string()
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct PackageMetadata {
     pub pkg_name: String,
@@ -31,6 +35,8 @@ pub struct PackageMetadata {
     pub files: Vec<PathBuf>,
     pub provides: Option<Vec<String>>,
     pub conflicts: Option<Vec<String>>,
+    #[serde(default = "default_arch")]
+    pub architecture: String,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -193,6 +199,9 @@ impl<'e> DbTransaction<'e> {
         let content = fs::read_to_string(index_path)?;
         let remote_pkgs: Vec<PackageMetadata> = serde_json::from_str(&content)?;
         for pkg in remote_pkgs {
+            if !crate::core::arch::package_matches_host(&pkg.architecture) {
+                continue;
+            }
             if let Some(provides) = &pkg.provides {
                 for v in provides {
                     self.db.virtual_db.put(self.txn(), v, &pkg.pkg_name)?;

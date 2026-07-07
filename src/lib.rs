@@ -13,6 +13,7 @@ pub use commands::search::SearchCommand;
 pub use commands::sync::SyncCommand;
 pub use commands::system::SystemCommand;
 
+pub use core::arch::{Architecture, host_architecture};
 pub use core::cache::CacheManager;
 pub use core::cas::CasStore;
 pub use core::cgroup::CgroupController;

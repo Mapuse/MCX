@@ -6,6 +6,7 @@ use std::sync::Arc;
 use anyhow::{Result, anyhow};
 use memmap2::Mmap;
 use sha2::{Sha256, Digest};
+use crate::core::arch::package_matches_host;
 use crate::core::database::{Database, PackageMetadata, Dependency};
 use crate::core::graph::DepGraph;
 
@@ -125,6 +126,9 @@ impl DependencySolver {
         let all_available = self.db.get_all_available_packages().unwrap_or_default();
 
         for meta in all_installed.iter().chain(all_available.iter()) {
+            if !package_matches_host(&meta.architecture) {
+                continue;
+            }
             if let Some(provides) = &meta.provides {
                 for prov in provides {
                     let normalized = normalize_library(prov);

@@ -55,6 +55,14 @@ impl InstallCommand {
         }
 
         let plan = solver.solve()?;
+        for meta in &plan {
+            if !crate::core::arch::package_matches_host(&meta.architecture) {
+                return Err(anyhow!(
+                    "Package '{}' architecture '{}' is not compatible with this host",
+                    meta.pkg_name, meta.architecture
+                ));
+            }
+        }
         let root_path = Path::new(&self.root);
         let cache_dir = root_path.join("var/cache/mcx");
         fs::create_dir_all(&cache_dir)?;

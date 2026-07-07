@@ -36,6 +36,7 @@ async fn test_atomic_database_write_and_conflict_prevention() {
         checksum: ChecksumData { kind: "sha256".to_string(), value: "a591a6d40bf420404a011733cfb7b190d62c65bf0bcda32b57b277d9ad9f146e".to_string() },
         dependencies: vec![], files: vec![PathBuf::from("usr/bin/shared-binary")],
         provides: Some(vec![]), conflicts: Some(vec![]),
+        architecture: "native".to_string(),
     };
 
     let mut tx_a = db.begin_transaction().unwrap();
@@ -49,6 +50,7 @@ async fn test_atomic_database_write_and_conflict_prevention() {
         checksum: ChecksumData { kind: "sha256".to_string(), value: "5891a6d40bf420404a011733cfb7b190d62c65bf0bcda32b57b277d9ad9f146f".to_string() },
         dependencies: vec![], files: vec![PathBuf::from("usr/bin/shared-binary")],
         provides: Some(vec![]), conflicts: Some(vec![]),
+        architecture: "native".to_string(),
     };
 
     let mut tx_b = db.begin_transaction().unwrap();
@@ -100,6 +102,7 @@ async fn test_package_removal_and_filesystem_cleanup() {
         checksum: ChecksumData { kind: "sha256".to_string(), value: "9ee6a6d40bf420404a011733cfb7b190d62c65bf0bcda32b57b277d9ad9f146a".to_string() },
         dependencies: vec![], files: vec![PathBuf::from("usr/bin/app-binary")],
         provides: Some(vec![]), conflicts: Some(vec![]),
+        architecture: "native".to_string(),
     };
 
     let mut tx = db.begin_transaction().unwrap();
@@ -128,7 +131,8 @@ async fn test_shell_completion_engine_querying() {
         pkg_name: "neovim".to_string(), version: "0.9.0".to_string(),
         license: "Apache-2.0".to_string(), source: "https://example.com/nvim".to_string(),
         checksum: ChecksumData { kind: "sha256".to_string(), value: "1111a6d40bf420404a011733cfb7b190d62c65bf0bcda32b57b277d9ad9f146e".to_string() },
-        dependencies: vec![], files: vec![], provides: Some(vec![]), conflicts: Some(vec![]),
+        dependencies: vec![], files: vec![], provides: Some(vec![]),         conflicts: Some(vec![]),
+        architecture: "native".to_string(),
     };
 
     let mut tx = db.begin_transaction().unwrap();
@@ -265,7 +269,8 @@ async fn test_database_dependency_graph_relations() {
         pkg_name: "openssl".to_string(), version: "4.0.0".to_string(),
         license: "Apache-2.0".to_string(), source: "https://example.com/ssl".to_string(),
         checksum: ChecksumData { kind: "sha256".to_string(), value: "1234a6d40bf420404a011733cfb7b190d62c65bf0bcda32b57b277d9ad9f146e".to_string() },
-        dependencies: vec![], files: vec![], provides: Some(vec![]), conflicts: Some(vec![]),
+        dependencies: vec![], files: vec![], provides: Some(vec![]),         conflicts: Some(vec![]),
+        architecture: "native".to_string(),
     };
 
     let mut tx = db.begin_transaction().unwrap();
@@ -277,7 +282,8 @@ async fn test_database_dependency_graph_relations() {
         license: "MIT".to_string(), source: "https://example.com/curl".to_string(),
         checksum: ChecksumData { kind: "sha256".to_string(), value: "5678a6d40bf420404a011733cfb7b190d62c65bf0bcda32b57b277d9ad9f146e".to_string() },
         dependencies: vec![Dependency { name: "openssl".to_string(), dep_type: "runtime".to_string(), libraries: None }],
-        files: vec![], provides: Some(vec![]), conflicts: Some(vec![]),
+        files: vec![], provides: Some(vec![]),         conflicts: Some(vec![]),
+        architecture: "native".to_string(),
     };
 
     let mut tx2 = db.begin_transaction().unwrap();
@@ -302,7 +308,8 @@ async fn test_cyclic_dependency_deadlock_breaking() {
         license: "Apache".to_string(), source: "https://example.com/x".to_string(),
         checksum: ChecksumData { kind: "sha256".to_string(), value: "0000".to_string() },
         dependencies: vec![Dependency { name: "node-y".to_string(), dep_type: "runtime".to_string(), libraries: None }],
-        files: vec![], provides: Some(vec![]), conflicts: Some(vec![]),
+        files: vec![], provides: Some(vec![]),         conflicts: Some(vec![]),
+        architecture: "native".to_string(),
     };
 
     let node_y = PackageMetadata {
@@ -310,7 +317,8 @@ async fn test_cyclic_dependency_deadlock_breaking() {
         license: "Apache".to_string(), source: "https://example.com/y".to_string(),
         checksum: ChecksumData { kind: "sha256".to_string(), value: "0000".to_string() },
         dependencies: vec![Dependency { name: "node-x".to_string(), dep_type: "runtime".to_string(), libraries: None }],
-        files: vec![], provides: Some(vec![]), conflicts: Some(vec![]),
+        files: vec![], provides: Some(vec![]),         conflicts: Some(vec![]),
+        architecture: "native".to_string(),
     };
 
     let mut tx = db.begin_transaction().unwrap();
@@ -336,7 +344,8 @@ async fn test_dependency_solver_topological_sorting_and_resolution() {
         pkg_name: "library-b".to_string(), version: "1.0.0".to_string(),
         license: "MIT".to_string(), source: "https://example.com/b".to_string(),
         checksum: ChecksumData { kind: "sha256".to_string(), value: "0000".to_string() },
-        dependencies: vec![], files: vec![], provides: Some(vec![]), conflicts: Some(vec![]),
+        dependencies: vec![], files: vec![], provides: Some(vec![]),         conflicts: Some(vec![]),
+        architecture: "native".to_string(),
     };
 
     let dep_a = PackageMetadata {
@@ -344,7 +353,8 @@ async fn test_dependency_solver_topological_sorting_and_resolution() {
         license: "MIT".to_string(), source: "https://example.com/a".to_string(),
         checksum: ChecksumData { kind: "sha256".to_string(), value: "0000".to_string() },
         dependencies: vec![Dependency { name: "library-b".to_string(), dep_type: "runtime".to_string(), libraries: None }],
-        files: vec![], provides: Some(vec![]), conflicts: Some(vec![]),
+        files: vec![], provides: Some(vec![]),         conflicts: Some(vec![]),
+        architecture: "native".to_string(),
     };
 
     let target_pkg = PackageMetadata {
@@ -352,7 +362,8 @@ async fn test_dependency_solver_topological_sorting_and_resolution() {
         license: "GPL".to_string(), source: "https://example.com/app".to_string(),
         checksum: ChecksumData { kind: "sha256".to_string(), value: "0000".to_string() },
         dependencies: vec![Dependency { name: "library-a".to_string(), dep_type: "runtime".to_string(), libraries: None }],
-        files: vec![], provides: Some(vec![]), conflicts: Some(vec![]),
+        files: vec![], provides: Some(vec![]),         conflicts: Some(vec![]),
+        architecture: "native".to_string(),
     };
 
     let mut tx = db.begin_transaction().unwrap();
@@ -382,14 +393,16 @@ async fn test_dependency_solver_library_provider_resolution() {
         license: "LGPL".to_string(), source: "https://example.com/gio".to_string(),
         checksum: ChecksumData { kind: "sha256".to_string(), value: "0000".to_string() },
         dependencies: vec![], files: vec![PathBuf::from("usr/lib/libgio-2.0.so.0")],
-        provides: Some(vec!["libgio-2.0.so.0".to_string()]), conflicts: Some(vec![]),
+        provides: Some(vec!["libgio-2.0.so.0".to_string()]),         conflicts: Some(vec![]),
+        architecture: "native".to_string(),
     };
 
     let build_dep_pkg = PackageMetadata {
         pkg_name: "glib-2.0".to_string(), version: "2.0.0".to_string(),
         license: "LGPL".to_string(), source: "https://example.com/glib".to_string(),
         checksum: ChecksumData { kind: "sha256".to_string(), value: "1111".to_string() },
-        dependencies: vec![], files: vec![], provides: Some(vec![]), conflicts: Some(vec![]),
+        dependencies: vec![], files: vec![], provides: Some(vec![]),         conflicts: Some(vec![]),
+        architecture: "native".to_string(),
     };
 
     let json_glib_pkg = PackageMetadata {
@@ -400,7 +413,8 @@ async fn test_dependency_solver_library_provider_resolution() {
             Dependency { name: "glib-2.0".to_string(), dep_type: "Build".to_string(), libraries: None },
             Dependency { name: "libgio-2.0.so.0".to_string(), dep_type: "Library".to_string(), libraries: None },
         ],
-        files: vec![], provides: Some(vec![]), conflicts: Some(vec![]),
+        files: vec![], provides: Some(vec![]),         conflicts: Some(vec![]),
+        architecture: "native".to_string(),
     };
 
     let mut tx = db.begin_transaction().unwrap();
@@ -456,7 +470,8 @@ async fn test_temporal_history_ledger_rollback() {
         pkg_name: "ephemeral-module".to_string(), version: "1.0.0".to_string(),
         license: "MIT".to_string(), source: "https://example.com/eph".to_string(),
         checksum: ChecksumData { kind: "sha256".to_string(), value: "0000".to_string() },
-        dependencies: vec![], files: vec![], provides: Some(vec![]), conflicts: Some(vec![]),
+        dependencies: vec![], files: vec![], provides: Some(vec![]),         conflicts: Some(vec![]),
+        architecture: "native".to_string(),
     };
 
     let mut tx = db_arc.begin_transaction().unwrap();
@@ -871,7 +886,8 @@ async fn test_integrity_scanner_detects_missing_files() {
         checksum: ChecksumData { kind: "sha256".into(), value: "0000".into() },
         dependencies: vec![],
         files: vec![PathBuf::from("usr/bin/test-bin")],
-        provides: Some(vec![]), conflicts: Some(vec![]),
+        provides: Some(vec![]),         conflicts: Some(vec![]),
+        architecture: "native".to_string(),
     };
     let mut tx = db.begin_transaction().unwrap();
     tx.register_package_placement(&pkg).unwrap();

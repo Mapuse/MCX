@@ -21,6 +21,12 @@ pub struct PackageEntity {
     pub files: Vec<String>,
     #[serde(default = "default_status")]
     pub status: PackageStatus,
+    #[serde(default = "default_arch")]
+    pub architecture: String,
+}
+
+fn default_arch() -> String {
+    "native".to_string()
 }
 
 fn default_status() -> PackageStatus {
