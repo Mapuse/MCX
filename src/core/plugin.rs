@@ -4,8 +4,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::sync::RwLock;
-use anyhow::{Result, anyhow, Context};
+use anyhow::{Result, Context, anyhow};
 use serde::{Serialize, Deserialize};
+use crate::core::arch::Architecture;
 
 // ── Builtin plugin traits ─────────────────────────────────────────────────
 
@@ -141,16 +142,40 @@ impl Builder for DefaultBuilder {
             return Ok(String::new());
         }
         if build_cmd.is_empty() && build_type == "rust" {
+            let target = std::env::var("CUDANE_TARGET")
+                .unwrap_or_else(|_| Architecture::host().target_triple().to_string());
+            let rust_target = std::env::var("CUDANE_RUST_TARGET")
+                .unwrap_or_else(|_| {
+                    if target == "x86_64-pc-linux-musl" {
+                        "x86_64-unknown-linux-musl".to_string()
+                    } else if target == "aarch64-linux-musl" {
+                        "aarch64-unknown-linux-musl".to_string()
+                    } else {
+                        target.clone()
+                    }
+                });
+            let rustflags = format!(
+                "RUSTFLAGS=\"-C linker=clang -C link-arg=-target -C link-arg={} \
+                 -C link-arg=--sysroot=/system -C target-feature=+crt-static\" \
+                 cargo build --target {} --release 2>&1",
+                target, rust_target
+            );
             let output = Command::new("sh")
                 .arg("-c")
-                .arg("RUSTFLAGS=\"-C linker=clang -C link-arg=-target -C link-arg=x86_64-pc-linux-musl -C link-arg=--sysroot=/system -C target-feature=+crt-static\" cargo build --target x86_64-unknown-linux-musl --release 2>&1")
+                .arg(&rustflags)
                 .current_dir(source_dir).output()?;
             let log = String::from_utf8_lossy(&output.stdout).to_string();
             if !output.status.success() { anyhow::bail!("Build failed:\n{}", log); }
             return Ok(log);
         }
         if !build_cmd.is_empty() {
-            let output = Command::new("sh").arg("-c").arg(format!("({}) 2>&1", build_cmd)).current_dir(source_dir).output()?;
+            let env_target = std::env::var("CUDANE_TARGET").unwrap_or_default();
+            let cmd = if env_target.is_empty() {
+                format!("({}) 2>&1", build_cmd)
+            } else {
+                format!("CUDANE_TARGET={} ({}) 2>&1", env_target, build_cmd)
+            };
+            let output = Command::new("sh").arg("-c").arg(&cmd).current_dir(source_dir).output()?;
             let log = String::from_utf8_lossy(&output.stdout).to_string();
             if !output.status.success() { anyhow::bail!("Build failed:\n{}", log); }
             return Ok(log);

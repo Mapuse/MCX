@@ -33,7 +33,7 @@ fn default_root() -> String {
 }
 
 #[derive(Parser)]
-#[command(name = "mcx", version = "4.0.0", disable_version_flag = true)]
+#[command(name = "mcx", version = "5.0.0", disable_version_flag = true)]
 struct Cli {
     #[arg(long, global = true, default_value_t = default_root())]
     root: String,
@@ -192,7 +192,7 @@ impl EngineContext {
 async fn main() {
     let args = Cli::parse();
     if args.version {
-        UserInterface::version("mcx 4.0.0");
+        UserInterface::version("mcx 5.0.0");
         return;
     }
     let root_path = PathBuf::from(&args.root);

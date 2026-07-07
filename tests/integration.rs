@@ -163,11 +163,11 @@ fn test_user_interface_output_nodes() {
     UserInterface::cgroup("Cgroup controller test message");
     UserInterface::cas("CAS store test message");
     UserInterface::self_update("Self-update test message");
-    UserInterface::version("mcx 4.0.0");
+    UserInterface::version("mcx 5.0.0");
     UserInterface::progress(50, 100, "Extracting asset metadata tree");
 
     let list_items = vec![
-        "mcx-core-engine v4.0.0".to_string(),
+        "mcx-core-engine v5.0.0".to_string(),
         "network-transport-ssl".to_string(),
         "local-registry-ledger".to_string(),
     ];
@@ -266,7 +266,7 @@ async fn test_database_dependency_graph_relations() {
     let db = Database::open(&root).unwrap();
 
     let base_package = PackageMetadata {
-        pkg_name: "openssl".to_string(), version: "4.0.0".to_string(),
+        pkg_name: "openssl".to_string(), version: "5.0.0".to_string(),
         license: "Apache-2.0".to_string(), source: "https://example.com/ssl".to_string(),
         checksum: ChecksumData { kind: "sha256".to_string(), value: "1234a6d40bf420404a011733cfb7b190d62c65bf0bcda32b57b277d9ad9f146e".to_string() },
         dependencies: vec![], files: vec![], provides: Some(vec![]),         conflicts: Some(vec![]),

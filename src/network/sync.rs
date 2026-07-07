@@ -2,6 +2,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use anyhow::{Result, Context};
 use futures::future::join_all;
+use crate::core::arch::host_architecture;
 use crate::core::db::Database;
 use crate::core::repo::RepositoryManager;
 use crate::network::download::Downloader;
@@ -30,7 +31,8 @@ impl NetworkSyncEngine {
         for repo in configured_repos {
             let dl = self.downloader.clone();
             let repo_name = repo.name.clone();
-            let index_target_url = format!("{}/index.json", repo.url.trim_end_matches('/'));
+            let arch = host_architecture();
+            let index_target_url = format!("{}/{}", repo.url.trim_end_matches('/'), arch.index_filename());
             let local_index_path = self.repo_mgr.get_local_index_path(&repo.name);
             let etag_path = local_index_path.with_extension("json.etag");
 

@@ -48,6 +48,30 @@ impl Architecture {
         }
     }
 
+    pub fn target_triple(&self) -> &'static str {
+        match self {
+            Architecture::Amd64 => "x86_64-pc-linux-musl",
+            Architecture::Arm64 => "aarch64-linux-musl",
+            Architecture::Native => Architecture::host().target_triple(),
+        }
+    }
+
+    pub fn rust_target(&self) -> &'static str {
+        match self {
+            Architecture::Amd64 => "x86_64-unknown-linux-musl",
+            Architecture::Arm64 => "aarch64-unknown-linux-musl",
+            Architecture::Native => Architecture::host().rust_target(),
+        }
+    }
+
+    pub fn index_filename(&self) -> String {
+        format!("index.{}.json", self.short_name())
+    }
+
+    pub fn pool_prefix(&self) -> String {
+        format!("pool/{}/", self.short_name())
+    }
+
     pub fn is_compatible_with(&self, host: &Architecture) -> bool {
         match self {
             Architecture::Native => true,

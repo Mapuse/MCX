@@ -2,6 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use anyhow::{Result, Context, anyhow};
 use futures_util::future::join_all;
+use crate::core::arch::host_architecture;
 use crate::core::database::{PackageMetadata, RepositoryInfo};
 use crate::network::download::Downloader;
 use crate::archive::hash::HashVerifier;
@@ -131,6 +132,7 @@ impl RepositoryManager {
             return Ok((0, vec!["No repositories configured".into()]));
         }
 
+        let host_arch = host_architecture();
         fs::create_dir_all(&self.sync_dir)?;
         let mut tasks = Vec::new();
 
@@ -139,13 +141,15 @@ impl RepositoryManager {
             let repo_name = repo.name.clone();
             let repo_url = repo.url.clone();
             let checksum = repo.checksum.clone();
+            let arch = host_arch.clone();
             let downloader = Downloader::new();
 
             tasks.push(tokio::spawn(async move {
                 let temp_path = sync_dir.join(format!("{}.tmp", repo_name));
                 let final_path = sync_dir.join(format!("{}.json", repo_name));
+                let index_url = format!("{}/{}", repo_url.trim_end_matches('/'), arch.index_filename());
 
-                let result = match downloader.package(&repo_url, &temp_path).await {
+                let result = match downloader.package(&index_url, &temp_path).await {
                     Ok(_) => {
                         if let Some(ref expected_hash) = checksum {
                             if let Err(e) = HashVerifier::verify_integrity(&temp_path, "sha256", expected_hash) {

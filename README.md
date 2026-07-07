@@ -615,11 +615,11 @@ MCX supports building and deploying packages for both `amd64` (x86_64) and `arm6
 
 The `Architecture` enum (`src/core/arch.rs`) defines three variants:
 
-| Variant | String value | Matches on host |
-| ------- | ------------ | --------------- |
-| `Amd64` | `"amd64"` / `"x86_64"` | x86_64 hosts only |
-| `Arm64` | `"arm64"` / `"aarch64"` | aarch64 hosts only |
-| `Native` | `"native"` | Any host (wildcard) |
+| Variant | String value | Target triple | Matches on host |
+| ------- | ------------ | ------------- | --------------- |
+| `Amd64` | `"amd64"` / `"x86_64"` | `x86_64-pc-linux-musl` | x86_64 hosts only |
+| `Arm64` | `"arm64"` / `"aarch64"` | `aarch64-linux-musl` | aarch64 hosts only |
+| `Native` | `"native"` | *host-dependent* | Any host (wildcard) |
 
 ### Host detection
 
@@ -636,7 +636,16 @@ Each `PackageMetadata` record carries an `architecture` field (default: `"native
 
 ### Repository index format
 
-Repository `index.json` files can include an `"architecture"` field per package:
+Repository indexes are architecture-specific. Each repository exposes one index per architecture at `index.<arch>.json`:
+
+| Architecture | Index file |
+| ------------ | ---------- |
+| amd64 | `index.x86_64.json` |
+| arm64 | `index.aarch64.json` |
+
+When MCX syncs a repository, it automatically fetches the index matching the host architecture by appending `index.<arch>.json` to the repo base URL. For example, a repo configured with `url = https://packages.cudane.org` will fetch `https://packages.cudane.org/index.x86_64.json` on an amd64 host.
+
+Each index entry carries an `"architecture"` field and a `"source"` URL rooted in an architecture-specific pool:
 
 ```json
 {
@@ -644,7 +653,7 @@ Repository `index.json` files can include an `"architecture"` field per package:
   "version": "8.0.0",
   "architecture": "amd64",
   "license": "MIT",
-  "source": "https://repo.example.com/curl-8.0.0.xcs",
+  "source": "https://packages.cudane.org/pool/x86_64/curl/curl-8.0.0.xcs",
   "checksum": { "kind": "sha256", "value": "abc…" },
   "dependencies": [],
   "files": ["usr/bin/curl", "usr/lib/libcurl.so.4"],
@@ -653,7 +662,54 @@ Repository `index.json` files can include an `"architecture"` field per package:
 }
 ```
 
-Omitting the field or setting it to `"native"` makes the package available on any architecture.
+The pool layout follows the pattern `pool/<arch>/<name>/<pkg>-<ver>.xcs`, keeping binaries for different architectures isolated while sharing the same repository root.
+
+Omitting the `architecture` field or setting it to `"native"` makes the package available on any architecture.
+
+### Cross-compilation & build pipeline
+
+MCX supports building packages for multiple architectures in a single pipeline run via the `CUDANE_TARGETS` environment variable:
+
+```shell
+export CUDANE_TARGETS="x86_64-pc-linux-musl,aarch64-linux-musl"
+./pipeline.sh
+```
+
+For each target in `CUDANE_TARGETS`, the pipeline:
+
+1. Creates `output/<arch>/` for built packages
+2. Writes `index.<arch>.json` with arch-prefixed pool URLs
+3. Sorts artifacts into `pool/<arch>/<name>/`
+4. Runs validation, signing, and testing separately per architecture
+
+The `DefaultBuilder` plugin respects the `CUDANE_TARGET` environment variable (singular, per-invocation) when compiling Rust packages. If unset, it uses the host architecture:
+
+```shell
+# Cross-compile for arm64 from an amd64 host
+export CUDANE_TARGET=aarch64-linux-musl
+mcx -b build_config.json
+```
+
+#### Target specifications
+
+Each architecture is defined by a Rust target specification JSON file:
+
+| File | Architecture | CPU | Env |
+| ---- | ------------ | --- | --- |
+| `x86_64-pc-linux-musl.json` | amd64 | x86-64-v3 | musl |
+| `aarch64-linux-musl.json` | arm64 | armv8-a | musl |
+
+These files define the LLVM target, data layout, linker, and CPU features for `rustc`. To add a new architecture, create a target spec JSON and add a case entry in `pipeline.sh`.
+
+### Builder architecture awareness
+
+The `DefaultBuilder` in `core/plugin.rs` auto-detects the build target:
+
+1. Checks `CUDANE_TARGET` environment variable for a target triple (e.g. `aarch64-linux-musl`)
+2. Falls back to `CUDANE_RUST_TARGET` for the `cargo build --target` flag
+3. If neither is set, uses the host architecture detected at runtime
+
+This enables transparent cross-compilation from any supported host to any supported target.
 
 ### Profile declarations
 
@@ -2263,13 +2319,13 @@ strip = true            # Strip symbols
 
 ## The Unlicense
 
-see [**`LICENSE`**](https://codeberg.org/Cudane/MCX/LICENSE) file for details.
+see [**`LICENSE`**](https://codeberg.org/Cudane/MCX/src/branch/source/LICENSE) file for details.
 
 </details>
 
 `▐▀` `-` `▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▌`
 
-- **`Version`:** **`4.0.0`**.
+- **`Version`:** **`5.0.0`**.
 - **`Architecture`:** **`x86_64-pc-linux-musl`** (**`amd64`**).
 
 `▐▄` `-` `▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▌`
