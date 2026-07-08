@@ -699,7 +699,53 @@ Each architecture is defined by a Rust target specification JSON file:
 | `x86_64-pc-linux-musl.json` | amd64 | x86-64-v3 | musl |
 | `aarch64-linux-musl.json` | arm64 | armv8-a | musl |
 
-These files define the LLVM target, data layout, linker, and CPU features for `rustc`. To add a new architecture, create a target spec JSON and add a case entry in `pipeline.sh`.
+These files define the LLVM target, data layout, linker, and CPU features for `rustc`. The `target-family` field is required for `-Zbuild-std` compilation — without it, `libc` and other core crates will fail to find their platform-specific modules.
+
+**`x86_64-pc-linux-musl.json`** (amd64):
+```json
+{
+  "arch": "x86_64",
+  "cpu": "x86-64-v3",
+  "data-layout": "e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128",
+  "env": "musl",
+  "executables": true,
+  "linker": "clang",
+  "linker-flavor": "gnu-cc",
+  "llvm-target": "x86_64-pc-linux-musl",
+  "max-atomic-width": 64,
+  "os": "linux",
+  "position-independent-executables": true,
+  "crt-static-default": true,
+  "crt-static-respected": true,
+  "target-family": ["unix"],
+  "target-pointer-width": 64,
+  "vendor": "pc"
+}
+```
+
+**`aarch64-linux-musl.json`** (arm64):
+```json
+{
+  "arch": "aarch64",
+  "cpu": "armv8-a",
+  "data-layout": "e-m:e-i8:8:32-i16:16:32-i64:64-i128:128-n32:64-S128",
+  "env": "musl",
+  "executables": true,
+  "linker": "clang",
+  "linker-flavor": "gnu-cc",
+  "llvm-target": "aarch64-linux-musl",
+  "max-atomic-width": 128,
+  "os": "linux",
+  "position-independent-executables": true,
+  "crt-static-default": true,
+  "crt-static-respected": true,
+  "target-family": ["unix"],
+  "target-pointer-width": 64,
+  "vendor": "unknown"
+}
+```
+
+To add a new architecture, create the target spec JSON and add a case entry in `pipeline.sh`.
 
 ### Builder architecture awareness
 
