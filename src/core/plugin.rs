@@ -145,15 +145,7 @@ impl Builder for DefaultBuilder {
             let target = std::env::var("CUDANE_TARGET")
                 .unwrap_or_else(|_| Architecture::host().target_triple().to_string());
             let rust_target = std::env::var("CUDANE_RUST_TARGET")
-                .unwrap_or_else(|_| {
-                    if target == "x86_64-pc-linux-musl" {
-                        "x86_64-unknown-linux-musl".to_string()
-                    } else if target == "aarch64-linux-musl" {
-                        "aarch64-unknown-linux-musl".to_string()
-                    } else {
-                        target.clone()
-                    }
-                });
+                .unwrap_or_else(|_| target.clone());
             let rustflags = format!(
                 "RUSTFLAGS=\"-C linker=clang -C link-arg=-target -C link-arg={} \
                  -C link-arg=--sysroot=/system -C target-feature=+crt-static\" \

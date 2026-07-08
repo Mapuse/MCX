@@ -617,8 +617,8 @@ The `Architecture` enum (`src/core/arch.rs`) defines three variants:
 
 | Variant | String value | Target triple | Matches on host |
 | ------- | ------------ | ------------- | --------------- |
-| `Amd64` | `"amd64"` / `"x86_64"` | `x86_64-pc-linux-musl` | x86_64 hosts only |
-| `Arm64` | `"arm64"` / `"aarch64"` | `aarch64-linux-musl` | aarch64 hosts only |
+| `Amd64` | `"amd64"` / `"x86_64"` | `x86_64-unknown-linux-musl` | x86_64 hosts only |
+| `Arm64` | `"arm64"` / `"aarch64"` | `aarch64-unknown-linux-musl` | aarch64 hosts only |
 | `Native` | `"native"` | *host-dependent* | Any host (wildcard) |
 
 ### Host detection
@@ -671,7 +671,7 @@ Omitting the `architecture` field or setting it to `"native"` makes the package 
 MCX supports building packages for multiple architectures in a single pipeline run via the `CUDANE_TARGETS` environment variable:
 
 ```shell
-export CUDANE_TARGETS="x86_64-pc-linux-musl,aarch64-linux-musl"
+export CUDANE_TARGETS="x86_64-unknown-linux-musl,aarch64-unknown-linux-musl"
 ./pipeline.sh
 ```
 
@@ -686,7 +686,7 @@ The `DefaultBuilder` plugin respects the `CUDANE_TARGET` environment variable (s
 
 ```shell
 # Cross-compile for arm64 from an amd64 host
-export CUDANE_TARGET=aarch64-linux-musl
+export CUDANE_TARGET=aarch64-unknown-linux-musl
 mcx -b build_config.json
 ```
 
@@ -696,12 +696,12 @@ Each architecture is defined by a Rust target specification JSON file:
 
 | File | Architecture | CPU | Env |
 | ---- | ------------ | --- | --- |
-| `x86_64-pc-linux-musl.json` | amd64 | x86-64-v3 | musl |
-| `aarch64-linux-musl.json` | arm64 | armv8-a | musl |
+| `x86_64-unknown-linux-musl.json` | amd64 | x86-64-v3 | musl |
+| `aarch64-unknown-linux-musl.json` | arm64 | armv8-a | musl |
 
 These files define the LLVM target, data layout, linker, and CPU features for `rustc`. The `target-family` field is required for `-Zbuild-std` compilation — without it, `libc` and other core crates will fail to find their platform-specific modules.
 
-**`x86_64-pc-linux-musl.json`** (amd64):
+**`x86_64-unknown-linux-musl.json`** (amd64):
 ```json
 {
   "arch": "x86_64",
@@ -711,7 +711,7 @@ These files define the LLVM target, data layout, linker, and CPU features for `r
   "executables": true,
   "linker": "clang",
   "linker-flavor": "gnu-cc",
-  "llvm-target": "x86_64-pc-linux-musl",
+  "llvm-target": "x86_64-unknown-linux-musl",
   "max-atomic-width": 64,
   "os": "linux",
   "position-independent-executables": true,
@@ -723,7 +723,7 @@ These files define the LLVM target, data layout, linker, and CPU features for `r
 }
 ```
 
-**`aarch64-linux-musl.json`** (arm64):
+**`aarch64-unknown-linux-musl.json`** (arm64):
 ```json
 {
   "arch": "aarch64",
@@ -733,7 +733,7 @@ These files define the LLVM target, data layout, linker, and CPU features for `r
   "executables": true,
   "linker": "clang",
   "linker-flavor": "gnu-cc",
-  "llvm-target": "aarch64-linux-musl",
+  "llvm-target": "aarch64-unknown-linux-musl",
   "max-atomic-width": 128,
   "os": "linux",
   "position-independent-executables": true,
@@ -751,7 +751,7 @@ To add a new architecture, create the target spec JSON and add a case entry in `
 
 The `DefaultBuilder` in `core/plugin.rs` auto-detects the build target:
 
-1. Checks `CUDANE_TARGET` environment variable for a target triple (e.g. `aarch64-linux-musl`)
+1. Checks `CUDANE_TARGET` environment variable for a target triple (e.g. `aarch64-unknown-linux-musl`)
 2. Falls back to `CUDANE_RUST_TARGET` for the `cargo build --target` flag
 3. If neither is set, uses the host architecture detected at runtime
 
@@ -2220,39 +2220,39 @@ println!("Target packages: {:?}", profile.packages);
 
 | Profile | Command | Flags | Use case |
 | ------- | ------- | ----- | -------- |
-| Debug | `cargo +nightly -Zjson-target-spec -Zbuild-std build --target x86_64-pc-linux-musl.json` | — | Development iteration, fast compile |
-| Release | `cargo +nightly -Zjson-target-spec -Zbuild-std build --release --target x86_64-pc-linux-musl.json` | `opt-level = "z"`, `lto = true`, `codegen-units = 1`, `panic = "abort"`, `strip = true` | Production binary, minimised size |
+| Debug | `cargo +nightly -Zjson-target-spec -Zbuild-std build --target x86_64-unknown-linux-musl.json` | — | Development iteration, fast compile |
+| Release | `cargo +nightly -Zjson-target-spec -Zbuild-std build --release --target x86_64-unknown-linux-musl.json` | `opt-level = "z"`, `lto = true`, `codegen-units = 1`, `panic = "abort"`, `strip = true` | Production binary, minimised size |
 | Check | `cargo check` | — | Compile-only verification, no artifacts |
-| Release with debug | `cargo +nightly -Zjson-target-spec -Zbuild-std build --profile release --target x86_64-pc-linux-musl.json` | same as Release + debug symbols preserved | Profiling with `perf`, flamegraph |
+| Release with debug | `cargo +nightly -Zjson-target-spec -Zbuild-std build --profile release --target x86_64-unknown-linux-musl.json` | same as Release + debug symbols preserved | Profiling with `perf`, flamegraph |
 
 ```shell
 # Compile-only verification (fastest)
-cargo  +nightly -Zjson-target-spec -Zbuild-std check --target x86_64-pc-linux-musl.json
+cargo  +nightly -Zjson-target-spec -Zbuild-std check --target x86_64-unknown-linux-musl.json
 
 # Debug build
-cargo +nightly -Zjson-target-spec -Zbuild-std build --target x86_64-pc-linux-musl.json
+cargo +nightly -Zjson-target-spec -Zbuild-std build --target x86_64-unknown-linux-musl.json
 
 # Release build (optimised for size)
-cargo +nightly -Zjson-target-spec -Zbuild-std build --release --target x86_64-pc-linux-musl.json
+cargo +nightly -Zjson-target-spec -Zbuild-std build --release --target x86_64-unknown-linux-musl.json
 ```
 
 ## Testing
 
 ```shell
 # Run all tests (unit + integration)
-cargo +nightly -Zjson-target-spec -Zbuild-std test --target x86_64-pc-linux-musl.json
+cargo +nightly -Zjson-target-spec -Zbuild-std test --target x86_64-unknown-linux-musl.json
 
 # Run with stdout/stderr visible
-cargo +nightly -Zjson-target-spec -Zbuild-std test -- -nocapture --target x86_64-pc-linux-musl.json
+cargo +nightly -Zjson-target-spec -Zbuild-std test -- -nocapture --target x86_64-unknown-linux-musl.json
 
 # Run a specific test by name
-cargo +nightly -Zjson-target-spec -Zbuild-std test -- test_install_package --target x86_64-pc-linux-musl.json
+cargo +nightly -Zjson-target-spec -Zbuild-std test -- test_install_package --target x86_64-unknown-linux-musl.json
 
 # Run integration tests only
-cargo +nightly -Zjson-target-spec -Zbuild-std test --test integration --target x86_64-pc-linux-musl.json
+cargo +nightly -Zjson-target-spec -Zbuild-std test --test integration --target x86_64-unknown-linux-musl.json
 
 # Run with all features and release mode
-cargo +nightly -Zjson-target-spec -Zbuild-std test --release --all-features --target x86_64-pc-linux-musl.json
+cargo +nightly -Zjson-target-spec -Zbuild-std test --release --all-features --target x86_64-unknown-linux-musl.json
 ```
 
 Integration tests are located in `tests/integration.rs`. They exercise full command pipelines against a temporary directory root, verifying ledger state transitions, file system layout, and error paths.
@@ -2372,6 +2372,6 @@ see [**`LICENSE`**](https://codeberg.org/Cudane/MCX/src/branch/source/LICENSE) f
 `▐▀` `-` `▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▌`
 
 - **`Version`:** **`5.0.0`**.
-- **`Architecture`:** **`x86_64-pc-linux-musl`** (**`amd64`**).
+- **`Architecture`:** **`x86_64-unknown-linux-musl`** (**`amd64`**).
 
 `▐▄` `-` `▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▌`

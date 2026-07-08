@@ -50,8 +50,8 @@ impl Architecture {
 
     pub fn target_triple(&self) -> &'static str {
         match self {
-            Architecture::Amd64 => "x86_64-pc-linux-musl",
-            Architecture::Arm64 => "aarch64-linux-musl",
+            Architecture::Amd64 => "x86_64-unknown-linux-musl",
+            Architecture::Arm64 => "aarch64-unknown-linux-musl",
             Architecture::Native => Architecture::host().target_triple(),
         }
     }
