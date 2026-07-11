@@ -44,6 +44,7 @@ pub struct RepositoryInfo {
     pub name: String,
     pub url: String,
     pub checksum: Option<String>,
+    pub enabled: bool,
 }
 
 type PkgDb = heed::Database<Str, SerdeBincode<PackageMetadata>>;

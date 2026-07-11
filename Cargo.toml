@@ -1,6 +1,6 @@
 [package]
 name = "mcx"
-version = "5.0.0"
+version = "6.0.0"
 edition = "2024"
 authors = ["Cudane"]
 description = "The official Package Manager for Cudane Linux."

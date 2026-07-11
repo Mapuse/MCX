@@ -33,7 +33,7 @@ fn default_root() -> String {
 }
 
 #[derive(Parser)]
-#[command(name = "mcx", version = "5.0.0", disable_version_flag = true)]
+    #[command(name = "mcx", version = "6.0.0", disable_version_flag = true)]
 struct Cli {
     #[arg(long, global = true, default_value_t = default_root())]
     root: String,
@@ -102,6 +102,18 @@ pub enum Commands {
 
     #[command(long_flag = "repo-list", aliases = ["rl"])]
     RepoList,
+
+    #[command(long_flag = "repo-sync", aliases = ["rs"])]
+    RepoSync { name: String },
+
+    #[command(long_flag = "repo-enable", aliases = ["re"])]
+    RepoEnable { name: String },
+
+    #[command(long_flag = "repo-disable", aliases = ["rd"])]
+    RepoDisable { name: String },
+
+    #[command(long_flag = "repo-info", aliases = ["ri"])]
+    RepoInfo { name: String },
 
     #[command(long_flag = "self-update", aliases = ["update-self"])]
     SelfUpdate,
@@ -192,7 +204,7 @@ impl EngineContext {
 async fn main() {
     let args = Cli::parse();
     if args.version {
-        UserInterface::version("mcx 5.0.0");
+        UserInterface::version("mcx 6.0.0");
         return;
     }
     let root_path = PathBuf::from(&args.root);
@@ -656,7 +668,7 @@ async fn main() {
         Commands::RepoAdd { name, url } => {
             let mgr = crate::core::repo::RepositoryManager::new(&args.root);
             match mgr.add_repository(crate::core::database::RepositoryInfo {
-                name, url, checksum: None,
+                name, url, checksum: None, enabled: true,
             }) {
                 Ok(_) => UserInterface::success("Repository added."),
                 Err(e) => { UserInterface::error(&format!("{}", e)); process::exit(1); }
@@ -675,9 +687,72 @@ async fn main() {
                 Ok(repos) => {
                     let items = repos
                         .into_iter()
-                        .map(|r| format!("{} -> {}", r.name, r.url))
+                        .map(|r| {
+                            let status = if r.enabled { "enabled" } else { "disabled" };
+                            format!("{} -> {} [{}]", r.name, r.url, status)
+                        })
                         .collect::<Vec<_>>();
                     UserInterface::render_list("Repositories", &items);
+                }
+                Err(e) => { UserInterface::error(&format!("{e}")); process::exit(1); }
+            }
+        }
+
+        Commands::RepoSync { name } => {
+            let mgr = crate::core::repo::RepositoryManager::new(&args.root);
+            match mgr.sync_single(&name).await {
+                Ok(_) => {
+                    let repos = mgr.load_repositories().unwrap_or_default();
+                    if let Some(repo) = repos.iter().find(|r| r.name == name) {
+                        let index_path = mgr.get_local_index_path(&repo.name);
+                        if index_path.exists() {
+                            let mut tx = ctx.db.begin_transaction().unwrap();
+                            let _ = tx.update_repository_index(&repo.name, index_path.to_str().unwrap());
+                            let _ = tx.commit();
+                        }
+                    }
+                    UserInterface::success(&format!("Repository '{}' synced.", name));
+                }
+                Err(e) => { UserInterface::error(&format!("{e}")); process::exit(1); }
+            }
+        }
+
+        Commands::RepoEnable { name } => {
+            let mgr = crate::core::repo::RepositoryManager::new(&args.root);
+            match mgr.set_enabled(&name, true) {
+                Ok(_) => UserInterface::success(&format!("Repository '{}' enabled.", name)),
+                Err(e) => { UserInterface::error(&format!("{e}")); process::exit(1); }
+            }
+        }
+
+        Commands::RepoDisable { name } => {
+            let mgr = crate::core::repo::RepositoryManager::new(&args.root);
+            match mgr.set_enabled(&name, false) {
+                Ok(_) => UserInterface::success(&format!("Repository '{}' disabled.", name)),
+                Err(e) => { UserInterface::error(&format!("{e}")); process::exit(1); }
+            }
+        }
+
+        Commands::RepoInfo { name } => {
+            let mgr = crate::core::repo::RepositoryManager::new(&args.root);
+            match mgr.info(&name) {
+                Ok(repo) => {
+                    let status = if repo.enabled { "enabled" } else { "disabled" };
+                    UserInterface::render_key_values(&format!("Repository: {}", repo.name), &[
+                        ("URL", repo.url.as_str()),
+                        ("Status", status),
+                        ("Checksum", repo.checksum.as_deref().unwrap_or("(none)")),
+                    ]);
+                    let index_path = mgr.get_local_index_path(&repo.name);
+                    if index_path.exists() {
+                        if let Ok(content) = fs::read_to_string(&index_path) {
+                            if let Ok(pkgs) = serde_json::from_str::<Vec<crate::core::database::PackageMetadata>>(&content) {
+                                UserInterface::info(&format!("Cached index: {} packages", pkgs.len()));
+                            }
+                        }
+                    } else {
+                        UserInterface::warning("No cached index (run mcx --repo-sync first)");
+                    }
                 }
                 Err(e) => { UserInterface::error(&format!("{e}")); process::exit(1); }
             }

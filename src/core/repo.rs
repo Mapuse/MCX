@@ -46,6 +46,7 @@ impl RepositoryManager {
         let mut current_name: Option<String> = None;
         let mut current_url: Option<String> = None;
         let mut current_checksum: Option<String> = None;
+        let mut current_enabled = true;
 
         for line in content.lines() {
             let line = line.trim();
@@ -53,17 +54,18 @@ impl RepositoryManager {
                 continue;
             }
             if line.starts_with('[') && line.ends_with(']') {
-                // Save previous section
                 if let (Some(name), Some(url)) = (current_name.take(), current_url.take()) {
                     repos.push(RepositoryInfo {
                         name,
                         url,
                         checksum: current_checksum.take(),
+                        enabled: current_enabled,
                     });
                 }
                 current_name = Some(line[1..line.len()-1].trim().to_string());
                 current_url = None;
                 current_checksum = None;
+                current_enabled = true;
                 continue;
             }
             if let Some(eq_pos) = line.find('=') {
@@ -72,14 +74,14 @@ impl RepositoryManager {
                 match key {
                     "url" => current_url = Some(value),
                     "checksum" => current_checksum = Some(value),
-                    "enabled" | "priority" => {} // ignore metadata fields
+                    "enabled" => current_enabled = value.to_lowercase() == "true" || value == "1",
                     _ => {}
                 }
             }
         }
 
         if let (Some(name), Some(url)) = (current_name, current_url) {
-            repos.push(RepositoryInfo { name, url, checksum: current_checksum });
+            repos.push(RepositoryInfo { name, url, checksum: current_checksum, enabled: current_enabled });
         }
 
         Ok(repos)
@@ -90,7 +92,7 @@ impl RepositoryManager {
         for repo in repos {
             output.push_str(&format!("[{}]\n", repo.name));
             output.push_str(&format!("url = {}\n", repo.url));
-            output.push_str("enabled = true\n");
+            output.push_str(&format!("enabled = {}\n", repo.enabled));
             output.push_str("priority = 100\n");
             if let Some(ref checksum) = repo.checksum {
                 output.push_str(&format!("checksum = {}\n", checksum));
@@ -128,8 +130,9 @@ impl RepositoryManager {
 
     pub async fn sync_all_parallel(&self) -> Result<(usize, Vec<String>)> {
         let repos = self.load_repositories()?;
+        let repos: Vec<_> = repos.into_iter().filter(|r| r.enabled).collect();
         if repos.is_empty() {
-            return Ok((0, vec!["No repositories configured".into()]));
+            return Ok((0, vec!["No repositories configured or enabled".into()]));
         }
 
         let host_arch = host_architecture();
@@ -263,5 +266,48 @@ impl RepositoryManager {
         let metadata: Vec<PackageMetadata> = serde_json::from_str(&content)
             .context("Cached index data matched an invalid metadata schema")?;
         Ok(metadata)
+    }
+
+    pub async fn sync_single(&self, repo_name: &str) -> Result<()> {
+        let repos = self.load_repositories()?;
+        let repo = repos.iter().find(|r| r.name == repo_name)
+            .ok_or_else(|| anyhow!("Repository '{}' not found", repo_name))?;
+        let repo = repo.clone();
+
+        let host_arch = host_architecture();
+        fs::create_dir_all(&self.sync_dir)?;
+
+        let temp_path = self.sync_dir.join(format!("{}.tmp", repo_name));
+        let final_path = self.sync_dir.join(format!("{}.json", repo_name));
+        let index_url = format!("{}/{}", repo.url.trim_end_matches('/'), host_arch.index_filename());
+
+        let downloader = Downloader::new();
+        downloader.package(&index_url, &temp_path).await
+            .map_err(|e| anyhow!("Download failed: {}", e))?;
+
+        if let Some(ref expected_hash) = repo.checksum {
+            if let Err(e) = HashVerifier::verify_integrity(&temp_path, "sha256", expected_hash) {
+                let _ = fs::remove_file(&temp_path);
+                return Err(anyhow!("Checksum mismatch: {}", e));
+            }
+        }
+
+        fs::rename(&temp_path, &final_path)?;
+        UserInterface::download(&format!("Repo synced: {}", repo_name));
+        Ok(())
+    }
+
+    pub fn set_enabled(&self, repo_name: &str, enabled: bool) -> Result<()> {
+        let mut repos = self.load_repositories()?;
+        let repo = repos.iter_mut().find(|r| r.name == repo_name)
+            .ok_or_else(|| anyhow!("Repository '{}' not found", repo_name))?;
+        repo.enabled = enabled;
+        self.save_repositories(&repos)
+    }
+
+    pub fn info(&self, repo_name: &str) -> Result<RepositoryInfo> {
+        let repos = self.load_repositories()?;
+        repos.into_iter().find(|r| r.name == repo_name)
+            .ok_or_else(|| anyhow!("Repository '{}' not found", repo_name))
     }
 }

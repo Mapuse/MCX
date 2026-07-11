@@ -465,6 +465,10 @@ Manages external hook-based plugins (see [Plugin authoring & linking](#plugin-au
 | `--repo-add` | `ra` | `RepositoryManager` | `core::repo` |
 | `--repo-remove` | `rr` | `RepositoryManager` | `core::repo` |
 | `--repo-list` | `rl` | `RepositoryManager` | `core::repo` |
+| `--repo-sync` | `rs` | `RepositoryManager` | `core::repo` |
+| `--repo-enable` | `re` | `RepositoryManager` | `core::repo` |
+| `--repo-disable` | `rd` | `RepositoryManager` | `core::repo` |
+| `--repo-info` | `ri` | `RepositoryManager` | `core::repo` |
 
 ### `--repo-add`
 
@@ -496,7 +500,43 @@ mcx --repo-list
 mcx rl
 ```
 
-Enumerates all configured repositories from `etc/mcx/repo.ini` in `name -> url` format.
+Enumerates all configured repositories from `etc/mcx/repo.ini` with name, URL, and enabled/disabled status.
+
+### `--repo-sync`
+
+```
+mcx --repo-sync <name>
+mcx rs <name>
+```
+
+Syncs a single repository by name. Downloads `index.<arch>.json` for the host architecture and updates the local database. Use this when you want to refresh a specific repo without syncing all.
+
+### `--repo-enable`
+
+```
+mcx --repo-enable <name>
+mcx re <name>
+```
+
+Enables a repository. Disabled repositories are skipped during `mcx -u` (sync) and `mcx --upgrade`.
+
+### `--repo-disable`
+
+```
+mcx --repo-disable <name>
+mcx rd <name>
+```
+
+Disables a repository. The entry remains in `repo.ini` but is skipped during sync and upgrade operations.
+
+### `--repo-info`
+
+```
+mcx --repo-info <name>
+mcx ri <name>
+```
+
+Displays detailed information about a repository: URL, enabled status, checksum, and cached index stats.
 
 ## Repository management guide
 
@@ -1801,7 +1841,7 @@ Each `[section]` is one repository. Keys inside a section:
 
 | Key | Required | Values | Effect |
 | --- | -------- | ------ | ------ |
-| `url` | yes | URL string | Base URL of the repository index. The index must be available at `<url>/index.json`. |
+| `url` | yes | URL string | Base URL of the repository index. The index must be available at `<url>/index.<arch>.json`. |
 | `enabled` | yes | `true`, `false` | If `false`, the repo is skipped during `mcx -u` (sync). |
 | `priority` | yes | integer | Lower number = higher priority. Used by `DependencySolver` when the same package version is available from multiple repos. |
 | `checksum` | no | hex string | Optional SHA-256 of the index file. If set, every sync verifies the downloaded index against this hash. |
@@ -1875,14 +1915,15 @@ After using MCX (installing packages, syncing repos), the full tree is:
 
 A package repository is any HTTP(S) server that serves two things:
 
-1. **`index.json`** — an array of `PackageMetadata` objects describing every available package.
+1. **`index.<arch>.json`** — an array of `PackageMetadata` objects describing every available package for a specific architecture (e.g., `index.x86_64.json`, `index.aarch64.json`).
 2. **`.xcs` archives** — the actual package files, addressed by path.
 
 ### Repository directory structure (server-side)
 
 ```
 <repo-root>/
-├── index.json               # Required: package index
+├── index.x86_64.json        # Required: package index for amd64
+├── index.aarch64.json       # Required: package index for arm64
 └── pool/
     └── <pkg-name>/
         └── <pkg-name>-<version>.xcs   # Package archives
@@ -1890,7 +1931,7 @@ A package repository is any HTTP(S) server that serves two things:
 
 The `url` field in `repo.ini` points to `<repo-root>`.
 
-### `index.json` format
+### `index.<arch>.json` format
 
 ```json
 [
@@ -1953,12 +1994,13 @@ cd my-pkg
 zstd --compress -3 --tar -o my-pkg-1.0.0.xcs .
 ```
 
-### Generating `index.json` automatically
+### Generating `index.<arch>.json` automatically
 
 ```shell
 # Assuming .xcs files are in pool/<pkg>/
 cat << 'SCRIPT' > generate-index.sh
 #!/bin/sh
+ARCH=${1:-x86_64}
 echo "["
 first=true
 for xcs in pool/*/*.xcs; do
@@ -1984,15 +2026,16 @@ done
 echo "]"
 SCRIPT
 chmod +x generate-index.sh
-./generate-index.sh > index.json
+./generate-index.sh x86_64 > index.x86_64.json
+./generate-index.sh aarch64 > index.aarch64.json
 ```
 
 ### Requirements for the HTTP server
 
-- Serve `index.json` at `<url>/index.json`.
+- Serve `index.<arch>.json` at `<url>/index.<arch>.json` for each supported architecture.
 - Serve `.xcs` files at whatever path `source` specifies in the index.
 - No special headers required; standard HTTPS with `curl`/`reqwest`-compatible responses.
-- Optional: serve a checksum file for the index itself (`<url>/index.json.sha256`) if you want `checksum` in `repo.ini` to work.
+- Optional: serve a checksum file for the index itself (`<url>/index.<arch>.json.sha256`) if you want `checksum` in `repo.ini` to work.
 
 ---
 
@@ -2007,7 +2050,7 @@ mcx --repo-add <name> <url>
 | Argument | Required | Description |
 | -------- | -------- | ----------- |
 | `name` | yes | Unique identifier for the repository (alphanumeric, hyphens allowed) |
-| `url` | yes | Base URL of the repository (must serve `index.json` at this path) |
+| `url` | yes | Base URL of the repository (must serve `index.<arch>.json` at this path) |
 
 Examples:
 
@@ -2096,7 +2139,7 @@ priority = 50
 ### What happens when you add a repo
 
 1. `RepositoryManager.add_repository()` appends the entry to `repo.ini`.
-2. On next `mcx -u` (sync), `RepositoryManager.sync_all_parallel()` downloads `<url>/index.json` to `var/lib/mcx/sync/<name>.json`.
+2. On next `mcx -u` (sync), `RepositoryManager.sync_all_parallel()` downloads `<url>/index.<arch>.json` to `var/lib/mcx/sync/<name>.json`.
 3. The downloaded index is loaded into the `available` LMDB database via `DbTransaction.update_repository_index()`.
 4. Packages from the new repo now appear in `mcx -s` (search) and are available for `mcx -i` (install).
 
@@ -2107,7 +2150,7 @@ mcx -u (no package args)
   └─ SyncCommand::execute()
        ├─ RepositoryManager::load_repositories()  ← reads repo.ini sections
        ├─ For each enabled repo (parallel):
-       │    ├─ Downloader::package(url/index.json, sync/<name>.json)
+       │    ├─ Downloader::package(url/index.<arch>.json, sync/<name>.json)
        │    └─ HashVerifier::verify_integrity()    ← if checksum is set in repo.ini
        ├─ Database::begin_transaction()
        └─ For each downloaded index:
