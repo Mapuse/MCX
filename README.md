@@ -605,7 +605,7 @@ Edit `etc/mcx/repo.ini` directly with any text editor. The file is managed throu
 
 ```
 ┌───────────────┐       ┌──────────────────┐
-│  src/main.rs  │─────▶│ src/commands/    │  CLI dispatch & argument parsing
+│  src/main.rs  │ ────  | src/commands/    │  CLI dispatch & argument parsing
 └───────────────┘       │ install, remove, │
                         │ search, sync, …  │
                         └────────┬─────────┘
@@ -2400,7 +2400,7 @@ strip = true            # Strip symbols
 **`MCX`** is part of the **`Cudane`** ecosystem.
 
 - **`Cudane`** — The Distribution.
-- **`MCX`** — Runtime Package Manager.
+- **`MCX`** —  Package Manager.
 
 </details>
 
@@ -2415,6 +2415,5 @@ see [**`LICENSE`**](https://codeberg.org/Cudane/MCX/src/branch/source/LICENSE) f
 `▐▀` `-` `▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▌`
 
 - **`Version`:** **`5.0.0`**.
-- **`Architecture`:** **`x86_64-unknown-linux-musl`** (**`amd64`**).
 
 `▐▄` `-` `▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▌`
