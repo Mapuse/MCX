@@ -2414,6 +2414,6 @@ see [**`LICENSE`**](https://codeberg.org/Cudane/MCX/src/branch/source/LICENSE) f
 
 `▐▀` `-` `▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▌`
 
-- **`Version`:** **`5.0.0`**.
+- **`Version`:** **`6.0.0`**.
 
 `▐▄` `-` `▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▌`
