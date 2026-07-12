@@ -609,8 +609,8 @@ Edit `etc/mcx/repo.ini` directly with any text editor. The file is managed throu
 └───────────────┘       │ install, remove, │
                         │ search, sync, …  │
                         └────────┬─────────┘
-                                │
-                                ▼
+                                 │
+                                 ▼
                        ┌──────────────────┐
                        │  src/core/       │  Domain logic & persistence
                        │  ├─ config.rs    │  mmap INI, lifetime-tracked MappedConfig
