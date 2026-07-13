@@ -2401,6 +2401,7 @@ strip = true            # Strip symbols
 
 - **`Cudane`** — The Distribution.
 - **`MCX`** — Runtime Package Manager.
+- **`Cesar`** — Init System (PID 1).
 
 </details>
 
