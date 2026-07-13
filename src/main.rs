@@ -207,6 +207,8 @@ async fn main() {
         UserInterface::version("mcx 6.0.0");
         return;
     }
+    crate::core::sudo::root_access();
+
     let root_path = PathBuf::from(&args.root);
 
     let ctx = EngineContext::new(&root_path);
@@ -760,9 +762,6 @@ async fn main() {
 
         Commands::SelfUpdate => {
             let output_path = PathBuf::from("/system/bin/mcx");
-            if !is_root_process() {
-                elevate_for("self-update");
-            }
 
             let repo_mgr = crate::core::repo::RepositoryManager::new(&root_path);
             let repos = repo_mgr.load_repositories()
@@ -884,9 +883,6 @@ async fn main() {
         }
 
         Commands::Cgroup { action } => {
-            if !is_root_process() {
-                elevate_for("cgroup");
-            }
             let cg_mgr = crate::core::cgroup::CgroupController::new();
             match action {
                 CgroupAction::Enforce { package, max_memory_mb, max_cpu_percent } => {
@@ -1066,20 +1062,6 @@ fn copy_dir_recursive(src: &PathBuf, dst: &PathBuf, base: &PathBuf) -> std::io::
         }
     }
     Ok(())
-}
-
-fn elevate_for(command: &str) -> ! {
-    let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("mcx"));
-    let all_args: Vec<String> = std::env::args().collect();
-    let status = std::process::Command::new("sudo")
-        .arg(&exe)
-        .args(&all_args[1..])
-        .status()
-        .unwrap_or_else(|e| {
-            UserInterface::error(&format!("sudo escalation failed for {}: {}", command, e));
-            process::exit(1);
-        });
-    process::exit(status.code().unwrap_or(1));
 }
 
 fn is_root_process() -> bool {

@@ -22,6 +22,7 @@ pub mod solver;
 pub mod transaction;
 pub mod update;
 pub mod vendor;
+pub mod sudo;
 pub mod workspace;
 
 pub use database as db;

@@ -1,9 +1,11 @@
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use anyhow::{Result, anyhow};
 use crate::core::database::Database;
 use crate::core::database::PackageMetadata;
+use crate::archive::hash::HashVerifier;
 
 #[derive()]
 pub struct AddLocalCommand {
@@ -25,41 +27,9 @@ impl AddLocalCommand {
             return Err(anyhow!("Target local package payload missing: {:?}", package_path));
         }
 
-        let stage_dir = self.root.join("var/tmp/mcx/stage");
-        if stage_dir.exists() {
-            fs::remove_dir_all(&stage_dir)?;
-        }
-        fs::create_dir_all(&stage_dir)?;
+        let metadata_file_in_archive = self.read_metadata_from_archive(package_path)?;
 
-        
-        
-        let file = fs::File::open(package_path)?;
-        let decoder = zstd::stream::Decoder::new(file)?;
-        let mut archive = tar::Archive::new(decoder);
-        archive.unpack(&stage_dir)?;
-
-        
-        let mut installed_files = Vec::new();
-        Self::collect_relative_files(&stage_dir, &stage_dir, &mut installed_files)?;
-
-        
-        for rel_path in &installed_files {
-            let src = stage_dir.join(rel_path);
-            let dest = self.root.join(rel_path);
-            
-            if let Some(parent) = dest.parent() {
-                fs::create_dir_all(parent)?;
-            }
-            
-            if src.is_file() {
-                fs::copy(&src, &dest)?;
-            }
-        }
-
-        
-        let metadata_file = stage_dir.join("metadata.json");
-        let (pkg_name, version, license, checksum_type, checksum_value) = if metadata_file.exists() {
-            let content = fs::read_to_string(&metadata_file)?;
+        let (pkg_name, version, license, checksum_kind, checksum_value) = if let Some(ref content) = metadata_file_in_archive {
             #[derive(serde::Deserialize)]
             struct EmbeddedMeta {
                 #[serde(default)]
@@ -70,9 +40,12 @@ impl AddLocalCommand {
                 license: String,
                 #[serde(default)]
                 checksum: String,
+                #[serde(default, rename = "checksum_kind")]
+                kind: Option<String>,
             }
-            let emb: EmbeddedMeta = serde_json::from_str(&content)?;
-            (emb.pkg_name, emb.version, emb.license, "sha256".to_string(), emb.checksum)
+            let emb: EmbeddedMeta = serde_json::from_str(content)?;
+            let kind = emb.kind.unwrap_or_else(|| "sha256".to_string());
+            (emb.pkg_name, emb.version, emb.license, kind, emb.checksum)
         } else {
             let name = package_path.file_stem()
                 .and_then(|s| s.to_str())
@@ -80,6 +53,39 @@ impl AddLocalCommand {
                 .to_string();
             (name, "0.0.0".to_string(), "Unknown".to_string(), "sha256".to_string(), "none".to_string())
         };
+
+        if checksum_value != "none" && !checksum_value.is_empty() {
+            if let Err(e) = HashVerifier::verify_integrity(package_path, &checksum_kind, &checksum_value) {
+                return Err(anyhow!("Package integrity check failed ({}): {}", checksum_kind, e));
+            }
+        }
+
+        let stage_dir = self.root.join("var/tmp/mcx/stage");
+        if stage_dir.exists() {
+            fs::remove_dir_all(&stage_dir)?;
+        }
+        fs::create_dir_all(&stage_dir)?;
+
+        let file = fs::File::open(package_path)?;
+        let decoder = zstd::stream::Decoder::new(file)?;
+        let mut archive = tar::Archive::new(decoder);
+        archive.unpack(&stage_dir)?;
+
+        let mut installed_files = Vec::new();
+        Self::collect_relative_files(&stage_dir, &stage_dir, &mut installed_files)?;
+
+        for rel_path in &installed_files {
+            let src = stage_dir.join(rel_path);
+            let dest = self.root.join(rel_path);
+
+            if let Some(parent) = dest.parent() {
+                fs::create_dir_all(parent)?;
+            }
+
+            if src.is_file() {
+                fs::copy(&src, &dest)?;
+            }
+        }
 
         let mut db_tx = self.db.begin_transaction()?;
 
@@ -94,7 +100,7 @@ impl AddLocalCommand {
             license,
             files: installed_files,
             dependencies: Vec::new(),
-            checksum: crate::core::database::ChecksumData { kind: checksum_type, value: checksum_value },
+            checksum: crate::core::database::ChecksumData { kind: checksum_kind, value: checksum_value },
             provides: Some(Vec::new()),
             conflicts: Some(Vec::new()),
             architecture: "native".to_string(),
@@ -108,6 +114,23 @@ impl AddLocalCommand {
         }
 
         Ok(())
+    }
+
+    fn read_metadata_from_archive(&self, package_path: &Path) -> Result<Option<String>> {
+        let file = fs::File::open(package_path)?;
+        let decoder = zstd::stream::Decoder::new(file)?;
+        let mut archive = tar::Archive::new(decoder);
+
+        for entry in archive.entries()? {
+            let mut entry = entry?;
+            let path = entry.path()?;
+            if path.as_ref() == Path::new("metadata.json") {
+                let mut content = String::new();
+                entry.read_to_string(&mut content)?;
+                return Ok(Some(content));
+            }
+        }
+        Ok(None)
     }
 
     fn collect_relative_files(dir: &Path, base: &Path, files: &mut Vec<PathBuf>) -> Result<()> {
