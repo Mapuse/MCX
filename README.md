@@ -2355,7 +2355,7 @@ make install DESTDIR=/mnt     # staged install
 ### Meson
 
 ```shell
-meson setup builddir --cross-file /home/m/cudane-build/cross.txt --prefix=/system
+meson setup builddir --cross-file /path/to/cross.txt --prefix=/system
 meson compile -C builddir
 meson install -C builddir
 ```
