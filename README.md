@@ -439,24 +439,24 @@ cgroup v2 resource enforcement. Writes memory and CPU quota limits to `/sys/fs/c
 ```
 mcx -p list
 mcx -p info <name>
-mcx -p run <name> [hook]
+mcx -p run <name>
 mcx -p add <dir>
 mcx -p remove <name>
 mcx -p reload
-mcx -p daemon <name>
+mcx -p reload-config
 ```
 
-Manages external hook-based plugins (see [Plugin authoring & linking](#plugin-authoring)).
+Manages external Python plugins. Plugins are single `.py` files loaded via `PluginManager`.
 
 | Subcommand | Description |
 | ---------- | ----------- |
-| `list` | List all discovered external plugins with version, type, language, and description |
-| `info <name>` | Show full manifest details for a specific plugin (name, version, description, language, type, command, trigger, author, homepage, timeout) |
-| `run <name> [hook]` | Execute a plugin once with an optional hook name (default `post-install`). The plugin's command is expanded with `${event}`, `${hook}`, `${root}`, `${package}`, `${dir}` |
-| `add <dir>` | Copy a plugin directory from an external path into `var/lib/mcx/plugins/` and reload the plugin manager |
-| `remove <name>` | Delete a plugin directory from `var/lib/mcx/plugins/` and reload the plugin manager |
-| `reload` | Re-scan `var/lib/mcx/plugins/` for new, removed, or changed plugins without restarting MCX |
-| `daemon <name>` | Start a daemon-type plugin as a background process. The plugin must declare `type = daemon` in its `plugin.ini` |
+| `list` | List all loaded plugins with name, path, and status |
+| `info <name>` | Show plugin details (name, path, language) |
+| `run <name>` | Execute a plugin once with an optional event JSON |
+| `add <dir>` | Copy a plugin file into `var/lib/mcx/plugins/` and reload |
+| `remove <name>` | Delete a plugin file and reload |
+| `reload` | Re-scan `var/lib/mcx/plugins/` for changes |
+| `reload-config` | Reload plugins from `etc/mcx/p.desc` (TOML config), skip already-loaded, create+wire new entries |
 
 ## Repository management
 
@@ -986,7 +986,8 @@ Every command struct implements `pub fn execute(&self, engine: &EngineContext) -
 | `declarative.rs` | `ProfileValidator` | Validate declarative system blueprints. | — |
 | `lifecycle.rs` | `LifecycleEngine`, `PackageState`, `DependencyGraph`, `OrphanSet` | State machine: Unknown→Resolved→Staged→Installed→Active→MarkedForRemoval→Removed→Purged. Pre/post hooks, audit history. | `database.rs` |
 | `package.rs` | `PackageEntity` | Unified package representation across all stages. | — |
-| `plugin.rs` | `PluginRegistry`, `PluginSlot<T>`, `Fetcher`, `Builder`, `Packer`, `CurlFetcher`, `DefaultBuilder`, `ZstdPacker`, `ExternalPlugin`, `PluginManager`, `PluginHook`, `PluginEvent`, `PluginResult` | Lock-free plugin hot-swap via `RwLock<Arc<T>>`. External hook-based plugin system with `PluginManager`, daemon lifecycle, and `plugin.ini` auto-discovery. | — |
+| `plugin.rs` | `PluginRegistry`, `PluginSlot<T>`, `Fetcher`, `Builder`, `Packer`, `CurlFetcher`, `DefaultBuilder`, `ZstdPacker`, `PythonPlugin`, `PluginManager`, `PluginHook`, `PluginEvent`, `PluginResult`, `PluginConfig` | Lock-free plugin hot-swap via `RwLock<Arc<T>>`. Python-based external plugin system with `PluginManager`, TOML config (`p.desc`), and subprocess execution. | — |
+| `constants.rs` | All centralized constants | Paths, URLs, thresholds, tool names, ELF format constants, UI widths, DB sizes, Python plugin template — every hardcoded value in one place. | `PATH_ACTIVE`, `PATH_CACHE`, `DEFAULT_NETWORK_TIMEOUT_SECS`, `PLUGIN_CONFIG_FILE`, and 100+ other constants |
 | `profiler.rs` | `SystemProfile`, `DecisionEngine`, `AutoHealer`, `NetworkProber` | Host profiling, heuristic decisions, network latency probing. | — |
 
 | `update.rs` | `SelfUpdateManager` | GitHub Releases check + binary self-replace. | `network::download` |
@@ -1218,7 +1219,7 @@ A full upgrade (loading the entire new `.xcs` package) is more efficient and les
 
 **Dependency solver.** The `DependencySolver` resolves the topological order and conflict matrix before any download starts. No partial states.
 
-**Plugin system.** Any advanced enhancement feature (such as P2P or delta) is activated via plugins in Rust during build, or is detached as an external throw plugin that the engine calls only when needed. The core remains lean: HTTPS download + full archive extraction + CAS dedup.
+**Plugin system.** Any advanced enhancement feature (such as P2P or delta) is activated via Rust trait-based plugins during build, or via external Python plugins loaded from `etc/mcx/p.desc`. The core remains lean: HTTPS download + full archive extraction + CAS dedup.
 
 ## Resource control via cgroups
 
@@ -1541,76 +1542,171 @@ All traits require `Send + Sync`.
 
 ---
 
-## External plugin system (hook-based, language-agnostic)
+## External plugin system (Python-based, open)
 
-In addition to the Rust trait-based plugins above, MCX supports **external plugins** — standalone executables in any language that communicate via stdout/stderr and a JSON event protocol.
+MCX supports **external plugins** written in Python (or any language via subprocess). Plugins are standalone `.py` files that can contain ANY code — they are not restricted to specific hook functions. The only requirement is valid Python syntax.
 
-### Directory layout
+### How it works
 
-External plugins live under `var/lib/mcx/plugins/<plugin-name>/`:
+1. **Plugin files** live under `var/lib/mcx/plugins/` as single `.py` files.
+2. **Plugin configuration** is optional via TOML at `etc/mcx/p.desc`.
+3. **Loading**: Python syntax is validated via `python3 -c "compile(open(path).read(), path, 'exec')"`. If valid, the plugin is loaded.
+4. **Execution**: Plugins are executed via `python3` subprocess with the event JSON available as a global variable `MCX_EVENT`.
 
+### Plugin configuration (`etc/mcx/p.desc`)
+
+MCX uses a TOML configuration file at `etc/mcx/p.desc` to define plugins. The plugin system is **completely open** — any Python code is accepted. The only validation is a syntax check (`python3 -c "compile(...)"`). There are no restrictions on what your plugin can do.
+
+```toml
+[plugin.1]
+name = "My Plugin"
+path = "/path/to/plugin1.py"
+ls = "ls -la"
+update = "mcx -u && mcx -U"
+info = "mcx --info"
+my-custom-command = "some-tool --flag && another-tool"
+
+[plugin.2]
+name = "Another Plugin"
+path = "~/plugins/plugin2.py"
 ```
-var/lib/mcx/plugins/
-└── my-plugin/
-    ├── plugin.ini          # Manifest (required)
-    ├── plugin.sh           # Executable (or script)
-    └── ...                 # Any additional assets
-```
 
-### `plugin.ini` format
-
-```ini
-[plugin]
-name = my-plugin
-version = 1.0.0
-description = Does something useful
-language = bash
-type = hook                  # hook, daemon, or filter
-command = ${root}/var/lib/mcx/plugins/my-plugin/plugin.sh ${event}
-trigger = post-install       # Hook name to bind to
-author = You
-homepage = https://example.com
-timeout_secs = 30
-```
+#### Config fields
 
 | Field | Required | Description |
 | ----- | -------- | ----------- |
-| `name` | Yes | Unique plugin name |
-| `version` | No | Semver |
-| `description` | No | Human-readable summary |
-| `language` | No | Runtime language (bash, python, etc.) |
-| `type` | No | `hook` (default, fires on events), `daemon` (long-lived background process), `filter` (transforms data) |
-| `command` | Yes | Shell command to execute. Template variables: `${event}` (JSON event), `${root}` (MCX root), `${package}`, `${hook}`, `${dir}` (plugin directory) |
-| `trigger` | No | Hook name that triggers this plugin. Required for `type=hook`. See hooks list below. |
-| `author` | No | Author name |
-| `homepage` | No | Project URL |
-| `timeout_secs` | No | Command timeout (default: 30) |
+| `name` | yes | Display name for the plugin. Does not need to match the Python file's content or filename. |
+| `path` | yes | Path to the `.py` file. Supports absolute paths and `~` for home directory expansion. |
+| `<alias>` | no | **Unlimited.** Any extra key is treated as an alias. The key is the alias name, the value is the shell command to execute. Supports `&&` for chaining. Any characters are allowed in the key and value: `-`, `/`, `@`, `#`, `$`, `%`, `^`, `&`, `*`, `(`, `)`, `[`, `]`, `{`, `}`, `'`, `"`, `;`, `:`, `\`, `|`, spaces, UTF-8, emoji, etc. |
 
-### Available hooks
+#### How plugins are discovered
 
-| Hook | Fires when |
-| ---- | ----------- |
-| `pre-install` | Before a package is installed |
-| `post-install` | After a package is installed successfully |
-| `pre-remove` | Before a package is removed |
-| `post-remove` | After a package is removed |
-| `pre-upgrade` | Before a package upgrade |
-| `post-upgrade` | After a package upgrade completes |
-| `pre-sync` | Before repository indexes are synced |
-| `post-sync` | After repository indexes are synced |
-| `daemon-start` | Start a daemon plugin |
+1. **Primary**: If `etc/mcx/p.desc` exists, MCX reads it and loads every `[plugin.*]` section. Each section becomes a plugin.
+2. **Fallback**: If `p.desc` does not exist, MCX scans `var/lib/mcx/plugins/` for any `.py` files and loads them automatically (backward compatibility).
 
-### Event JSON format
+#### Alias system
 
-The `${event}` template variable expands to a JSON string:
+Aliases are **unlimited per plugin** and have **no naming restrictions**. The key can be any string, and the value is a shell command executed via `sh -c`.
 
-```json
-{
-  "hook": "post-install",
-  "package": "curl",
-  "root": "/opt/mcx",
-  "timestamp": "2026-07-01T12:00:00Z"
-}
+```toml
+[plugin.tools]
+name = "Toolbox"
+path = "/opt/plugins/tools.py"
+
+# Simple aliases
+ls = "ls -la"
+find = "find / -name"
+
+# Chained commands (&&)
+update-all = "mcx -u && mcx -U && mcx --fix-deps"
+
+# Complex shell pipelines
+deploy = "rsync -avz ./dist/ user@host:/app/ && ssh user@host 'systemctl restart app'"
+
+# Commands with special characters
+test = "cargo test && cargo clippy"
+grep-logs = "grep -r 'ERROR' /var/log/ | head -20"
+backup = "tar -czf /tmp/backup-$(date +%Y%m%d).tar.gz /etc/mcx/"
+
+# Any characters work
+weird-path = "/opt/my tool/bin/run.sh --config='path with spaces'"
+json-tool = "python3 -c \"import json; print(json.dumps({'key': 'value'}))\""
+```
+
+Run any alias via:
+
+```shell
+mcx -p run <plugin-name> <alias-name>
+# Example:
+mcx -p run tools update-all
+mcx -p run tools deploy
+```
+
+### Creating a plugin from scratch
+
+#### Step 1 — Write a Python file
+
+Your plugin can be any valid Python code. There is no required structure, no base class, no imports you must use. The only thing MCX provides is a global variable `MCX_EVENT` containing JSON data about the current operation.
+
+```python
+# /opt/mcx/var/lib/mcx/plugins/hello.py
+import json, os
+
+# MCX_EVENT is injected as a global variable containing event JSON
+event_str = os.environ.get("MCX_EVENT", "{}")
+event = json.loads(event_str)
+pkg = event.get("package", "unknown")
+print(f"Hello from plugin! Package: {pkg}")
+```
+
+#### Step 2 — Add to config (optional)
+
+```toml
+# /etc/mcx/p.desc
+[plugin.1]
+name = "Hello Plugin"
+path = "/opt/mcx/var/lib/mcx/plugins/hello.py"
+hello = "echo 'Hello from alias!'"
+multi = "echo step1 && echo step2 && echo step3"
+```
+
+Or place the `.py` file in `var/lib/mcx/plugins/` and it will be auto-discovered.
+
+#### Step 3 — Test it
+
+```shell
+mcx -p run hello
+```
+
+### Plugin event data
+
+When MCX fires a hook, it passes a JSON event to your plugin. The event is available as the global variable `MCX_EVENT` (a Python dict after `json.loads()`).
+
+#### Event fields
+
+| Field | Type | Description |
+| ----- | ---- | ----------- |
+| `hook` | string | The hook name (e.g., `"pre-install"`, `"post-build"`) |
+| `package` | string or null | Package name being operated on |
+| `version` | string or null | Package version |
+| `source` | string or null | Source URL or path |
+| `build_type` | string or null | Build type (e.g., `"rust"`, `"make"`, `"custom"`) |
+| `work_dir` | string or null | Working directory for the operation |
+| `root_dir` | string or null | Target root directory |
+| `output_path` | string or null | Output path for archives |
+| `arch` | string or null | Target architecture |
+
+#### MCX hooks
+
+| Hook | When it fires |
+| ---- | ------------- |
+| `pre-install` | Before installing a package |
+| `post-install` | After installing a package |
+| `pre-remove` | Before removing a package |
+| `post-remove` | After removing a package |
+| `pre-upgrade` | Before upgrading a package |
+| `post-upgrade` | After upgrading a package |
+| `pre-verify` | Before integrity verification |
+| `post-verify` | After integrity verification |
+| `pre-fix` | Before dependency fix |
+| `post-fix` | After dependency fix |
+
+#### Reading the event in Python
+
+```python
+import json, os
+
+event = json.loads(os.environ.get("MCX_EVENT", "{}"))
+
+hook = event.get("hook", "")
+package = event.get("package", "")
+version = event.get("version", "")
+
+if hook == "post-install":
+    print(f"Installed {package} v{version}")
+
+if hook == "pre-remove":
+    print(f"About to remove {package}")
 ```
 
 ### Plugin output protocol
@@ -1620,116 +1716,72 @@ Plugins communicate results via **exit code**:
 - Exit `0`: success
 - Exit non-zero: failure (stderr is captured as the error message)
 
-Optional JSON output on stdout with a single line `RESULT:{"success":true,"message":"done"}` is also recognised.
+If your plugin prints JSON to stdout with `{"success": true, "message": "..."}`, MCX will parse it. Otherwise, stdout is treated as the message.
 
-### Creating a plugin from scratch (step by step)
-
-#### Step 1 — Create the plugin directory
+### Plugin aliases via CLI
 
 ```shell
-mkdir -p /opt/mcx/var/lib/mcx/plugins/hello-world
+mcx -p list                     # list all loaded plugins with their aliases
+mcx -p info <name>              # show plugin details (name, path, aliases)
+mcx -p run <name> <alias>       # run a specific alias
+mcx -p add <path-to-plugin.py>  # copy a .py file into plugins dir
+mcx -p remove <name>            # delete a plugin
+mcx -p reload                   # re-scan plugins directory
+mcx -p reload-config            # reload from p.desc TOML config
 ```
 
-#### Step 2 — Write `plugin.ini`
+### Plugin lifecycle
 
-```shell
-cat > /opt/mcx/var/lib/mcx/plugins/hello-world/plugin.ini << 'EOF'
-[plugin]
-name = hello-world
-version = 1.0.0
-description = Prints a message after every install
-language = bash
-type = hook
-command = ${dir}/plugin.sh ${event}
-trigger = post-install
-EOF
-```
+1. **Discovery**: MCX reads `etc/mcx/p.desc` (or scans `var/lib/mcx/plugins/`).
+2. **Loading**: Python syntax is validated via `python3 -c "compile(open(path).read(), path, 'exec')"`. If invalid, the plugin is rejected with an error.
+3. **Wiring**: Each plugin is registered for all hooks. Aliases are stored for CLI invocation.
+4. **Execution**: When a hook fires, MCX runs `python3 -c "import json, sys; MCX_EVENT = json.loads('...'); exec(open('plugin.py').read())"`. The plugin has full access to the Python standard library and any installed packages.
+5. **Hot-swap**: `reload` and `reload-config` allow loading new plugins without restarting MCX.
 
-#### Step 3 — Write the executable
+### Advanced plugin example
 
-```shell
-cat > /opt/mcx/var/lib/mcx/plugins/hello-world/plugin.sh << 'SCRIPT'
-#!/bin/bash
-echo "Hello from plugin! Installed package: $(echo "$1" | sed 's/.*"package":"\([^"]*\)".*/\1/')"
-SCRIPT
-chmod +x /opt/mcx/var/lib/mcx/plugins/hello-world/plugin.sh
-```
-
-#### Step 4 — Reload plugins
-
-```shell
-mcx --plugin-list
-# Plugins are auto-discovered on next command
-```
-
-#### Step 5 — Test it
-
-Install any package and the plugin fires automatically:
-
-```shell
-mcx -i curl
-# Hello from plugin! Installed package: curl
-```
-
-### Daemon plugins
-
-Daemon-type plugins are long-lived background processes started and managed by MCX:
-
-```ini
-[plugin]
-name = monitor-d
-type = daemon
-command = ${dir}/monitord --root ${root}
-```
-
-Start with:
-
-```shell
-mcx --plugin-start monitor-d
-```
-
-MCX spawns the command and detaches it. The daemon receives the `daemon-start` hook event.
-
-### CLI commands
-
-| Command | Description |
-| ------- | ----------- |
-| `mcx -p list` | List all discovered external plugins |
-| `mcx -p info <name>` | Show full manifest details for a plugin |
-| `mcx -p run <name> [hook]` | Run a plugin once (optional hook name, default `post-install`) |
-| `mcx -p add <dir>` | Add a plugin by copying a directory into the plugins folder |
-| `mcx -p remove <name>` | Remove a plugin by deleting its directory |
-| `mcx -p reload` | Re-scan the plugins directory for changes |
-| `mcx -p daemon <name>` | Start a daemon-type plugin in the background |
-
-### Full example: Python webhook notifier
-
-**`plugin.ini`:**
-```ini
-[plugin]
-name = webhook-notifier
-version = 0.1.0
-description = Sends Discord webhook on install/remove
-language = python
-type = hook
-command = python3 ${dir}/notify.py ${event}
-trigger = post-install
-trigger = post-remove
-```
-
-**`notify.py`:**
 ```python
-import json, os, sys
+# /opt/mcx/var/lib/mcx/plugins/advanced.py
+import json, os, subprocess, datetime
 
-event = json.loads(sys.argv[1])
-hook = event["hook"]
+event = json.loads(os.environ.get("MCX_EVENT", "{}"))
+hook = event.get("hook", "")
 pkg = event.get("package", "unknown")
-msg = f"Package {pkg} was {hook.replace('post-', '')}ed"
+version = event.get("version", "")
 
-os.system(f'curl -s -X POST -H "Content-Type: application/json" \
-    -d \'{{"content":"{msg}"}}\' https://discord.com/api/webhooks/...')
-sys.exit(0)
+# Log all events to a file
+with open("/var/log/mcx-plugins.log", "a") as f:
+    f.write(f"[{datetime.datetime.now()}] {hook}: {pkg} v{version}\n")
+
+# Custom behavior per hook
+if hook == "post-install":
+    # Run a custom script after every install
+    subprocess.run(["/opt/scripts/post-install.sh", pkg], check=False)
+
+elif hook == "pre-remove":
+    # Backup config before removal
+    config = f"/etc/{pkg}/config.conf"
+    if os.path.exists(config):
+        subprocess.run(["cp", config, f"/tmp/{pkg}.conf.bak"])
+
+elif hook == "post-upgrade":
+    # Notify admin after upgrade
+    subprocess.run(["wall", f"Package {pkg} upgraded to v{version}"])
+
+print(json.dumps({"success": True, "message": f"Hook {hook} executed for {pkg}"}))
 ```
+
+### Architecture
+
+The plugin system is built around three core traits for Rust-side plugins:
+
+```
+Fetcher        — fetch source artifacts from remote locations
+Builder        — compile source code into deployable binaries
+Packer         — compress/decompress .xcs package archives
+```
+
+Each plugin is registered as a `PluginSlot<T>` — a lock-free wrapper using `RwLock<Arc<T>>`. This enables **live hot-swap**: any reader gets an `Arc::clone()` with zero contention, and a writer can atomically replace the internal `Arc` while existing references continue operating on the old version.
 
 </details>
 
@@ -2279,6 +2331,50 @@ cargo +nightly -Zjson-target-spec -Zbuild-std build --target x86_64-unknown-linu
 cargo +nightly -Zjson-target-spec -Zbuild-std build --release --target x86_64-unknown-linux-musl.json
 ```
 
+## Installation
+
+All build systems auto-detect `x86_64`/`aarch64` and select the correct musl target. Cross-compilation files are in `env.mk`, `toolchain.cmake`, and `cross.txt` (generated via `gen-cross.sh`).
+
+### Cargo (direct)
+
+```shell
+cargo build --release
+# Binary: target/release/mcx
+# Install:
+install -Dm755 target/release/mcx /system/bin/mcx
+```
+
+### Make
+
+```shell
+make build                    # auto-detects arch, builds for host
+make install                  # installs to /system/bin/mcx
+make install DESTDIR=/mnt     # staged install
+```
+
+### Meson
+
+```shell
+meson setup builddir --cross-file /home/m/cudane-build/cross.txt --prefix=/system
+meson compile -C builddir
+meson install -C builddir
+```
+
+### Ninja
+
+```shell
+ninja -f build.ninja                       # build
+ninja -f build.ninja install DESTDIR=/mnt  # staged install
+```
+
+### CMake
+
+```shell
+cmake -B build -DCMAKE_TOOLCHAIN_FILE=toolchain.cmake -DCMAKE_INSTALL_PREFIX=/system
+cmake --build build
+cmake --install build
+```
+
 ## Testing
 
 ```shell
@@ -2400,12 +2496,8 @@ strip = true            # Strip symbols
 **`MCX`** is part of the **`Cudane`** ecosystem.
 
 - **`Cudane`** — The Distribution.
-<<<<<<< HEAD
-- **`MCX`** — Runtime Package Manager.
+- **`MCX`** — Package Manager.
 - **`Cesar`** — Init System (PID 1).
-=======
-- **`MCX`** —  Package Manager.
->>>>>>> d2c2589ca26de19f09057654c8f31e57a129c759
 
 </details>
 
@@ -2419,6 +2511,6 @@ see [**`LICENSE`**](https://codeberg.org/Cudane/MCX/src/branch/source/LICENSE) f
 
 `▐▀` `-` `▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▌`
 
-- **`Version`:** **`6.0.0`**.
+- **`Version`:** **`7.0.0`**.
 
 `▐▄` `-` `▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▌`

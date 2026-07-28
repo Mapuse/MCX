@@ -22,6 +22,12 @@ impl SelfUpdateManager {
             return Err(anyhow!("Downloaded binary not found at {:?}", dest));
         }
 
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(dest, std::fs::Permissions::from_mode(0o755))?;
+        }
+
         let verify = Command::new(dest)
             .arg("--version")
             .output()
@@ -29,12 +35,6 @@ impl SelfUpdateManager {
         if !verify.status.success() {
             let _ = std::fs::remove_file(dest);
             return Err(anyhow!("Downloaded binary failed version check"));
-        }
-
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(dest, std::fs::Permissions::from_mode(0o755))?;
         }
 
         Ok(dest.to_path_buf())

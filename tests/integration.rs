@@ -37,6 +37,9 @@ async fn test_atomic_database_write_and_conflict_prevention() {
         dependencies: vec![], files: vec![PathBuf::from("usr/bin/shared-binary")],
         provides: Some(vec![]), conflicts: Some(vec![]),
         architecture: "native".to_string(),
+        components: Vec::new(),
+        services: Vec::new(),
+        binaries: Vec::new(),
     };
 
     let mut tx_a = db.begin_transaction().unwrap();
@@ -51,6 +54,9 @@ async fn test_atomic_database_write_and_conflict_prevention() {
         dependencies: vec![], files: vec![PathBuf::from("usr/bin/shared-binary")],
         provides: Some(vec![]), conflicts: Some(vec![]),
         architecture: "native".to_string(),
+        components: Vec::new(),
+        services: Vec::new(),
+        binaries: Vec::new(),
     };
 
     let mut tx_b = db.begin_transaction().unwrap();
@@ -103,6 +109,9 @@ async fn test_package_removal_and_filesystem_cleanup() {
         dependencies: vec![], files: vec![PathBuf::from("usr/bin/app-binary")],
         provides: Some(vec![]), conflicts: Some(vec![]),
         architecture: "native".to_string(),
+        components: Vec::new(),
+        services: Vec::new(),
+        binaries: Vec::new(),
     };
 
     let mut tx = db.begin_transaction().unwrap();
@@ -133,6 +142,9 @@ async fn test_shell_completion_engine_querying() {
         checksum: ChecksumData { kind: "sha256".to_string(), value: "1111a6d40bf420404a011733cfb7b190d62c65bf0bcda32b57b277d9ad9f146e".to_string() },
         dependencies: vec![], files: vec![], provides: Some(vec![]),         conflicts: Some(vec![]),
         architecture: "native".to_string(),
+        components: Vec::new(),
+        services: Vec::new(),
+        binaries: Vec::new(),
     };
 
     let mut tx = db.begin_transaction().unwrap();
@@ -271,6 +283,9 @@ async fn test_database_dependency_graph_relations() {
         checksum: ChecksumData { kind: "sha256".to_string(), value: "1234a6d40bf420404a011733cfb7b190d62c65bf0bcda32b57b277d9ad9f146e".to_string() },
         dependencies: vec![], files: vec![], provides: Some(vec![]),         conflicts: Some(vec![]),
         architecture: "native".to_string(),
+        components: Vec::new(),
+        services: Vec::new(),
+        binaries: Vec::new(),
     };
 
     let mut tx = db.begin_transaction().unwrap();
@@ -284,6 +299,9 @@ async fn test_database_dependency_graph_relations() {
         dependencies: vec![Dependency { name: "openssl".to_string(), dep_type: "runtime".to_string(), libraries: None }],
         files: vec![], provides: Some(vec![]),         conflicts: Some(vec![]),
         architecture: "native".to_string(),
+        components: Vec::new(),
+        services: Vec::new(),
+        binaries: Vec::new(),
     };
 
     let mut tx2 = db.begin_transaction().unwrap();
@@ -310,6 +328,9 @@ async fn test_cyclic_dependency_deadlock_breaking() {
         dependencies: vec![Dependency { name: "node-y".to_string(), dep_type: "runtime".to_string(), libraries: None }],
         files: vec![], provides: Some(vec![]),         conflicts: Some(vec![]),
         architecture: "native".to_string(),
+        components: Vec::new(),
+        services: Vec::new(),
+        binaries: Vec::new(),
     };
 
     let node_y = PackageMetadata {
@@ -319,6 +340,9 @@ async fn test_cyclic_dependency_deadlock_breaking() {
         dependencies: vec![Dependency { name: "node-x".to_string(), dep_type: "runtime".to_string(), libraries: None }],
         files: vec![], provides: Some(vec![]),         conflicts: Some(vec![]),
         architecture: "native".to_string(),
+        components: Vec::new(),
+        services: Vec::new(),
+        binaries: Vec::new(),
     };
 
     let mut tx = db.begin_transaction().unwrap();
@@ -346,6 +370,9 @@ async fn test_dependency_solver_topological_sorting_and_resolution() {
         checksum: ChecksumData { kind: "sha256".to_string(), value: "0000".to_string() },
         dependencies: vec![], files: vec![], provides: Some(vec![]),         conflicts: Some(vec![]),
         architecture: "native".to_string(),
+        components: Vec::new(),
+        services: Vec::new(),
+        binaries: Vec::new(),
     };
 
     let dep_a = PackageMetadata {
@@ -355,6 +382,9 @@ async fn test_dependency_solver_topological_sorting_and_resolution() {
         dependencies: vec![Dependency { name: "library-b".to_string(), dep_type: "runtime".to_string(), libraries: None }],
         files: vec![], provides: Some(vec![]),         conflicts: Some(vec![]),
         architecture: "native".to_string(),
+        components: Vec::new(),
+        services: Vec::new(),
+        binaries: Vec::new(),
     };
 
     let target_pkg = PackageMetadata {
@@ -364,6 +394,9 @@ async fn test_dependency_solver_topological_sorting_and_resolution() {
         dependencies: vec![Dependency { name: "library-a".to_string(), dep_type: "runtime".to_string(), libraries: None }],
         files: vec![], provides: Some(vec![]),         conflicts: Some(vec![]),
         architecture: "native".to_string(),
+        components: Vec::new(),
+        services: Vec::new(),
+        binaries: Vec::new(),
     };
 
     let mut tx = db.begin_transaction().unwrap();
@@ -395,6 +428,9 @@ async fn test_dependency_solver_library_provider_resolution() {
         dependencies: vec![], files: vec![PathBuf::from("usr/lib/libgio-2.0.so.0")],
         provides: Some(vec!["libgio-2.0.so.0".to_string()]),         conflicts: Some(vec![]),
         architecture: "native".to_string(),
+        components: Vec::new(),
+        services: Vec::new(),
+        binaries: Vec::new(),
     };
 
     let build_dep_pkg = PackageMetadata {
@@ -403,6 +439,9 @@ async fn test_dependency_solver_library_provider_resolution() {
         checksum: ChecksumData { kind: "sha256".to_string(), value: "1111".to_string() },
         dependencies: vec![], files: vec![], provides: Some(vec![]),         conflicts: Some(vec![]),
         architecture: "native".to_string(),
+        components: Vec::new(),
+        services: Vec::new(),
+        binaries: Vec::new(),
     };
 
     let json_glib_pkg = PackageMetadata {
@@ -415,6 +454,9 @@ async fn test_dependency_solver_library_provider_resolution() {
         ],
         files: vec![], provides: Some(vec![]),         conflicts: Some(vec![]),
         architecture: "native".to_string(),
+        components: Vec::new(),
+        services: Vec::new(),
+        binaries: Vec::new(),
     };
 
     let mut tx = db.begin_transaction().unwrap();
@@ -472,6 +514,9 @@ async fn test_temporal_history_ledger_rollback() {
         checksum: ChecksumData { kind: "sha256".to_string(), value: "0000".to_string() },
         dependencies: vec![], files: vec![], provides: Some(vec![]),         conflicts: Some(vec![]),
         architecture: "native".to_string(),
+        components: Vec::new(),
+        services: Vec::new(),
+        binaries: Vec::new(),
     };
 
     let mut tx = db_arc.begin_transaction().unwrap();
@@ -888,6 +933,9 @@ async fn test_integrity_scanner_detects_missing_files() {
         files: vec![PathBuf::from("usr/bin/test-bin")],
         provides: Some(vec![]),         conflicts: Some(vec![]),
         architecture: "native".to_string(),
+        components: Vec::new(),
+        services: Vec::new(),
+        binaries: Vec::new(),
     };
     let mut tx = db.begin_transaction().unwrap();
     tx.register_package_placement(&pkg).unwrap();
@@ -902,27 +950,25 @@ async fn test_integrity_scanner_detects_missing_files() {
     fs::remove_dir_all(&root).unwrap();
 }
 
-// ── ExternalPlugin / PluginManager ───────────────────────────────────────────
+// ── PythonPlugin / PluginManager ────────────────────────────────────────────
 
 #[tokio::test]
 async fn test_plugin_manager_discovery_and_list() {
     let root = create_temporary_root("plugin_mgr");
     let plugins_dir = root.join("var/lib/mcx/plugins");
-    fs::create_dir_all(&plugins_dir.join("alpha")).unwrap();
-    fs::write(plugins_dir.join("alpha/plugin.ini"), "[plugin]\nname = alpha\ncommand = echo a\ntrigger = post-install\n").unwrap();
-    fs::create_dir_all(&plugins_dir.join("beta")).unwrap();
-    fs::write(plugins_dir.join("beta/plugin.ini"), "[plugin]\nname = beta\ncommand = echo b\ntrigger = pre-remove\n").unwrap();
+    fs::create_dir_all(&plugins_dir).unwrap();
+    fs::write(plugins_dir.join("alpha.py"), "print('alpha')\n").unwrap();
+    fs::write(plugins_dir.join("beta.py"), "print('beta')\n").unwrap();
 
     let mgr = mcx::core::plugin::PluginManager::new(&root);
     let list = mgr.list();
     assert_eq!(list.len(), 2);
 
     let alpha = mgr.find("alpha").unwrap();
-    assert_eq!(alpha.manifest().name, "alpha");
-    assert_eq!(alpha.manifest().trigger.as_deref(), Some("post-install"));
+    assert_eq!(alpha.name(), "alpha");
 
     let beta = mgr.find("beta").unwrap();
-    assert_eq!(beta.manifest().trigger.as_deref(), Some("pre-remove"));
+    assert_eq!(beta.name(), "beta");
 
     let missing = mgr.find("nonexistent");
     assert!(missing.is_none());
@@ -934,13 +980,13 @@ async fn test_plugin_manager_discovery_and_list() {
 async fn test_plugin_manager_run_plugin_once() {
     let root = create_temporary_root("plugin_run");
     let plugins_dir = root.join("var/lib/mcx/plugins");
-    fs::create_dir_all(&plugins_dir.join("greeter")).unwrap();
-    fs::write(plugins_dir.join("greeter/plugin.ini"),
-        "[plugin]\nname = greeter\ncommand = echo '{\"success\":true,\"message\":\"hello\"}'\n").unwrap();
+    fs::create_dir_all(&plugins_dir).unwrap();
+    fs::write(plugins_dir.join("greeter.py"),
+        "import json\nprint(json.dumps({'success': True, 'message': 'hello'}))\n").unwrap();
 
     let mgr = mcx::core::plugin::PluginManager::new(&root);
     let event = mcx::core::plugin::PluginEvent {
-        hook: "test".into(),
+        hook: "post-install".into(),
         package: Some("pkg".into()),
         root: root.to_string_lossy().into_owned(),
         timestamp: "now".into(),
@@ -956,17 +1002,22 @@ async fn test_plugin_manager_run_plugin_once() {
 }
 
 #[tokio::test]
-async fn test_plugin_start_daemon_rejects_hook_type() {
-    let root = create_temporary_root("plugin_daemon_reject");
+async fn test_plugin_run_any_code() {
+    let root = create_temporary_root("plugin_run_any");
     let plugins_dir = root.join("var/lib/mcx/plugins");
-    fs::create_dir_all(&plugins_dir.join("hooker")).unwrap();
-    fs::write(plugins_dir.join("hooker/plugin.ini"),
-        "[plugin]\nname = hooker\ncommand = echo hi\ntype = hook\n").unwrap();
+    fs::create_dir_all(&plugins_dir).unwrap();
+    fs::write(plugins_dir.join("arbitrary.py"),
+        "import json\nresult = {'success': True, 'message': 'arbitrary ran'}\nprint(json.dumps(result))\n").unwrap();
 
     let mgr = mcx::core::plugin::PluginManager::new(&root);
-    let result = mgr.start_daemon("hooker");
-    assert!(result.is_err());
-    assert!(result.unwrap_err().to_string().contains("not a daemon plugin"));
+    let event = mcx::core::plugin::PluginEvent {
+        hook: "post-install".into(),
+        package: Some("pkg".into()),
+        root: root.to_string_lossy().into_owned(),
+        timestamp: "now".into(),
+    };
+    let result = mgr.run_plugin_once("arbitrary", &event).unwrap();
+    assert!(result.success);
 
     fs::remove_dir_all(&root).unwrap();
 }

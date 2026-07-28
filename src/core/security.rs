@@ -29,29 +29,33 @@ impl SecurityMonitor {
     }
 
     pub fn register_package(&self, pkg_name: &str) {
-        let mut map = self.active_packages.write().unwrap();
-        map.entry(pkg_name.to_string()).or_insert(PackageGuard {
-            pkg_name: pkg_name.to_string(),
-            isolated: false,
-        });
+        if let Ok(mut map) = self.active_packages.write() {
+            map.entry(pkg_name.to_string()).or_insert(PackageGuard {
+                pkg_name: pkg_name.to_string(),
+                isolated: false,
+            });
+        }
     }
 
     pub fn unregister_package(&self, pkg_name: &str) {
-        let mut map = self.active_packages.write().unwrap();
-        map.remove(pkg_name);
+        if let Ok(mut map) = self.active_packages.write() {
+            map.remove(pkg_name);
+        }
     }
 
     pub fn isolate_package(&self, pkg_name: &str) -> Result<()> {
-        let mut map = self.active_packages.write().unwrap();
-        if let Some(guard) = map.get_mut(pkg_name) {
-            guard.isolated = true;
+        if let Ok(mut map) = self.active_packages.write() {
+            if let Some(guard) = map.get_mut(pkg_name) {
+                guard.isolated = true;
+            }
         }
         Ok(())
     }
 
     pub fn is_package_isolated(&self, pkg_name: &str) -> bool {
-        let map = self.active_packages.read().unwrap();
-        map.get(pkg_name).map(|g| g.isolated).unwrap_or(false)
+        self.active_packages.read()
+            .map(|map| map.get(pkg_name).map(|g| g.isolated).unwrap_or(false))
+            .unwrap_or(false)
     }
 
     pub fn swap_isolation_policy(
@@ -66,6 +70,6 @@ impl SecurityMonitor {
     }
 
     pub fn active_count(&self) -> usize {
-        self.active_packages.read().unwrap().len()
+        self.active_packages.read().map(|map| map.len()).unwrap_or(0)
     }
 }

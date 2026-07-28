@@ -5,6 +5,7 @@ use std::sync::Arc;
 use std::io::{Read, Write};
 use anyhow::{Result, anyhow};
 use serde::{Serialize, Deserialize};
+use crate::core::constants;
 use crate::core::changelog::{ChangelogManager, ActionKind};
 
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
@@ -69,7 +70,11 @@ impl PackageTransaction {
     pub fn backup_file(&mut self, target: &Path) -> Result<()> {
         self.ensure_active()?;
         if target.exists() {
-            let backup_path = target.with_extension("mcx_bak");
+            let backup_path = if target.extension().map_or(false, |e| e == "mcx_bak") {
+                target.with_extension("mcx_bak2")
+            } else {
+                target.with_extension("mcx_bak")
+            };
             fs::copy(target, &backup_path)?;
             self.backups.push((target.to_path_buf(), backup_path));
         }
@@ -109,9 +114,16 @@ impl PackageTransaction {
         }
 
         for h in handles {
-            if let Err(e) = h.join().map_err(|_| anyhow!("Thread panic during parallel copy"))? {
-                self.aborted.store(true, Ordering::Release);
-                return Err(e);
+            match h.join() {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => {
+                    self.aborted.store(true, Ordering::Release);
+                    return Err(e);
+                }
+                Err(_) => {
+                    self.aborted.store(true, Ordering::Release);
+                    return Err(anyhow!("Thread panicked during parallel copy"));
+                }
             }
         }
 
@@ -178,7 +190,7 @@ fn atomic_copy(src: &Path, dst: &Path) -> Result<()> {
     if src.is_file() {
         let mut src_file = fs::File::open(src)?;
         let mut dst_file = fs::File::create(&tmp)?;
-        let mut buffer = vec![0u8; 65536];
+        let mut buffer = vec![0u8; constants::TRANSACTION_HASH_BUFFER_SIZE];
         loop {
             let n = src_file.read(&mut buffer)?;
             if n == 0 { break; }

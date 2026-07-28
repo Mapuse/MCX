@@ -1,6 +1,7 @@
 use std::fs;
 use std::io::{self, Write};
 use std::path::PathBuf;
+use std::time::Duration;
 use anyhow::{Result, Context};
 use crossterm::{
     cursor,
@@ -57,6 +58,7 @@ impl ConfigEditorCommand {
         let mut is_dirty = false;
         let mut cut_buffer: Option<String> = None;
         let mut status_message = format!("Opened: {:?}", self.config_path);
+        let mut quit_confirm = false;
 
         loop {
             let (terminal_width, terminal_height) = terminal::size()?;
@@ -79,7 +81,7 @@ impl ConfigEditorCommand {
 
             execute!(stdout, SetBackgroundColor(Color::Black), SetForegroundColor(Color::White))?;
             let modified_tag = if is_dirty { " *MODIFIED* " } else { " " };
-            let header_text = format!(" MCX Configuration Editor | MCX v5.0.0 |{}{:?}", modified_tag, self.config_path);
+            let header_text = format!(" MCX Configuration Editor | MCX v7.0.0 |{}{:?}", modified_tag, self.config_path);
             execute!(stdout, Print(format!("{:width$}\r\n", header_text, width = text_width)), ResetColor)?;
 
             for i in 0..text_height {
@@ -106,9 +108,13 @@ impl ConfigEditorCommand {
             execute!(stdout, Print(format!("{}\r\n", status_bar)), ResetColor)?;
 
             execute!(stdout, terminal::Clear(terminal::ClearType::CurrentLine), SetForegroundColor(Color::Cyan))?;
-            print!(" Ctrl+X: Close Editor  |  Ctrl+O: Save File  |  Ctrl+K: Cut Line  |  Ctrl+Y: Move Up\r\n");
+            if quit_confirm {
+                print!(" Unsaved changes! Quit anyway? (y/N)\r\n");
+            } else {
+                print!(" Ctrl+X: Quit  |  Ctrl+S/Ctrl+O: Save  |  Ctrl+K: Cut Line  |  Ctrl+U: Paste Line\r\n");
+            }
             execute!(stdout, terminal::Clear(terminal::ClearType::CurrentLine))?;
-            print!(" Ctrl+C: Drop Actions  |  Ctrl+S: Save  |  Ctrl+U: Paste Buffer  |  Ctrl+V: Move Down\r\n");
+            print!(" Ctrl+Y: Prev Line  |  Ctrl+V: Next Line  |  Tab: Insert 4 spaces  |  Ctrl+C: Cancel\r\n");
             execute!(stdout, ResetColor)?;
 
             let screen_x = (cursor_x - scroll_x) as u16;
@@ -116,112 +122,159 @@ impl ConfigEditorCommand {
             execute!(stdout, cursor::MoveTo(screen_x, screen_y), cursor::Show)?;
             stdout.flush()?;
 
-            if let Event::Key(key_event) = event::read()? {
-                if key_event.modifiers.contains(KeyModifiers::CONTROL) {
-                    match key_event.code {
-                        KeyCode::Char('x') => {
-                            if is_dirty {
-                                status_message = "Unsaved edits! Quit anyway? (y/N)".to_string();
-                                continue;
+            if event::poll(Duration::from_millis(100))? {
+                match event::read()? {
+                    Event::Key(key_event) => {
+                        if key_event.modifiers.contains(KeyModifiers::CONTROL) {
+                            match key_event.code {
+                                KeyCode::Char('x') => {
+                                    if is_dirty {
+                                        quit_confirm = true;
+                                        status_message = "Unsaved changes! Quit anyway? (y/N)".to_string();
+                                        continue;
+                                    }
+                                    return self.exit_editor();
+                                }
+                                KeyCode::Char('s') | KeyCode::Char('o') => {
+                                    self.save_file(&lines)?;
+                                    is_dirty = false;
+                                    status_message = "File saved successfully.".to_string();
+                                    quit_confirm = false;
+                                }
+                                KeyCode::Char('k') => {
+                                    if lines.len() > 1 {
+                                        cut_buffer = Some(lines.remove(cursor_y));
+                                        if cursor_y >= lines.len() { cursor_y = lines.len() - 1; }
+                                        cursor_x = cursor_x.min(lines[cursor_y].len());
+                                    } else {
+                                        cut_buffer = Some(lines[0].clone());
+                                        lines[0].clear();
+                                        cursor_x = 0;
+                                    }
+                                    is_dirty = true;
+                                    status_message = "Line cut to clipboard.".to_string();
+                                    quit_confirm = false;
+                                }
+                                KeyCode::Char('u') => {
+                                    if let Some(ref buffer) = cut_buffer {
+                                        lines.insert(cursor_y, buffer.clone());
+                                        cursor_y += 1;
+                                        is_dirty = true;
+                                        status_message = "Line pasted from clipboard.".to_string();
+                                    }
+                                    quit_confirm = false;
+                                }
+                                KeyCode::Char('y') => {
+                                    if cursor_y > 0 {
+                                        cursor_y -= 1;
+                                        cursor_x = cursor_x.min(lines[cursor_y].len());
+                                    }
+                                    quit_confirm = false;
+                                }
+                                KeyCode::Char('v') => {
+                                    if cursor_y + 1 < lines.len() {
+                                        cursor_y += 1;
+                                        cursor_x = cursor_x.min(lines[cursor_y].len());
+                                    }
+                                    quit_confirm = false;
+                                }
+                                KeyCode::Char('c') => {
+                                    return self.exit_editor();
+                                }
+                                _ => {
+                                    quit_confirm = false;
+                                }
                             }
-                            return self.exit_editor();
-                        }
-                        KeyCode::Char('o') | KeyCode::Char('s') => {
-                            self.save_file(&lines)?;
-                            is_dirty = false;
-                            status_message = format!("File saved successfully.");
-                        }
-                        KeyCode::Char('k') => {
-                            if lines.len() > 1 {
-                                cut_buffer = Some(lines.remove(cursor_y));
-                                if cursor_y >= lines.len() { cursor_y = lines.len() - 1; }
-                                cursor_x = cursor_x.min(lines[cursor_y].len());
-                            } else {
-                                cut_buffer = Some(lines[0].clone());
-                                lines[0].clear();
-                                cursor_x = 0;
-                            }
-                            is_dirty = true;
-                            status_message = "Line cut to clipboard.".to_string();
-                        }
-                        KeyCode::Char('u') => {
-                            if let Some(ref buffer) = cut_buffer {
-                                lines.insert(cursor_y, buffer.clone());
-                                cursor_y += 1;
-                                is_dirty = true;
-                                status_message = "Line pasted from clipboard.".to_string();
-                            }
-                        }
-                        _ => {}
-                    }
-                    continue;
-                }
-
-                if status_message.starts_with("Unsaved edits!") {
-                    match key_event.code {
-                        KeyCode::Char('y') | KeyCode::Char('Y') => return self.exit_editor(),
-                        KeyCode::Char('n') | KeyCode::Char('N') => {
-                            status_message = format!("Return to editor.");
                             continue;
                         }
-                        _ => {}
-                    }
-                }
 
-                match key_event.code {
-                    KeyCode::Up => if cursor_y > 0 { cursor_y -= 1; cursor_x = cursor_x.min(lines[cursor_y].len()); },
-                    KeyCode::Down => if cursor_y + 1 < lines.len() { cursor_y += 1; cursor_x = cursor_x.min(lines[cursor_y].len()); },
-                    KeyCode::Left => {
-                        if cursor_x > 0 { cursor_x -= 1; }
-                        else if cursor_y > 0 { cursor_y -= 1; cursor_x = lines[cursor_y].len(); }
-                    }
-                    KeyCode::Right => {
-                        if cursor_x < lines[cursor_y].len() { cursor_x += 1; }
-                        else if cursor_y + 1 < lines.len() { cursor_y += 1; cursor_x = 0; }
-                    }
-                    KeyCode::PageUp => cursor_y = cursor_y.saturating_sub(text_height),
-                    KeyCode::PageDown => cursor_y = (cursor_y + text_height).min(lines.len().saturating_sub(1)),
-                    KeyCode::Home => cursor_x = 0,
-                    KeyCode::End => cursor_x = lines[cursor_y].len(),
-                    KeyCode::Char(c) => {
-                        lines[cursor_y].insert(cursor_x, c);
-                        cursor_x += 1;
-                        is_dirty = true;
-                    }
-                    KeyCode::Backspace => {
-                        if cursor_x > 0 {
-                            lines[cursor_y].remove(cursor_x - 1);
-                            cursor_x -= 1;
-                            is_dirty = true;
-                        } else if cursor_y > 0 {
-                            let current_line = lines.remove(cursor_y);
-                            cursor_y -= 1;
-                            cursor_x = lines[cursor_y].len();
-                            lines[cursor_y].push_str(&current_line);
-                            is_dirty = true;
+                        if quit_confirm {
+                            match key_event.code {
+                                KeyCode::Char('y') | KeyCode::Char('Y') => return self.exit_editor(),
+                                KeyCode::Char('n') | KeyCode::Char('N') => {
+                                    quit_confirm = false;
+                                    status_message = "Return to editor.".to_string();
+                                    continue;
+                                }
+                                _ => { continue; }
+                            }
+                        }
+
+                        match key_event.code {
+                            KeyCode::Up => if cursor_y > 0 { cursor_y -= 1; cursor_x = cursor_x.min(lines[cursor_y].len()); },
+                            KeyCode::Down => if cursor_y + 1 < lines.len() { cursor_y += 1; cursor_x = cursor_x.min(lines[cursor_y].len()); },
+                            KeyCode::Left => {
+                                if cursor_x > 0 { cursor_x -= 1; }
+                                else if cursor_y > 0 { cursor_y -= 1; cursor_x = lines[cursor_y].len(); }
+                            }
+                            KeyCode::Right => {
+                                if cursor_x < lines[cursor_y].len() { cursor_x += 1; }
+                                else if cursor_y + 1 < lines.len() { cursor_y += 1; cursor_x = 0; }
+                            }
+                            KeyCode::PageUp => cursor_y = cursor_y.saturating_sub(text_height),
+                            KeyCode::PageDown => cursor_y = (cursor_y + text_height).min(lines.len().saturating_sub(1)),
+                            KeyCode::Home => cursor_x = 0,
+                            KeyCode::End => cursor_x = lines[cursor_y].len(),
+                            KeyCode::Char(c) => {
+                                lines[cursor_y].insert(cursor_x, c);
+                                cursor_x += 1;
+                                is_dirty = true;
+                                quit_confirm = false;
+                            }
+                            KeyCode::Tab => {
+                                lines[cursor_y].insert_str(cursor_x, "    ");
+                                cursor_x += 4;
+                                is_dirty = true;
+                                quit_confirm = false;
+                            }
+                            KeyCode::Backspace => {
+                                if cursor_x > 0 {
+                                    lines[cursor_y].remove(cursor_x - 1);
+                                    cursor_x -= 1;
+                                    is_dirty = true;
+                                } else if cursor_y > 0 {
+                                    let current_line = lines.remove(cursor_y);
+                                    cursor_y -= 1;
+                                    cursor_x = lines[cursor_y].len();
+                                    lines[cursor_y].push_str(&current_line);
+                                    is_dirty = true;
+                                }
+                                quit_confirm = false;
+                            }
+                            KeyCode::Delete => {
+                                if cursor_x < lines[cursor_y].len() {
+                                    lines[cursor_y].remove(cursor_x);
+                                    is_dirty = true;
+                                } else if cursor_y + 1 < lines.len() {
+                                    let next_line = lines.remove(cursor_y + 1);
+                                    lines[cursor_y].push_str(&next_line);
+                                    is_dirty = true;
+                                }
+                                quit_confirm = false;
+                            }
+                            KeyCode::Enter => {
+                                let current_line = &lines[cursor_y];
+                                let next_line = current_line[cursor_x..].to_string();
+                                lines[cursor_y] = current_line[..cursor_x].to_string();
+                                lines.insert(cursor_y + 1, next_line);
+                                cursor_y += 1;
+                                cursor_x = 0;
+                                is_dirty = true;
+                                quit_confirm = false;
+                            }
+                            _ => { quit_confirm = false; }
                         }
                     }
-                    KeyCode::Delete => {
-                        if cursor_x < lines[cursor_y].len() {
-                            lines[cursor_y].remove(cursor_x);
-                            is_dirty = true;
-                        } else if cursor_y + 1 < lines.len() {
-                            let next_line = lines.remove(cursor_y + 1);
-                            lines[cursor_y].push_str(&next_line);
-                            is_dirty = true;
-                        }
+                    Event::Resize(_, _) => {
+                        quit_confirm = false;
                     }
-                    KeyCode::Enter => {
-                        let current_line = &lines[cursor_y];
-                        let next_line = current_line[cursor_x..].to_string();
-                        lines[cursor_y] = current_line[..cursor_x].to_string();
-                        lines.insert(cursor_y + 1, next_line);
-                        cursor_y += 1;
-                        cursor_x = 0;
-                        is_dirty = true;
+                    Event::FocusGained | Event::FocusLost | Event::Paste(_) => {
+                        quit_confirm = false;
                     }
-                    _ => {}
+                    _ => { quit_confirm = false; }
                 }
+            } else {
+                // Timeout - just continue the loop (allows periodic re-render)
             }
         }
     }

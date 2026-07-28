@@ -7,6 +7,7 @@ use sha2::{Sha256, Digest};
 use sha1::Sha1;
 use md5::Md5;
 use std::sync::Arc;
+use crate::core::constants;
 use crate::core::db::{Database, PackageMetadata};
 
 pub struct IntegrityScanner {
@@ -44,7 +45,7 @@ impl IntegrityScanner {
     }
 
     fn verify_package(&self, pkg: &PackageMetadata, installed_names: &HashSet<String>, report: &mut IntegrityReport) {
-        let pkg_dir = self.root.join("var/lib/mcx/active").join(&pkg.pkg_name);
+        let pkg_dir = self.root.join(constants::PATH_ACTIVE).join(&pkg.pkg_name);
 
         for file in &pkg.files {
             let full_path = self.root.join(file);
@@ -138,7 +139,7 @@ impl IntegrityScanner {
             fs::create_dir_all(parent)?;
         }
 
-        let pkg_active = self.root.join("var/lib/mcx/active").join(pkg_name);
+        let pkg_active = self.root.join(constants::PATH_ACTIVE).join(pkg_name);
         if !pkg_active.exists() {
             return Err(anyhow::anyhow!("Active directory missing for {}", pkg_name));
         }
@@ -235,7 +236,7 @@ pub struct RepairResult {
 fn hash_file(path: &Path, kind: &str) -> Result<String> {
     let mut file = fs::File::open(path)
         .with_context(|| format!("Failed to open {:?}", path))?;
-    let mut buffer = vec![0u8; 65536];
+    let mut buffer = vec![0u8; constants::INTEGRITY_HASH_BUFFER_SIZE];
 
     match kind {
         "sha256" | "sha-256" => {
@@ -389,6 +390,9 @@ mod tests {
             provides: Some(vec![]),
             conflicts: Some(vec![]),
             architecture: "native".to_string(),
+            components: Vec::new(),
+            services: Vec::new(),
+            binaries: Vec::new(),
         };
         let mut tx = db.begin_transaction().unwrap();
         tx.register_package_placement(&pkg).unwrap();
@@ -425,6 +429,9 @@ mod tests {
             provides: Some(vec![]),
             conflicts: Some(vec![]),
             architecture: "native".to_string(),
+            components: Vec::new(),
+            services: Vec::new(),
+            binaries: Vec::new(),
         };
         let mut tx = db.begin_transaction().unwrap();
         tx.register_package_placement(&pkg).unwrap();

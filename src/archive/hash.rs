@@ -5,13 +5,14 @@ use sha2::{Sha256, Digest};
 use sha1::Sha1;
 use md5::Md5;
 use anyhow::{Result, anyhow};
+use crate::core::constants;
 
 pub struct HashVerifier;
 
 impl HashVerifier {
     pub fn calculate<P: AsRef<Path>>(path: P, kind: &str) -> Result<String> {
         let mut file = File::open(&path)?;
-        let mut buffer = vec![0; 8 * 1024 * 1024];
+        let mut buffer = vec![0; constants::HASH_BUFFER_SIZE];
 
         match kind {
             "sha256" | "sha-256" => {

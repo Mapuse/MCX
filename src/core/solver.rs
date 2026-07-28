@@ -6,11 +6,10 @@ use std::sync::Arc;
 use anyhow::{Result, anyhow};
 use memmap2::Mmap;
 use sha2::{Sha256, Digest};
+use crate::core::constants;
 use crate::core::arch::package_matches_host;
 use crate::core::database::{Database, PackageMetadata, Dependency};
 use crate::core::graph::DepGraph;
-
-const ELF_MAGIC: [u8; 4] = [0x7f, 0x45, 0x4c, 0x46];
 
 #[derive(Debug, Clone)]
 pub struct UpgradeEdge {
@@ -277,7 +276,11 @@ impl DependencySolver {
             for pkg in &installed {
                 for file in &pkg.files {
                     if let Some(fname) = file.file_name().and_then(|n| n.to_str()) {
-                        if fname == library || normalize_library(fname).contains(&library.to_string()) {
+                        let fname_normalized = normalize_library(fname);
+                        let lib_normalized = normalize_library(library);
+                        if fname_normalized.iter().any(|fn_item| lib_normalized.contains(fn_item))
+                            || lib_normalized.iter().any(|ln_item| fname_normalized.contains(ln_item))
+                        {
                             if !matches.contains(&pkg.pkg_name) {
                                 matches.push(pkg.pkg_name.clone());
                             }
@@ -318,10 +321,7 @@ impl DependencySolver {
                         }
                     }
                 } else {
-                    let entry = pkg_deps.entry(dep.name.clone()).or_insert_with(|| (dep.dep_type.clone(), Vec::new()));
-                    if !entry.1.contains(&dep.dep_type) {
-                    }
-                    lone_deps.push(dep);
+                    pkg_deps.entry(dep.name.clone()).or_insert_with(|| (dep.dep_type.clone(), Vec::new()));
                 }
             } else {
                 lone_deps.push(dep);
@@ -458,7 +458,7 @@ impl DependencySolver {
 
     pub fn scan_installed_dependencies(&self, pkg_name: &str) -> Result<Vec<Dependency>> {
         let meta = self.db.get_package_manifest(pkg_name)?;
-        let active_dir = PathBuf::from("/var/lib/mcx/active").join(pkg_name);
+        let active_dir = PathBuf::from(constants::PATH_ACTIVE).join(pkg_name);
 
         let index = self.build_library_index()?;
 
@@ -563,7 +563,7 @@ fn is_elf_file(path: &Path) -> bool {
     let mut buf = [0u8; 4];
     if let Ok(mut f) = fs::File::open(path) {
         if f.read_exact(&mut buf).is_ok() {
-            return buf == ELF_MAGIC;
+            return buf == constants::ELF_MAGIC;
         }
     }
     false
@@ -576,13 +576,13 @@ fn read_elf_needed(path: &Path) -> Result<Vec<String>> {
         .map_err(|e| anyhow!("Failed to mmap {}: {}", path.display(), e))?;
     let data = &mmap[..];
 
-    if data.len() < 64 {
+    if data.len() < constants::ELF_MIN_HEADER_SIZE {
         return Ok(Vec::new());
     }
 
-    let phoff = read_u64(&data[32..40]);
-    let phentsize = read_u16(&data[54..56]);
-    let phnum = read_u16(&data[56..58]);
+    let phoff = read_u64(&data[constants::ELF64_PHOFF_RANGE]);
+    let phentsize = read_u16(&data[constants::ELF64_PHENTSIZE_RANGE]);
+    let phnum = read_u16(&data[constants::ELF64_PHNUM_RANGE]);
 
     let mut dyn_vaddr: Option<u64> = None;
     let mut dyn_size: Option<u64> = None;
@@ -596,7 +596,7 @@ fn read_elf_needed(path: &Path) -> Result<Vec<String>> {
         let p_vaddr = read_u64(&data[offset as usize + 16..offset as usize + 24]);
         let p_filesz = read_u64(&data[offset as usize + 32..offset as usize + 40]);
 
-        if p_type == 2 {
+        if p_type == constants::ELF_PT_DYNAMIC {
             dyn_vaddr = Some(p_vaddr);
             dyn_size = Some(p_filesz);
         }
@@ -616,18 +616,18 @@ fn read_elf_needed(path: &Path) -> Result<Vec<String>> {
     let mut strtab_size: Option<u64> = None;
     let mut str_offsets: Vec<u64> = Vec::new();
 
-    for off in (dyn_start..dyn_end).step_by(16) {
-        if off + 16 > data.len() { break; }
+    for off in (dyn_start..dyn_end).step_by(constants::ELF_DYN_ENTRY_SIZE) {
+        if off + constants::ELF_DYN_ENTRY_SIZE > data.len() { break; }
         let d_tag = read_u64(&data[off..off + 8]);
         let d_val = read_u64(&data[off + 8..off + 16]);
 
-        if d_tag == 5 {
+        if d_tag == constants::ELF_DT_STRTAB {
             strtab_vaddr = Some(d_val);
-        } else if d_tag == 10 {
+        } else if d_tag == constants::ELF_DT_STRSZ {
             strtab_size = Some(d_val);
-        } else if d_tag == 1 {
+        } else if d_tag == constants::ELF_DT_NEEDED {
             str_offsets.push(d_val);
-        } else if d_tag == 0 {
+        } else if d_tag == constants::ELF_DT_NULL {
             break;
         }
     }
@@ -670,7 +670,7 @@ fn find_file_offset(data: &[u8], phoff: u64, phentsize: u16, phnum: u16, vaddr: 
         let p_offset = read_u64(&data[offset as usize + 8..offset as usize + 16]);
         let p_memsz = read_u64(&data[offset as usize + 40..offset as usize + 48]);
 
-        if p_type == 1 || p_type == 2 {
+        if p_type == constants::ELF_PT_LOAD || p_type == constants::ELF_PT_DYNAMIC {
             if vaddr >= p_vaddr && vaddr < p_vaddr + p_memsz {
                 return Ok(p_offset + (vaddr - p_vaddr));
             }
@@ -767,7 +767,7 @@ fn is_core_system_lib(lib: &str) -> bool {
     ];
 
     for prefix in &core_prefixes {
-        if lib.starts_with(prefix) || lib.contains(&prefix[..prefix.len().saturating_sub(3)]) {
+        if lib.starts_with(prefix) {
             return true;
         }
     }
@@ -840,9 +840,9 @@ pub fn scan_package_directory(path: &Path) -> Result<Vec<String>> {
                     if let Ok(strings) = scan_elf_strings(&entry_path) {
                         for lib in strings {
                             if lib.contains(".so") {
-                                let clean = lib.trim_start_matches("/system/lib/")
-                                    .trim_start_matches("/usr/lib/")
-                                    .trim_start_matches("/lib/");
+                        let clean = lib.trim_start_matches(constants::LIB_PATH_PREFIXES[0])
+                            .trim_start_matches(constants::LIB_PATH_PREFIXES[1])
+                            .trim_start_matches(constants::LIB_PATH_PREFIXES[2]);
                                 if clean.contains(".so") {
                                     libs.insert(clean.to_string());
                                 }

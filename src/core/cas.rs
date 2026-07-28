@@ -4,6 +4,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use anyhow::{Result, Context};
 use sha2::{Sha256, Digest};
+use crate::core::constants;
 
 pub struct CasStore {
     cas_dir: PathBuf,
@@ -42,22 +43,22 @@ impl CasStore {
             let cas_path = cas_subdir.join(&hash);
 
             if cas_path.exists() {
-                fs::remove_file(lib_path)?;
+                let original_len = lib_path.metadata().map(|m| m.len()).unwrap_or(0);
                 fs::hard_link(&cas_path, lib_path)
                     .with_context(|| format!("Failed to hard-link CAS copy to {:?}", lib_path))?;
+                stats.bytes_saved += original_len;
             } else {
                 fs::create_dir_all(&cas_subdir)?;
                 fs::copy(lib_path, &cas_path)?;
-                stats.bytes_total += lib_path.metadata().map(|m| m.len()).unwrap_or(0);
                 seen_hashes.insert(hash, lib_path.clone());
             }
         }
 
         stats.unique_files = seen_hashes.len() as u64;
-        stats.bytes_saved = seen_hashes.values()
+        stats.bytes_total = seen_hashes.values()
             .filter_map(|p| p.metadata().ok())
             .map(|m| m.len())
-            .sum::<u64>() * (stats.total_files.saturating_sub(stats.unique_files)) / stats.unique_files.max(1);
+            .sum::<u64>();
 
         Ok(stats)
     }
@@ -121,7 +122,7 @@ impl CasStore {
         let mut file = fs::File::open(path)
             .with_context(|| format!("Failed to open CAS candidate: {:?}", path))?;
         let mut hasher = Sha256::new();
-        let mut buffer = vec![0u8; 65536];
+        let mut buffer = vec![0u8; constants::CAS_HASH_BUFFER_SIZE];
         loop {
             let n = file.read(&mut buffer)
                 .with_context(|| format!("Read error during CAS hashing: {:?}", path))?;

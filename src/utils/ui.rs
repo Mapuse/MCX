@@ -1,4 +1,5 @@
 use std::io::{self, Write};
+use crate::core::constants;
 
 pub struct UserInterface;
 
@@ -53,7 +54,7 @@ impl UserInterface {
 
     pub fn progress(current: usize, total: usize, prefix: &str) {
         let percentage = if total > 0 { (current * 100) / total } else { 0 };
-        let bar_width: usize = 18;
+        let bar_width: usize = constants::UI_PROGRESS_BAR_WIDTH;
         let filled_blocks = if total > 0 { (current * bar_width) / total } else { 0 };
         
         let filled = "█".repeat(filled_blocks);
@@ -80,7 +81,7 @@ impl UserInterface {
     }
 
     pub fn render_list(title: &str, items: &[String]) {
-        let width: usize = 50;
+        let width: usize = constants::UI_TABLE_WIDTH;
         let fill_len = width.saturating_sub(title.len() + 5);
         println!("\n  ┌── {} {}", title, "─".repeat(fill_len));
         
@@ -166,7 +167,7 @@ impl UserInterface {
             }
         }
 
-        let width: usize = 50;
+        let width: usize = constants::UI_TABLE_WIDTH;
         let fill_len = width.saturating_sub(title.len() + 5);
         println!("\n  ┌── {} {}", title, "─".repeat(fill_len));
 
@@ -180,7 +181,7 @@ impl UserInterface {
     }
 
     pub fn block(title: &str, lines: &[&str]) {
-        let width: usize = 60;
+        let width: usize = constants::UI_BLOCK_WIDTH;
         let fill_len = width.saturating_sub(title.len() + 5);
         println!("\n  ┌── {} {}", title, "─".repeat(fill_len));
         for line in lines {

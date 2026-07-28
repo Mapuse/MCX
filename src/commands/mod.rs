@@ -4,6 +4,7 @@ pub mod configuration;
 pub mod install;
 pub mod remove;
 pub mod search;
+pub mod service;
 pub mod sync;
 pub mod system;
 
@@ -13,5 +14,6 @@ pub use configuration::ConfigEditorCommand;
 pub use install::InstallCommand;
 pub use remove::RemoveCommand;
 pub use search::SearchCommand;
+pub use service::ServiceCommand;
 pub use sync::SyncCommand;
 pub use system::SystemCommand;

@@ -3,6 +3,7 @@ use std::sync::Arc;
 use anyhow::{Result, Context};
 use futures::future::join_all;
 use crate::core::arch::host_architecture;
+use crate::core::constants;
 use crate::core::db::Database;
 use crate::core::repo::RepositoryManager;
 use crate::network::download::Downloader;
@@ -89,7 +90,7 @@ impl NetworkSyncEngine {
 
     pub fn ldex(&self, repo_name: &str) -> Result<bool> {
         let _txn = self.db.env_read_txn()?;
-        let sync_dir = self.root.join("var/lib/mcx/sync");
+        let sync_dir = self.root.join(constants::PATH_SYNC);
         let index_path = sync_dir.join(format!("{}.json", repo_name));
         Ok(index_path.exists())
     }

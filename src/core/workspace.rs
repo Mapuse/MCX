@@ -1,6 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use anyhow::{Result, Context};
+use crate::core::constants;
 
 pub struct WorkspaceManager {
     pub root: PathBuf,
@@ -12,8 +13,8 @@ impl WorkspaceManager {
     pub fn new<P: AsRef<Path>>(root: P) -> Self {
         let root_path = root.as_ref().to_path_buf();
         Self {
-            build_dir: root_path.join("var/mcx/build"),
-            stage_dir: root_path.join("var/mcx/stage"),
+            build_dir: root_path.join(constants::PATH_BUILD),
+            stage_dir: root_path.join(constants::PATH_MCX_STAGE),
             root: root_path,
         }
     }

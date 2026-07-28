@@ -31,7 +31,9 @@ impl SyncCommand {
         for repo in &repos {
             let index_path = mgr.get_local_index_path(&repo.name);
             if index_path.exists() {
-                tx.update_repository_index(&repo.name, index_path.to_str().unwrap())?;
+                let path_str = index_path.to_str()
+                    .ok_or_else(|| anyhow::anyhow!("Index path is not valid UTF-8: {:?}", index_path))?;
+                tx.update_repository_index(&repo.name, path_str)?;
             }
         }
         tx.commit()?;

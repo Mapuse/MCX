@@ -33,7 +33,13 @@ pub fn root_access() {
 
         UserInterface::info("Using root access for this action...");
 
-        let exe = env::current_exe().unwrap();
+        let exe = match env::current_exe() {
+            Ok(e) => e,
+            Err(_) => {
+                eprintln!("Error: cannot determine current executable path");
+                exit(1);
+            }
+        };
         let all_args: Vec<String> = env::args().collect();
         let mut new_args: Vec<String> = all_args[1..].to_vec();
 
@@ -42,11 +48,17 @@ pub fn root_access() {
             new_args.push("/".to_string());
         }
 
-        let status = Command::new("sudo")
+        let status = match Command::new("sudo")
             .arg(&exe)
             .args(&new_args)
             .status()
-            .expect("Failed to execute sudo");
+        {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("Error: failed to execute sudo: {}", e);
+                exit(1);
+            }
+        };
 
         exit(status.code().unwrap_or(1));
     }

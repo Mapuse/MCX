@@ -2,6 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use anyhow::{Result, Context, anyhow};
 use futures_util::future::join_all;
+use crate::core::constants;
 use crate::core::arch::host_architecture;
 use crate::core::database::{PackageMetadata, RepositoryInfo};
 use crate::network::download::Downloader;
@@ -16,8 +17,8 @@ pub struct RepositoryManager {
 impl RepositoryManager {
     pub fn new<P: AsRef<Path>>(root: P) -> Self {
         Self {
-            config_file: root.as_ref().join("etc/mcx/repo.ini"),
-            sync_dir: root.as_ref().join("var/lib/mcx/sync"),
+            config_file: root.as_ref().join(constants::PATH_REPO_INI),
+            sync_dir: root.as_ref().join(constants::PATH_SYNC),
         }
     }
 

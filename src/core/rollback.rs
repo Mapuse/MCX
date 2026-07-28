@@ -1,6 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use anyhow::{Result, Context};
+use crate::core::constants;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct GenerationId(pub u64);
@@ -13,8 +14,8 @@ pub struct RollbackManager {
 impl RollbackManager {
     pub fn new(root: &Path) -> Self {
         Self {
-            active_dir: root.join("var/lib/mcx/active"),
-            generations_dir: root.join("var/lib/mcx/generations"),
+            active_dir: root.join(constants::PATH_ACTIVE),
+            generations_dir: root.join(constants::PATH_GENERATIONS),
         }
     }
 

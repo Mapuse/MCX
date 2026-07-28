@@ -2,6 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, Duration};
 use anyhow::{Result, Context};
+use crate::core::constants;
 
 pub struct CacheManager {
     cache_dir: PathBuf,
@@ -10,7 +11,7 @@ pub struct CacheManager {
 impl CacheManager {
     pub fn new<P: AsRef<Path>>(root: P) -> Self {
         Self {
-            cache_dir: root.as_ref().join("var/cache/mcx"),
+            cache_dir: root.as_ref().join(constants::PATH_CACHE),
         }
     }
 

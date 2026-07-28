@@ -7,8 +7,23 @@ use std::sync::RwLock;
 use anyhow::{Result, Context, anyhow};
 use serde::{Serialize, Deserialize};
 use crate::core::arch::Architecture;
+use super::constants;
 
 // ── Builtin plugin traits ─────────────────────────────────────────────────
+
+fn shell_escape(s: &str) -> String {
+    let mut escaped = String::with_capacity(s.len() + 2);
+    escaped.push('\'');
+    for c in s.chars() {
+        if c == '\'' {
+            escaped.push_str("'\\''");
+        } else {
+            escaped.push(c);
+        }
+    }
+    escaped.push('\'');
+    escaped
+}
 
 pub trait Fetcher: Send + Sync {
     fn fetch(&self, source: &str, destination: &str) -> Result<()>;
@@ -122,12 +137,21 @@ pub struct CurlFetcher;
 impl Fetcher for CurlFetcher {
     fn fetch(&self, source: &str, destination: &str) -> Result<()> {
         fs::create_dir_all(destination)?;
-        let status = Command::new("sh")
-            .arg("-c")
-            .arg(format!("curl -fSL -o /dev/stdout '{}' | tar -xz --strip-components=1 -C '{}'", source, destination))
-            .status()?;
+        let status = Command::new(constants::TOOL_CURL)
+            .arg("-fSL")
+            .arg("-o")
+            .arg("/dev/stdout")
+            .arg(source)
+            .stdout(Stdio::piped())
+            .status()
+            .or_else(|_| {
+                Command::new(constants::TOOL_SH)
+                    .arg("-c")
+                    .arg(format!("curl -fSL -o /dev/stdout -- {}", shell_escape(source)))
+                    .status()
+            })?;
         if !status.success() {
-            let status2 = Command::new("git").arg("clone").arg("--depth").arg("1").arg(source).arg(destination).status()?;
+            let status2 = Command::new(constants::TOOL_GIT).arg("clone").arg("--depth").arg("1").arg(source).arg(destination).status()?;
             if !status2.success() { anyhow::bail!("Failed to fetch source: {}", source); }
         }
         Ok(())
@@ -138,36 +162,35 @@ impl Fetcher for CurlFetcher {
 pub struct DefaultBuilder;
 impl Builder for DefaultBuilder {
     fn build(&self, build_cmd: &str, source_dir: &str, _dest_dir: &str, build_type: &str) -> Result<String> {
-        if build_cmd.trim().eq_ignore_ascii_case("none") || build_cmd.trim().eq_ignore_ascii_case("skip") || build_cmd.trim().eq_ignore_ascii_case("nothing") {
+        if constants::BUILD_SKIP_KEYWORDS.contains(&build_cmd.trim()) {
             return Ok(String::new());
         }
         if build_cmd.is_empty() && build_type == "rust" {
-            let target = std::env::var("CUDANE_TARGET")
+            let target = std::env::var(constants::CARGO_BUILD_TARGET_ENV)
                 .unwrap_or_else(|_| Architecture::host().target_triple().to_string());
-            let rust_target = std::env::var("CUDANE_RUST_TARGET")
+            let rust_target = std::env::var(constants::CARGO_RUST_TARGET_ENV)
                 .unwrap_or_else(|_| target.clone());
-            let rustflags = format!(
-                "RUSTFLAGS=\"-C linker=clang -C link-arg=-target -C link-arg={} \
-                 -C link-arg=--sysroot=/system -C target-feature=+crt-static\" \
-                 cargo build --target {} --release 2>&1",
-                target, rust_target
-            );
-            let output = Command::new("sh")
+            let output = Command::new(constants::TOOL_SH)
                 .arg("-c")
-                .arg(&rustflags)
+                .arg(format!(
+                    "RUSTFLAGS=\"-C linker=clang -C link-arg=-target -C link-arg={} \
+                     -C link-arg=--sysroot={} -C target-feature=+crt-static\" \
+                     cargo build --target {} --release 2>&1",
+                    shell_escape(&target), constants::CARGO_SYSROOT, shell_escape(&rust_target)
+                ))
                 .current_dir(source_dir).output()?;
             let log = String::from_utf8_lossy(&output.stdout).to_string();
             if !output.status.success() { anyhow::bail!("Build failed:\n{}", log); }
             return Ok(log);
         }
         if !build_cmd.is_empty() {
-            let env_target = std::env::var("CUDANE_TARGET").unwrap_or_default();
+            let env_target = std::env::var(constants::CARGO_BUILD_TARGET_ENV).unwrap_or_default();
             let cmd = if env_target.is_empty() {
                 format!("({}) 2>&1", build_cmd)
             } else {
-                format!("CUDANE_TARGET={} ({}) 2>&1", env_target, build_cmd)
+                format!("CUDANE_TARGET={} ({}) 2>&1", shell_escape(&env_target), build_cmd)
             };
-            let output = Command::new("sh").arg("-c").arg(&cmd).current_dir(source_dir).output()?;
+            let output = Command::new(constants::TOOL_SH).arg("-c").arg(&cmd).current_dir(source_dir).output()?;
             let log = String::from_utf8_lossy(&output.stdout).to_string();
             if !output.status.success() { anyhow::bail!("Build failed:\n{}", log); }
             return Ok(log);
@@ -181,10 +204,19 @@ pub struct ZstdPacker;
 impl Packer for ZstdPacker {
     fn pack(&self, source_dir: &str, output_path: &str, compression_level: i32) -> Result<()> {
         let _ = fs::remove_file(output_path);
-        let status = Command::new("sh")
+        let status = Command::new(constants::TOOL_TAR)
             .arg("-c")
-            .arg(format!("tar -c -C '{}' . | zstd -{} -o '{}'", source_dir, compression_level, output_path))
-            .status()?;
+            .arg("-C").arg(source_dir)
+            .arg(".")
+            .stdout(Stdio::piped())
+            .spawn()
+            .and_then(|child| {
+                Command::new(constants::TOOL_ZSTD)
+                    .arg(format!("-{}", compression_level))
+                    .arg("-o").arg(output_path)
+                    .stdin(child.stdout.unwrap())
+                    .status()
+            })?;
         if !status.success() { anyhow::bail!("Failed to pack archive: {}", output_path); }
         Ok(())
     }
@@ -210,21 +242,12 @@ impl Packer for ZstdPacker {
     fn name(&self) -> &'static str { "zstd" }
 }
 
-// ── External plugin system ─────────────────────────────────────────────────
+// ── External plugin system (Python) ────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PluginManifest {
     pub name: String,
-    pub version: String,
-    pub description: String,
     pub language: String,
-    #[serde(rename = "type")]
-    pub plugin_type: String,
-    pub command: String,
-    pub trigger: Option<String>,
-    pub author: Option<String>,
-    pub homepage: Option<String>,
-    pub timeout_secs: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -266,6 +289,19 @@ impl PluginHook {
             Self::PostFix => "post-fix",
         }
     }
+
+    pub fn function_name(&self) -> &'static str {
+        match self {
+            Self::PreInstall => "on_pre_install",
+            Self::PostInstall => "on_post_install",
+            Self::PreRemove => "on_pre_remove",
+            Self::PostRemove => "on_post_remove",
+            Self::PreVerify => "on_pre_verify",
+            Self::PostVerify => "on_post_verify",
+            Self::PreFix => "on_pre_fix",
+            Self::PostFix => "on_post_fix",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -283,35 +319,84 @@ pub struct PluginResult {
     pub data: Option<serde_json::Value>,
 }
 
-#[derive(Debug, Clone)]
-pub struct ExternalPlugin {
-    manifest: PluginManifest,
-    dir: PathBuf,
+// ── TOML plugin configuration ─────────────────────────────────────────────
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct PluginConfig {
+    #[serde(rename = "plugin")]
+    pub plugins: HashMap<String, PluginEntry>,
 }
 
-impl ExternalPlugin {
-    pub fn load(dir: &Path) -> Result<Self> {
-        let manifest_path = dir.join("plugin.ini");
-        if !manifest_path.exists() {
-            return Err(anyhow!("No plugin.ini in {:?}", dir));
+#[derive(Debug, Clone, Deserialize)]
+pub struct PluginEntry {
+    pub name: String,
+    pub path: String,
+    #[serde(flatten)]
+    pub aliases: HashMap<String, String>,
+}
+
+// ── PythonPlugin ───────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone)]
+pub struct PythonPlugin {
+    name: String,
+    pub path: PathBuf,
+    pub aliases: HashMap<String, String>,
+}
+
+impl PythonPlugin {
+    pub fn load(path: &Path) -> Result<Self> {
+        if !path.exists() {
+            return Err(anyhow!("Plugin file not found: {:?}", path));
         }
-        let content = fs::read_to_string(&manifest_path)
-            .with_context(|| format!("Failed to read {:?}", manifest_path))?;
-        let manifest = parse_plugin_ini(&content)
-            .with_context(|| format!("Failed to parse plugin manifest in {:?}", dir))?;
-        Ok(Self { manifest, dir: dir.to_path_buf() })
+        let path_str = path.to_string_lossy();
+        let check_script = format!(
+            "compile(open('{}').read(), '{}', 'exec')",
+            path_str.replace('\'', "\\'"),
+            path_str.replace('\'', "\\'"),
+        );
+        let output = Command::new(constants::TOOL_PYTHON3)
+            .arg("-c")
+            .arg(&check_script)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .with_context(|| format!("Failed to run python3 for syntax check of {:?}", path))?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!("Python syntax error in {:?}: {}", path, stderr.trim());
+        }
+        let file_stem = path.file_stem()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
+        Ok(Self {
+            name: file_stem,
+            path: path.to_path_buf(),
+            aliases: HashMap::new(),
+        })
     }
 
-    pub fn manifest(&self) -> &PluginManifest { &self.manifest }
+    pub fn with_name(mut self, name: String) -> Self {
+        self.name = name;
+        self
+    }
 
-    pub fn run_hook(&self, event: &PluginEvent) -> Result<PluginResult> {
-        let _timeout = self.manifest.timeout_secs.unwrap_or(30);
-        let expanded = self.expand_command(event);
-        let output = Command::new("sh")
+    pub fn name(&self) -> &str { &self.name }
+    pub fn path(&self) -> &Path { &self.path }
+
+    pub fn run(&self, event_json: &str) -> Result<PluginResult> {
+        let path_str = self.path.to_string_lossy();
+        let escaped_event = event_json.replace('\'', "\\'");
+        let script = format!(
+            r#"import json, sys; MCX_EVENT = json.loads('{}'); exec(open('{}').read())"#,
+            escaped_event,
+            path_str.replace('\'', "\\'"),
+        );
+        let output = Command::new(constants::TOOL_PYTHON3)
             .arg("-c")
-            .arg(&expanded)
-            .current_dir(&self.dir)
-            .stdin(Stdio::piped())
+            .arg(&script)
+            .current_dir(self.path.parent().unwrap_or(Path::new(".")))
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .output()?;
@@ -333,64 +418,15 @@ impl ExternalPlugin {
         }
     }
 
-    fn expand_command(&self, event: &PluginEvent) -> String {
-        let cmd = &self.manifest.command;
-        let event_json = serde_json::to_string(event).unwrap_or_default();
-        cmd.replace("${event}", &event_json)
-            .replace("${root}", &event.root)
-            .replace("${package}", event.package.as_deref().unwrap_or(""))
-            .replace("${hook}", &event.hook)
-            .replace("${dir}", self.dir.to_string_lossy().as_ref())
+    pub fn run_hook(&self, event: &PluginEvent) -> Result<PluginResult> {
+        let event_dict = serde_json::to_string(&serde_json::json!({
+            "hook": event.hook,
+            "package": event.package,
+            "root": event.root,
+            "timestamp": event.timestamp,
+        })).unwrap_or_default();
+        self.run(&event_dict)
     }
-}
-
-fn parse_plugin_ini(content: &str) -> Result<PluginManifest> {
-    let mut name = String::new();
-    let mut version = String::new();
-    let mut description = String::new();
-    let mut language = String::new();
-    let mut plugin_type = String::new();
-    let mut command = String::new();
-    let mut trigger = None;
-    let mut author = None;
-    let mut homepage = None;
-    let mut timeout_secs = None;
-
-    let mut in_plugin = false;
-    for line in content.lines() {
-        let line = line.trim();
-        if line.starts_with('[') && line.ends_with(']') {
-            in_plugin = line.eq_ignore_ascii_case("[plugin]");
-            continue;
-        }
-        if !in_plugin { continue; }
-        if let Some((key, value)) = line.split_once('=') {
-            let k = key.trim().to_lowercase();
-            let v = value.trim().to_string();
-            match k.as_str() {
-                "name" => name = v,
-                "version" => version = v,
-                "description" => description = v,
-                "language" => language = v,
-                "type" => plugin_type = v,
-                "command" => command = v,
-                "trigger" => trigger = Some(v),
-                "author" => author = Some(v),
-                "homepage" => homepage = Some(v),
-                "timeout_secs" => timeout_secs = v.parse::<u64>().ok(),
-                _ => {}
-            }
-        }
-    }
-
-    if name.is_empty() || command.is_empty() {
-        return Err(anyhow!("plugin.ini must have 'name' and 'command' fields"));
-    }
-
-    Ok(PluginManifest {
-        name, version, description, language, plugin_type, command,
-        trigger, author, homepage, timeout_secs,
-    })
 }
 
 // ── PluginManager ─────────────────────────────────────────────────────────────
@@ -400,38 +436,97 @@ pub struct PluginManager {
 }
 
 struct PluginManagerInner {
-    plugins: Vec<ExternalPlugin>,
+    plugins: Vec<PythonPlugin>,
+    loaded_paths: HashMap<PathBuf, usize>,
     hook_map: HashMap<PluginHook, Vec<usize>>,
 }
 
 impl PluginManager {
     pub fn new(root: &Path) -> Self {
-        let mgr = Self { inner: RwLock::new(PluginManagerInner { plugins: Vec::new(), hook_map: HashMap::new() }) };
+        let mgr = Self {
+            inner: RwLock::new(PluginManagerInner {
+                plugins: Vec::new(),
+                loaded_paths: HashMap::new(),
+                hook_map: HashMap::new(),
+            }),
+        };
         let _ = mgr.load_all(root);
         mgr
     }
 
     fn load_all(&self, root: &Path) -> Result<()> {
-        let plugins_dir = root.join("var/lib/mcx/plugins");
+        let config_path = root.join(constants::PLUGIN_CONFIG_FILE);
+        if config_path.exists() {
+            self.load_config(root)
+        } else {
+            self.scan_plugins_dir(root)
+        }
+    }
+
+    fn load_config(&self, root: &Path) -> Result<()> {
+        let config_path = root.join(constants::PLUGIN_CONFIG_FILE);
+        let content = fs::read_to_string(&config_path)
+            .with_context(|| format!("Failed to read plugin config: {:?}", config_path))?;
+        let config: PluginConfig = toml::from_str(&content)
+            .with_context(|| format!("Failed to parse plugin config: {:?}", config_path))?;
+        let mut loaded = Vec::new();
+        let mut loaded_paths = HashMap::new();
+        let mut hook_map: HashMap<PluginHook, Vec<usize>> = HashMap::new();
+        for (_key, entry) in &config.plugins {
+            let path = Self::resolve_path(&entry.path);
+            match PythonPlugin::load(&path) {
+                Ok(plugin) => {
+                    let mut plugin = plugin.with_name(entry.name.clone());
+                    plugin.aliases = entry.aliases.clone();
+                    let idx = loaded.len();
+                    loaded_paths.insert(plugin.path.clone(), idx);
+                    loaded.push(plugin);
+                    for hook in ALL_HOOKS.iter() {
+                        hook_map.entry(*hook).or_default().push(idx);
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Warning: failed to load plugin '{}' from {:?}: {}", entry.name, path, e);
+                }
+            }
+        }
+        let mut inner = self.inner.write().unwrap();
+        inner.plugins = loaded;
+        inner.loaded_paths = loaded_paths;
+        inner.hook_map = hook_map;
+        Ok(())
+    }
+
+    fn scan_plugins_dir(&self, root: &Path) -> Result<()> {
+        let plugins_dir = root.join(constants::PATH_PLUGINS);
         if !plugins_dir.exists() {
             fs::create_dir_all(&plugins_dir)?;
             return Ok(());
         }
         let mut loaded = Vec::new();
+        let mut loaded_paths = HashMap::new();
         let mut hook_map: HashMap<PluginHook, Vec<usize>> = HashMap::new();
+
         for entry in fs::read_dir(&plugins_dir)? {
             let entry = entry?;
             let path = entry.path();
-            if path.is_dir() {
-                match ExternalPlugin::load(&path) {
+            let plugin_path = if path.is_dir() {
+                let init = path.join("__init__.py");
+                if init.exists() { Some(init) } else { None }
+            } else if path.extension().map(|e| e == "py").unwrap_or(false) {
+                Some(path.clone())
+            } else {
+                None
+            };
+            if let Some(py_path) = plugin_path {
+                match PythonPlugin::load(&py_path) {
                     Ok(plugin) => {
                         let idx = loaded.len();
-                        if let Some(ref trigger_str) = plugin.manifest().trigger {
-                            if let Some(hook) = PluginHook::from_str(trigger_str) {
-                                hook_map.entry(hook).or_default().push(idx);
-                            }
-                        }
+                        loaded_paths.insert(plugin.path.clone(), idx);
                         loaded.push(plugin);
+                        for hook in ALL_HOOKS.iter() {
+                            hook_map.entry(*hook).or_default().push(idx);
+                        }
                     }
                     Err(e) => {
                         eprintln!("Warning: failed to load plugin from {:?}: {}", path, e);
@@ -441,22 +536,68 @@ impl PluginManager {
         }
         let mut inner = self.inner.write().unwrap();
         inner.plugins = loaded;
+        inner.loaded_paths = loaded_paths;
         inner.hook_map = hook_map;
         Ok(())
+    }
+
+    fn resolve_path(path_str: &str) -> PathBuf {
+        if path_str.starts_with("~/") {
+            if let Some(home) = std::env::var("HOME").ok() {
+                return PathBuf::from(home).join(&path_str[2..]);
+            }
+        }
+        PathBuf::from(path_str)
     }
 
     pub fn reload(&self, root: &Path) {
         let _ = self.load_all(root);
     }
 
-    pub fn list(&self) -> Vec<ExternalPlugin> {
+    pub fn reload_from_config(&self, root: &Path) -> Result<usize> {
+        let config_path = root.join(constants::PLUGIN_CONFIG_FILE);
+        if !config_path.exists() {
+            anyhow::bail!("Plugin config not found: {:?}", config_path);
+        }
+        let content = fs::read_to_string(&config_path)
+            .with_context(|| format!("Failed to read plugin config: {:?}", config_path))?;
+        let config: PluginConfig = toml::from_str(&content)
+            .with_context(|| format!("Failed to parse plugin config: {:?}", config_path))?;
+        let mut new_count = 0;
+        let mut inner = self.inner.write().unwrap();
+        for (_key, entry) in &config.plugins {
+            let path = Self::resolve_path(&entry.path);
+            if inner.loaded_paths.contains_key(&path) {
+                continue;
+            }
+            match PythonPlugin::load(&path) {
+                Ok(plugin) => {
+                    let mut plugin = plugin.with_name(entry.name.clone());
+                    plugin.aliases = entry.aliases.clone();
+                    let idx = inner.plugins.len();
+                    inner.loaded_paths.insert(plugin.path.clone(), idx);
+                    inner.plugins.push(plugin);
+                    for hook in ALL_HOOKS.iter() {
+                        inner.hook_map.entry(*hook).or_default().push(idx);
+                    }
+                    new_count += 1;
+                }
+                Err(e) => {
+                    eprintln!("Warning: failed to load plugin '{}' from {:?}: {}", entry.name, path, e);
+                }
+            }
+        }
+        Ok(new_count)
+    }
+
+    pub fn list(&self) -> Vec<PythonPlugin> {
         let inner = self.inner.read().unwrap();
         inner.plugins.clone()
     }
 
-    pub fn find(&self, name: &str) -> Option<ExternalPlugin> {
+    pub fn find(&self, name: &str) -> Option<PythonPlugin> {
         let inner = self.inner.read().unwrap();
-        inner.plugins.iter().find(|p| p.manifest().name == name).cloned()
+        inner.plugins.iter().find(|p| p.name() == name).cloned()
     }
 
     pub fn fire_hook(&self, hook: PluginHook, event: &PluginEvent) {
@@ -471,12 +612,12 @@ impl PluginManager {
                     match plugin.run_hook(event) {
                         Ok(result) => {
                             if !result.success {
-                                eprintln!("Plugin '{}' failed: {}", plugin.manifest().name,
+                                eprintln!("Plugin '{}' failed: {}", plugin.name(),
                                     result.message.as_deref().unwrap_or("unknown error"));
                             }
                         }
                         Err(e) => {
-                            eprintln!("Plugin '{}' error: {}", plugin.manifest().name, e);
+                            eprintln!("Plugin '{}' error: {}", plugin.name(), e);
                         }
                     }
                 }
@@ -488,102 +629,22 @@ impl PluginManager {
         let plugin = self.find(name).ok_or_else(|| anyhow!("Plugin '{}' not found", name))?;
         plugin.run_hook(event)
     }
-
-    pub fn daemon_plugins(&self) -> Vec<ExternalPlugin> {
-        let inner = self.inner.read().unwrap();
-        inner.plugins.iter().filter(|p| p.manifest().plugin_type == "daemon").cloned().collect()
-    }
-
-    pub fn start_daemon(&self, name: &str) -> Result<()> {
-        let plugin = self.find(name).ok_or_else(|| anyhow!("Plugin '{}' not found", name))?;
-        if plugin.manifest().plugin_type != "daemon" {
-            return Err(anyhow!("Plugin '{}' is not a daemon plugin", name));
-        }
-        let expanded = plugin.expand_command(&PluginEvent {
-            hook: "daemon-start".into(),
-            package: None,
-            root: String::new(),
-            timestamp: chrono::Utc::now().to_rfc3339(),
-        });
-        let mut child = Command::new("sh")
-            .arg("-c")
-            .arg(&expanded)
-            .current_dir(&plugin.dir)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()?;
-        let _ = child.stdout.take();
-        let _ = child.stderr.take();
-        Ok(())
-    }
 }
+
+const ALL_HOOKS: &[PluginHook] = &[
+    PluginHook::PreInstall,
+    PluginHook::PostInstall,
+    PluginHook::PreRemove,
+    PluginHook::PostRemove,
+    PluginHook::PreVerify,
+    PluginHook::PostVerify,
+    PluginHook::PreFix,
+    PluginHook::PostFix,
+];
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // ── parse_plugin_ini ─────────────────────────────────────────────────────
-
-    #[test]
-    fn test_parse_minimal_plugin_ini() {
-        let content = "[plugin]\nname = test-pkg\ncommand = echo hello\n";
-        let m = parse_plugin_ini(content).unwrap();
-        assert_eq!(m.name, "test-pkg");
-        assert_eq!(m.command, "echo hello");
-        assert_eq!(m.version, "");
-        assert_eq!(m.language, "");
-        assert!(m.trigger.is_none());
-    }
-
-    #[test]
-    fn test_parse_full_plugin_ini() {
-        let content = "\
-[plugin]
-name = my-plugin
-version = 2.1.0
-description = Test plugin
-language = python
-type = daemon
-command = python3 ${dir}/main.py
-trigger = post-install
-author = Alice
-homepage = https://example.com
-timeout_secs = 60
-";
-        let m = parse_plugin_ini(content).unwrap();
-        assert_eq!(m.name, "my-plugin");
-        assert_eq!(m.version, "2.1.0");
-        assert_eq!(m.description, "Test plugin");
-        assert_eq!(m.language, "python");
-        assert_eq!(m.plugin_type, "daemon");
-        assert_eq!(m.command, "python3 ${dir}/main.py");
-        assert_eq!(m.trigger.as_deref(), Some("post-install"));
-        assert_eq!(m.author.as_deref(), Some("Alice"));
-        assert_eq!(m.homepage.as_deref(), Some("https://example.com"));
-        assert_eq!(m.timeout_secs, Some(60));
-    }
-
-    #[test]
-    fn test_parse_plugin_ini_missing_required_fields() {
-        let content = "[plugin]\nname = \ncommand = \n";
-        let err = parse_plugin_ini(content).unwrap_err();
-        assert!(err.to_string().contains("plugin.ini must have 'name' and 'command' fields"));
-    }
-
-    #[test]
-    fn test_parse_plugin_ini_no_section() {
-        let content = "name = orphan\ncommand = run\n";
-        let err = parse_plugin_ini(content).unwrap_err();
-        assert!(err.to_string().contains("plugin.ini must have 'name' and 'command' fields"));
-    }
-
-    #[test]
-    fn test_parse_plugin_ini_case_insensitive_section() {
-        let content = "[PLUGIN]\nNAME = caps-test\nCOMMAND = echo ok\n";
-        let m = parse_plugin_ini(content).unwrap();
-        assert_eq!(m.name, "caps-test");
-        assert_eq!(m.command, "echo ok");
-    }
 
     // ── PluginHook ───────────────────────────────────────────────────────────
 
@@ -618,135 +679,238 @@ timeout_secs = 60
         assert_eq!(PluginHook::from_str("post_install"), Some(PluginHook::PostInstall));
     }
 
-    // ── ExternalPlugin::load ─────────────────────────────────────────────────
+    #[test]
+    fn test_plugin_hook_function_names() {
+        assert_eq!(PluginHook::PreInstall.function_name(), "on_pre_install");
+        assert_eq!(PluginHook::PostInstall.function_name(), "on_post_install");
+        assert_eq!(PluginHook::PreRemove.function_name(), "on_pre_remove");
+        assert_eq!(PluginHook::PostFix.function_name(), "on_post_fix");
+    }
+
+    // ── PythonPlugin::load ───────────────────────────────────────────────────
 
     #[test]
-    fn test_external_plugin_load_success() {
-        let dir = std::env::temp_dir().join(format!("mcx_test_plugin_load_{}", std::process::id()));
+    fn test_python_plugin_load_valid_syntax() {
+        let dir = std::env::temp_dir().join(format!("mcx_test_pyplugin_{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
-        fs::write(dir.join("plugin.ini"), "[plugin]\nname = unit-test\ncommand = echo ok\n").unwrap();
-
-        let plugin = ExternalPlugin::load(&dir).unwrap();
-        assert_eq!(plugin.manifest().name, "unit-test");
-        assert_eq!(plugin.manifest().command, "echo ok");
+        fs::write(dir.join("ok.py"), "x = 1\nprint(x)\n").unwrap();
+        let plugin = PythonPlugin::load(&dir.join("ok.py")).unwrap();
+        assert_eq!(plugin.name(), "ok");
         let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn test_external_plugin_load_missing_ini() {
-        let dir = std::env::temp_dir().join(format!("mcx_test_plugin_noini_{}", std::process::id()));
+    fn test_python_plugin_load_invalid_syntax() {
+        let dir = std::env::temp_dir().join(format!("mcx_test_pyplugin_bad_{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
-
-        let err = ExternalPlugin::load(&dir).unwrap_err();
-        assert!(err.to_string().contains("No plugin.ini"));
+        fs::write(dir.join("bad.py"), "def foo(\n").unwrap();
+        let err = PythonPlugin::load(&dir.join("bad.py")).unwrap_err();
+        assert!(err.to_string().contains("syntax error"));
         let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn test_external_plugin_expand_command() {
-        let dir = std::env::temp_dir().join(format!("mcx_test_plugin_expand_{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
-        fs::write(dir.join("plugin.ini"), "[plugin]\nname = expand-test\ncommand = ${root} ${hook} ${package} ${event} ${dir}\n").unwrap();
-
-        let plugin = ExternalPlugin::load(&dir).unwrap();
-        let event = PluginEvent {
-            hook: "test-hook".into(),
-            package: Some("test-pkg".into()),
-            root: "/test-root".into(),
-            timestamp: "2026-01-01T00:00:00Z".into(),
-        };
-        let expanded = plugin.expand_command(&event);
-        assert!(expanded.contains("/test-root"));
-        assert!(expanded.contains("test-hook"));
-        assert!(expanded.contains("test-pkg"));
-        assert!(expanded.contains(&dir.to_string_lossy().to_string()));
-        let _ = fs::remove_dir_all(&dir);
+    fn test_python_plugin_load_nonexistent() {
+        let err = PythonPlugin::load(Path::new("/nonexistent/plugin.py")).unwrap_err();
+        assert!(err.to_string().contains("not found"));
     }
 
     #[test]
-    fn test_external_plugin_run_success() {
-        let dir = std::env::temp_dir().join(format!("mcx_test_plugin_run_{}", std::process::id()));
+    fn test_python_plugin_load_arbitrary_code() {
+        let dir = std::env::temp_dir().join(format!("mcx_test_pyplugin_any_{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
-        fs::write(dir.join("plugin.ini"), "[plugin]\nname = runner\ncommand = echo '{\"success\":true,\"message\":\"done\"}'\n").unwrap();
-        let plugin = ExternalPlugin::load(&dir).unwrap();
-        let event = PluginEvent {
-            hook: "test".into(),
-            package: None,
-            root: String::new(),
-            timestamp: String::new(),
-        };
-        let result = plugin.run_hook(&event).unwrap();
+        fs::write(dir.join("anything.py"), r#"
+import os, sys, json
+class MyTool:
+    def run(self):
+        return "hello"
+"#).unwrap();
+        let plugin = PythonPlugin::load(&dir.join("anything.py")).unwrap();
+        assert_eq!(plugin.name(), "anything");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    // ── PythonPlugin::run ────────────────────────────────────────────────────
+
+    #[test]
+    fn test_python_plugin_run_executes_code() {
+        let dir = std::env::temp_dir().join(format!("mcx_test_pyrun_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("runner.py"), "print('plugin-output')\n").unwrap();
+        let plugin = PythonPlugin::load(&dir.join("runner.py")).unwrap();
+        let result = plugin.run("{}").unwrap();
         assert!(result.success);
-        assert_eq!(result.message.as_deref(), Some("done"));
+        assert!(result.message.as_deref().unwrap().contains("plugin-output"));
         let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn test_external_plugin_run_failure_via_exit_code() {
-        let dir = std::env::temp_dir().join(format!("mcx_test_plugin_fail_{}", std::process::id()));
+    fn test_python_plugin_run_receives_event() {
+        let dir = std::env::temp_dir().join(format!("mcx_test_pyrun_evt_{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
-        fs::write(dir.join("plugin.ini"), "[plugin]\nname = failer\ncommand = exit 1\n").unwrap();
-        let plugin = ExternalPlugin::load(&dir).unwrap();
-        let event = PluginEvent {
-            hook: "test".into(),
-            package: None,
-            root: String::new(),
-            timestamp: String::new(),
-        };
-        let result = plugin.run_hook(&event).unwrap();
-        assert!(!result.success);
+        fs::write(dir.join("evt.py"), r#"
+import json
+print(json.dumps({"hook_received": MCX_EVENT.get("hook", "none")}))
+"#).unwrap();
+        let plugin = PythonPlugin::load(&dir.join("evt.py")).unwrap();
+        let event_json = r#"{"hook": "post-install", "package": null, "root": "/test", "timestamp": "2026-01-01T00:00:00Z"}"#;
+        let result = plugin.run(event_json).unwrap();
+        assert!(result.success);
         let _ = fs::remove_dir_all(&dir);
     }
 
-    // ── PluginManager ────────────────────────────────────────────────────────
+    #[test]
+    fn test_python_plugin_run_syntax_error() {
+        let dir = std::env::temp_dir().join(format!("mcx_test_pyrun_err_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("err.py"), "raise ValueError('intentional')\n").unwrap();
+        let plugin = PythonPlugin::load(&dir.join("err.py")).unwrap();
+        let result = plugin.run("{}").unwrap();
+        assert!(!result.success);
+        assert!(result.message.as_deref().unwrap().contains("intentional"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    // ── PluginConfig TOML parsing ────────────────────────────────────────────
 
     #[test]
-    fn test_plugin_manager_load_and_list() {
-        let root = std::env::temp_dir().join(format!("mcx_test_mgr_{}", std::process::id()));
+    fn test_plugin_config_parse() {
+        let toml_str = r#"
+[plugin.1]
+name = "Plugin One"
+path = "/tmp/plugin1.py"
+
+[plugin.2]
+name = "Plugin Two"
+path = "~/plugins/plugin2.py"
+"#;
+        let config: PluginConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.plugins.len(), 2);
+        let p1 = config.plugins.get("1").unwrap();
+        assert_eq!(p1.name, "Plugin One");
+        assert_eq!(p1.path, "/tmp/plugin1.py");
+        let p2 = config.plugins.get("2").unwrap();
+        assert_eq!(p2.name, "Plugin Two");
+        assert_eq!(p2.path, "~/plugins/plugin2.py");
+    }
+
+    #[test]
+    fn test_plugin_config_single_plugin() {
+        let toml_str = r#"
+[plugin.mine]
+name = "My Plugin"
+path = "/opt/plugins/mine.py"
+"#;
+        let config: PluginConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.plugins.len(), 1);
+        let p = config.plugins.get("mine").unwrap();
+        assert_eq!(p.name, "My Plugin");
+    }
+
+    #[test]
+    fn test_resolve_path_home() {
+        let home = std::env::var("HOME").unwrap_or_default();
+        let resolved = PluginManager::resolve_path("~/test.py");
+        assert_eq!(resolved, PathBuf::from(home).join("test.py"));
+    }
+
+    #[test]
+    fn test_resolve_path_absolute() {
+        let resolved = PluginManager::resolve_path("/opt/plugins/test.py");
+        assert_eq!(resolved, PathBuf::from("/opt/plugins/test.py"));
+    }
+
+    // ── PluginManager with config ────────────────────────────────────────────
+
+    #[test]
+    fn test_plugin_manager_load_from_config() {
+        let root = std::env::temp_dir().join(format!("mcx_test_mgr_cfg_{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
-        let plugins_dir = root.join("var/lib/mcx/plugins");
-        fs::create_dir_all(&plugins_dir.join("p1")).unwrap();
-        fs::write(plugins_dir.join("p1/plugin.ini"), "[plugin]\nname = p1\ncommand = echo 1\ntrigger = post-install\n").unwrap();
-        fs::create_dir_all(&plugins_dir.join("p2")).unwrap();
-        fs::write(plugins_dir.join("p2/plugin.ini"), "[plugin]\nname = p2\ncommand = echo 2\ntrigger = post-install\n").unwrap();
+        let config_dir = root.join("etc/mcx");
+        fs::create_dir_all(&config_dir).unwrap();
+
+        let plugin_dir = root.join("var/lib/mcx/plugins_test");
+        fs::create_dir_all(&plugin_dir).unwrap();
+        fs::write(plugin_dir.join("p1.py"), "print('hello')\n").unwrap();
+        fs::write(plugin_dir.join("p2.py"), "print('world')\n").unwrap();
+
+        let p1_path = plugin_dir.join("p1.py").to_string_lossy().to_string();
+        let p2_path = plugin_dir.join("p2.py").to_string_lossy().to_string();
+        let toml_content = format!(
+            "[plugin.a]\nname = \"Plugin A\"\npath = \"{}\"\nls = \"ls -la\"\nupdate = \"mcx -u && mcx -U\"\n\n[plugin.b]\nname = \"Plugin B\"\npath = \"{}\"\n",
+            p1_path, p2_path
+        );
+        fs::write(config_dir.join("p.desc"), &toml_content).unwrap();
 
         let mgr = PluginManager::new(&root);
+        mgr.reload_from_config(&root).unwrap();
         let list = mgr.list();
         assert_eq!(list.len(), 2);
-        assert!(list.iter().any(|p| p.manifest().name == "p1"));
-        assert!(list.iter().any(|p| p.manifest().name == "p2"));
-
-        let found = mgr.find("p1");
-        assert!(found.is_some());
-        assert_eq!(found.unwrap().manifest().name, "p1");
-
-        let missing = mgr.find("nonexistent");
-        assert!(missing.is_none());
+        assert!(list.iter().any(|p| p.name() == "Plugin A"));
+        assert!(list.iter().any(|p| p.name() == "Plugin B"));
+        let plugin_a = list.iter().find(|p| p.name() == "Plugin A").unwrap();
+        assert_eq!(plugin_a.aliases.get("ls").unwrap(), "ls -la");
+        assert_eq!(plugin_a.aliases.get("update").unwrap(), "mcx -u && mcx -U");
+        assert!(plugin_a.aliases.is_empty() == false);
 
         let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
-    fn test_plugin_manager_reload() {
-        let root = std::env::temp_dir().join(format!("mcx_test_mgr_reload_{}", std::process::id()));
+    fn test_plugin_manager_reload_from_config() {
+        let root = std::env::temp_dir().join(format!("mcx_test_mgr_rld_{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
-        let plugins_dir = root.join("var/lib/mcx/plugins");
-        fs::create_dir_all(&plugins_dir.join("a")).unwrap();
-        fs::write(plugins_dir.join("a/plugin.ini"), "[plugin]\nname = a\ncommand = echo a\ntrigger = post-install\n").unwrap();
+        let config_dir = root.join("etc/mcx");
+        fs::create_dir_all(&config_dir).unwrap();
+
+        let plugin_dir = root.join("var/lib/mcx/plugins_test");
+        fs::create_dir_all(&plugin_dir).unwrap();
+        fs::write(plugin_dir.join("a.py"), "print('a')\n").unwrap();
+
+        let a_path = plugin_dir.join("a.py").to_string_lossy().to_string();
+        fs::write(config_dir.join("p.desc"),
+            format!("[plugin.a]\nname = \"A\"\npath = \"{}\"\n", a_path)).unwrap();
 
         let mgr = PluginManager::new(&root);
         assert_eq!(mgr.list().len(), 1);
 
-        // Add a new plugin and reload
-        fs::create_dir_all(&plugins_dir.join("b")).unwrap();
-        fs::write(plugins_dir.join("b/plugin.ini"), "[plugin]\nname = b\ncommand = echo b\ntrigger = post-install\n").unwrap();
-        mgr.reload(&root);
+        fs::write(plugin_dir.join("b.py"), "print('b')\n").unwrap();
+        let b_path = plugin_dir.join("b.py").to_string_lossy().to_string();
+        fs::write(config_dir.join("p.desc"),
+            format!(
+                "[plugin.a]\nname = \"A\"\npath = \"{}\"\n\n[plugin.b]\nname = \"B\"\npath = \"{}\"\n",
+                a_path, b_path
+            )).unwrap();
+
+        let new_count = mgr.reload_from_config(&root).unwrap();
+        assert_eq!(new_count, 1);
         assert_eq!(mgr.list().len(), 2);
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    // ── PluginManager backward compat (scan dir) ─────────────────────────────
+
+    #[test]
+    fn test_plugin_manager_scan_plugins_dir() {
+        let root = std::env::temp_dir().join(format!("mcx_test_mgr_scan_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let plugins_dir = root.join(constants::PATH_PLUGINS);
+        fs::create_dir_all(&plugins_dir).unwrap();
+        fs::write(plugins_dir.join("p1.py"), "print('p1')\n").unwrap();
+        fs::write(plugins_dir.join("p2.py"), "print('p2')\n").unwrap();
+
+        let mgr = PluginManager::new(&root);
+        let list = mgr.list();
+        assert_eq!(list.len(), 2);
+        assert!(list.iter().any(|p| p.name() == "p1"));
+        assert!(list.iter().any(|p| p.name() == "p2"));
 
         let _ = fs::remove_dir_all(&root);
     }
@@ -755,9 +919,9 @@ timeout_secs = 60
     fn test_plugin_manager_fire_hook() {
         let root = std::env::temp_dir().join(format!("mcx_test_mgr_hook_{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
-        let plugins_dir = root.join("var/lib/mcx/plugins");
-        fs::create_dir_all(&plugins_dir.join("h")).unwrap();
-        fs::write(plugins_dir.join("h/plugin.ini"), "[plugin]\nname = hooker\ncommand = echo ok\ntrigger = post-install\n").unwrap();
+        let plugins_dir = root.join(constants::PATH_PLUGINS);
+        fs::create_dir_all(&plugins_dir).unwrap();
+        fs::write(plugins_dir.join("h.py"), "print('hooked')\n").unwrap();
 
         let mgr = PluginManager::new(&root);
         let event = PluginEvent {
@@ -766,28 +930,23 @@ timeout_secs = 60
             root: root.to_string_lossy().into_owned(),
             timestamp: "now".into(),
         };
-        // Should not panic; hooker is bound to post-install
         mgr.fire_hook(PluginHook::PostInstall, &event);
-        // Unbound hook should be a no-op
         mgr.fire_hook(PluginHook::PreRemove, &event);
 
         let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
-    fn test_plugin_manager_daemon_plugins() {
-        let root = std::env::temp_dir().join(format!("mcx_test_mgr_daemon_{}", std::process::id()));
+    fn test_plugin_manager_find() {
+        let root = std::env::temp_dir().join(format!("mcx_test_mgr_find_{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
-        let plugins_dir = root.join("var/lib/mcx/plugins");
-        fs::create_dir_all(&plugins_dir.join("hook-p")).unwrap();
-        fs::write(plugins_dir.join("hook-p/plugin.ini"), "[plugin]\nname = hp\ncommand = echo hp\ntype = hook\n").unwrap();
-        fs::create_dir_all(&plugins_dir.join("daemon-p")).unwrap();
-        fs::write(plugins_dir.join("daemon-p/plugin.ini"), "[plugin]\nname = dp\ncommand = sleep 100\ntype = daemon\n").unwrap();
+        let plugins_dir = root.join(constants::PATH_PLUGINS);
+        fs::create_dir_all(&plugins_dir).unwrap();
+        fs::write(plugins_dir.join("findme.py"), "print('found')\n").unwrap();
 
         let mgr = PluginManager::new(&root);
-        let daemons = mgr.daemon_plugins();
-        assert_eq!(daemons.len(), 1);
-        assert_eq!(daemons[0].manifest().name, "dp");
+        assert!(mgr.find("findme").is_some());
+        assert!(mgr.find("nonexistent").is_none());
 
         let _ = fs::remove_dir_all(&root);
     }

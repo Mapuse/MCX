@@ -3,6 +3,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::{Result, anyhow};
+use crate::core::constants;
 use serde::{Serialize, Deserialize};
 
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
@@ -28,7 +29,7 @@ pub struct ChangelogManager {
 impl ChangelogManager {
     pub fn new<P: AsRef<Path>>(root: P) -> Self {
         Self {
-            journal_file: root.as_ref().join("var/lib/mcx/history.jsonl"),
+            journal_file: root.as_ref().join(constants::PATH_HISTORY),
         }
     }
 
@@ -42,7 +43,7 @@ impl ChangelogManager {
     pub fn record_transaction(&self, action: ActionKind, targets: Vec<String>) -> Result<u64> {
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)?
-            .as_secs();
+            .as_millis() as u64;
         let transaction_id = timestamp;
         let record = RegistryTransactionRecord {
             transaction_id,

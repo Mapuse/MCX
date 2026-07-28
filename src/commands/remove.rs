@@ -7,19 +7,24 @@ use crate::core::db::Database;
 use crate::core::cgroup::CgroupController;
 use crate::core::security::SecurityMonitor;
 use crate::core::plugin::{PluginManager, PluginHook, PluginEvent};
+use crate::core::component::ComponentFilter;
+use crate::core::constants;
+use crate::utils::ui::UserInterface;
 
 pub struct RemoveCommand {
     root: PathBuf,
     db: Arc<Database>,
     plugin_mgr: Option<Arc<PluginManager>>,
+    component_filter: Option<ComponentFilter>,
 }
 
 impl RemoveCommand {
     pub fn new(root: String, db: Arc<Database>) -> Self {
-        Self { root: PathBuf::from(root), db, plugin_mgr: None }
+        Self { root: PathBuf::from(root), db, plugin_mgr: None, component_filter: None }
     }
 
     pub fn with_plugin_mgr(mut self, mgr: Arc<PluginManager>) -> Self { self.plugin_mgr = Some(mgr); self }
+    pub fn with_component_filter(mut self, filter: Option<ComponentFilter>) -> Self { self.component_filter = filter; self }
 
     pub fn execute(&self, packages: &[String], cgroup_mgr: &CgroupController, security_mon: &SecurityMonitor) -> Result<()> {
         if packages.is_empty() {
@@ -27,6 +32,14 @@ impl RemoveCommand {
         }
 
         self.fire_hooks(PluginHook::PreRemove, packages);
+
+        if let Some(ref filter) = self.component_filter {
+            if !filter.include.is_empty() {
+                let result = self.execute_partial_removal(packages, filter, cgroup_mgr, security_mon);
+                self.fire_hooks(PluginHook::PostRemove, packages);
+                return result;
+            }
+        }
 
         let mut transaction = self.db.begin_transaction()?;
 
@@ -38,7 +51,7 @@ impl RemoveCommand {
             .collect();
 
         let mut residue_paths: Vec<PathBuf> = Vec::new();
-        let active_dir = self.root.join("var/lib/mcx/active");
+        let active_dir = self.root.join(constants::PATH_ACTIVE);
 
         for pkg in &all_targets {
             if !self.db.is_package_installed(pkg)? {
@@ -92,6 +105,17 @@ impl RemoveCommand {
         for pkg in &all_targets {
             let _ = cgroup_mgr.remove_resource_limits(pkg);
             security_mon.unregister_package(pkg);
+
+            // unregister Cesar services if package has them
+            if let Ok(manifest) = self.db.get_package_manifest(pkg) {
+                let svc_cmd = crate::commands::service::ServiceCommand::new(
+                    self.root.to_string_lossy().to_string(),
+                    Arc::clone(&self.db),
+                );
+                for svc in manifest.all_services() {
+                    let _ = svc_cmd.unregister_service(&svc.name);
+                }
+            }
         }
 
         transaction.commit()?;
@@ -113,6 +137,81 @@ impl RemoveCommand {
                 mgr.fire_hook(hook, &event);
             }
         }
+    }
+
+    fn execute_partial_removal(
+        &self,
+        packages: &[String],
+        filter: &ComponentFilter,
+        cgroup_mgr: &CgroupController,
+        security_mon: &SecurityMonitor,
+    ) -> Result<()> {
+        let active_dir = self.root.join(constants::PATH_ACTIVE);
+
+        for pkg_name in packages {
+            if !self.db.is_package_installed(pkg_name)? {
+                UserInterface::warning(&format!("'{}' is not installed", pkg_name));
+                continue;
+            }
+
+            let manifest = self.db.get_package_manifest(pkg_name)
+                .with_context(|| format!("Failed to retrieve manifest for {}", pkg_name))?;
+
+            let mut removed_count = 0usize;
+            let mut remaining_files: Vec<PathBuf> = Vec::new();
+
+            for component in &manifest.components {
+                if filter.include.contains(&component.name) {
+                    UserInterface::info(&format!("Removing component '{}' from {}", component.name, pkg_name));
+                    for file in &component.files {
+                        let abs = self.root.join(file);
+                        if abs.exists() { let _ = fs::remove_file(&abs); }
+                        removed_count += 1;
+                    }
+                } else {
+                    remaining_files.extend(component.files.iter().cloned());
+                }
+            }
+
+            if remaining_files.is_empty() && !manifest.components.is_empty() {
+                UserInterface::info(&format!("All components removed from '{}'; performing full removal", pkg_name));
+                let pkg_active = active_dir.join(pkg_name);
+                if pkg_active.exists() { let _ = fs::remove_dir_all(&pkg_active); }
+                let mut tx = self.db.begin_transaction()?;
+                tx.stage_package_removal(pkg_name)?;
+                tx.commit()?;
+            } else {
+                let pkg_active = active_dir.join(pkg_name);
+                if pkg_active.exists() {
+                    for file in &manifest.files {
+                        if !remaining_files.contains(file) {
+                            let file_in_active = pkg_active.join(file);
+                            if file_in_active.exists() { let _ = fs::remove_file(&file_in_active); }
+                        }
+                    }
+                }
+            }
+
+            UserInterface::success(&format!("Removed {} file(s) from '{}'", removed_count, pkg_name));
+        }
+
+        self.cleanup_dangling_symlinks(&self.root)?;
+
+        for pkg_name in packages {
+            if let Ok(manifest) = self.db.get_package_manifest(pkg_name) {
+                let svc_cmd = crate::commands::service::ServiceCommand::new(
+                    self.root.to_string_lossy().to_string(),
+                    Arc::clone(&self.db),
+                );
+                for svc in manifest.all_services() {
+                    let _ = svc_cmd.unregister_service(&svc.name);
+                }
+            }
+            let _ = cgroup_mgr.remove_resource_limits(pkg_name);
+            security_mon.unregister_package(pkg_name);
+        }
+
+        Ok(())
     }
 
     fn analysis(&self, targets: &[String]) -> Result<(Vec<String>, Vec<String>)> {
@@ -166,10 +265,10 @@ impl RemoveCommand {
 
     fn scour_system_residue(&self, removed: &[String]) -> Result<()> {
         let config_dirs = vec![
-            self.root.join("etc/mcx"),
+            self.root.join(constants::PATH_ETC_MCX),
             self.root.join("var/lib/mcx"),
-            self.root.join("var/tmp/mcx"),
-            self.root.join("var/cache/mcx"),
+            self.root.join(constants::PATH_TMP),
+            self.root.join(constants::PATH_CACHE),
         ];
 
         let removed_set: HashSet<&str> = removed.iter().map(|s| s.as_str()).collect();
@@ -182,7 +281,7 @@ impl RemoveCommand {
                     if let Some(name) = path.file_name() {
                         let name_str = name.to_string_lossy();
                         for pkg in &removed_set {
-                            if name_str.contains(pkg) {
+                            if name_str == *pkg || name_str.starts_with(&format!("{}.", pkg)) || name_str.starts_with(&format!("{}-", pkg)) {
                                 if path.is_dir() {
                                     let _ = fs::remove_dir_all(&path);
                                 } else {

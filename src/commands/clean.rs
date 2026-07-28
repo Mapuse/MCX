@@ -1,6 +1,7 @@
 use std::fs;
 use std::path::PathBuf;
 use anyhow::{Result, Context, anyhow};
+use crate::core::constants;
 use crate::utils::ui::UserInterface;
 
 pub struct CleanCommand {
@@ -12,8 +13,8 @@ impl CleanCommand {
     pub fn new(root: &str) -> Self {
         let base = PathBuf::from(root);
         Self {
-            cache_dir: base.join("var/cache/mcx"),
-            history_dir: base.join("var/log/mcx/history"),
+            cache_dir: base.join(constants::PATH_CACHE),
+            history_dir: base.join(constants::PATH_LOG_HISTORY),
         }
     }
 

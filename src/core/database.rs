@@ -5,7 +5,10 @@ use serde::{Serialize, Deserialize};
 use heed::{Env, EnvOpenOptions, RwTxn};
 use heed::types::{Str, SerdeBincode};
 
+use crate::core::constants;
 use crate::core::transaction::ParallelFileOp;
+use crate::core::component::Component;
+use crate::core::service::CesarService;
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct ChecksumData {
@@ -37,6 +40,37 @@ pub struct PackageMetadata {
     pub conflicts: Option<Vec<String>>,
     #[serde(default = "default_arch")]
     pub architecture: String,
+    #[serde(default)]
+    pub components: Vec<Component>,
+    #[serde(default)]
+    pub services: Vec<CesarService>,
+    #[serde(default)]
+    pub binaries: Vec<String>,
+}
+
+impl PackageMetadata {
+    pub fn all_services(&self) -> Vec<&CesarService> {
+        self.services.iter().collect()
+    }
+
+    pub fn find_component_for_file(&self, file: &str) -> Option<&Component> {
+        for comp in &self.components {
+            if comp.files.iter().any(|f| f.to_string_lossy() == file || f.to_string_lossy().contains(file)) {
+                return Some(comp);
+            }
+        }
+        None
+    }
+
+    pub fn find_component_for_binary(&self, binary: &str) -> Option<&Component> {
+        let bin_path = format!("usr/bin/{}", binary);
+        for comp in &self.components {
+            if comp.files.iter().any(|f| f.to_string_lossy() == bin_path || f.file_name().map(|n| n == binary).unwrap_or(false)) {
+                return Some(comp);
+            }
+        }
+        None
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -71,8 +105,8 @@ impl Database {
 
         let env = unsafe {
             EnvOpenOptions::new()
-                .map_size(10 * 1024 * 1024)
-                .max_dbs(4)
+                .map_size(constants::DB_MAP_SIZE)
+                .max_dbs(constants::DB_MAX_DBS)
                 .open(&db_path)?
         };
 
@@ -168,7 +202,7 @@ impl Database {
 
 impl<'e> DbTransaction<'e> {
     fn txn(&mut self) -> &mut RwTxn<'e> {
-        self.txn.as_mut().unwrap()
+        self.txn.as_mut().expect("DbTransaction: txn already consumed or committed")
     }
 
     pub fn register_package_placement(&mut self, meta: &PackageMetadata) -> Result<()> {
@@ -240,10 +274,10 @@ impl<'e> DbTransaction<'e> {
     }
 
     pub fn commit(mut self) -> Result<()> {
-        self.tx_log.commit()?;
         if let Some(txn) = self.txn.take() {
             txn.commit()?;
         }
+        self.tx_log.commit()?;
         self.committed = true;
         Ok(())
     }

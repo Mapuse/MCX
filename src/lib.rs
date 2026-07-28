@@ -28,7 +28,7 @@ pub use core::integrity::IntegrityScanner;
 pub use core::lifecycle::{LifecycleEngine, LifecycleEntry, LifecycleTransition, LifecycleEvent, PackageState, DependencyGraph, OrphanSet};
 pub use core::manifest::ManifestParser;
 pub use core::package::PackageEntity;
-pub use core::plugin::{PluginRegistry, PluginSlot, PluginManager, ExternalPlugin, PluginManifest, PluginHook, PluginEvent, PluginResult, Fetcher, Builder, Packer, CurlFetcher, DefaultBuilder, ZstdPacker};
+pub use core::plugin::{PluginRegistry, PluginSlot, PluginManager, PythonPlugin, PluginManifest, PluginHook, PluginEvent, PluginResult, Fetcher, Builder, Packer, CurlFetcher, DefaultBuilder, ZstdPacker};
 pub use core::profiler::{SystemProfile, DecisionEngine, DecisionMatrix, HeuristicVerdict, AutoHealer, NetworkProber};
 pub use core::repo::RepositoryManager;
 pub use core::rollback::RollbackManager;
@@ -38,6 +38,7 @@ pub use core::solver::{DependencySolver, ResolutionVerdict, UpgradePath, compute
 pub use core::transaction::PackageTransaction;
 pub use core::vendor::VendorManager;
 pub use core::workspace::WorkspaceManager;
+pub use core::autoremove::{AutoRemoveAnalyzer, AutoRemoveReport, OrphanedPackage, OrphanReason, UnnecessaryLib};
 
 pub use network::download::Downloader;
 pub use network::sync::NetworkSyncEngine;

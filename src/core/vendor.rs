@@ -1,6 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use anyhow::{Result, Context, anyhow};
+use crate::core::constants;
 use crate::core::package::PackageEntity;
 use crate::core::manifest::ManifestParser;
 
@@ -11,7 +12,7 @@ pub struct VendorManager {
 impl VendorManager {
     pub fn new<P: AsRef<Path>>(root: P) -> Self {
         Self {
-            vendor_dir: root.as_ref().join("var/lib/mcx/vendor"),
+            vendor_dir: root.as_ref().join(constants::PATH_VENDOR),
         }
     }
 
@@ -50,8 +51,26 @@ impl VendorManager {
             
         let mut archive = tar::Archive::new(zstd_decoder);
 
-        archive.unpack(staging_extraction_area)
+        let mut entries = archive.entries()
             .with_context(|| format!("Decompression framework breakdown during vendor unpacking phase inside: {:?}", staging_extraction_area))?;
+
+        while let Some(entry) = entries.next() {
+            let mut entry = entry
+                .with_context(|| format!("Failed to read tar entry during vendor unpacking: {:?}", staging_extraction_area))?;
+            let path = entry.path()
+                .with_context(|| "Failed to read tar entry path")?
+                .into_owned();
+            if path.is_absolute() || path.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
+                anyhow::bail!("Path traversal detected in vendor archive: {:?}", path);
+            }
+            let dest = staging_extraction_area.join(&path);
+            if let Some(parent) = dest.parent() {
+                fs::create_dir_all(parent)
+                    .with_context(|| format!("Failed to create parent dirs for vendor extraction: {:?}", parent))?;
+            }
+            entry.unpack(&dest)
+                .with_context(|| format!("Failed to extract vendor entry {:?}", path))?;
+        }
 
         let metadata = ManifestParser::parse_embedded_manifest(staging_extraction_area)
             .context("Structural vendor payload identification failure during embedded manifestation pass")?;

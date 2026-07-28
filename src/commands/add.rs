@@ -6,8 +6,8 @@ use anyhow::{Result, anyhow};
 use crate::core::database::Database;
 use crate::core::database::PackageMetadata;
 use crate::archive::hash::HashVerifier;
+use crate::core::constants;
 
-#[derive()]
 pub struct AddLocalCommand {
     db: Arc<Database>,
     root: PathBuf,
@@ -60,7 +60,7 @@ impl AddLocalCommand {
             }
         }
 
-        let stage_dir = self.root.join("var/tmp/mcx/stage");
+        let stage_dir = self.root.join(constants::PATH_STAGE);
         if stage_dir.exists() {
             fs::remove_dir_all(&stage_dir)?;
         }
@@ -69,7 +69,19 @@ impl AddLocalCommand {
         let file = fs::File::open(package_path)?;
         let decoder = zstd::stream::Decoder::new(file)?;
         let mut archive = tar::Archive::new(decoder);
-        archive.unpack(&stage_dir)?;
+
+        for entry in archive.entries()? {
+            let mut entry = entry?;
+            let path = entry.path()?.into_owned();
+            if path.is_absolute() || path.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
+                anyhow::bail!("Path traversal detected in local package: {:?}", path);
+            }
+            let dest = stage_dir.join(&path);
+            if let Some(parent) = dest.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            entry.unpack(&dest)?;
+        }
 
         let mut installed_files = Vec::new();
         Self::collect_relative_files(&stage_dir, &stage_dir, &mut installed_files)?;
@@ -104,6 +116,9 @@ impl AddLocalCommand {
             provides: Some(Vec::new()),
             conflicts: Some(Vec::new()),
             architecture: "native".to_string(),
+            components: Vec::new(),
+            services: Vec::new(),
+            binaries: Vec::new(),
         };
 
         db_tx.register_package_placement(&db_metadata)?;

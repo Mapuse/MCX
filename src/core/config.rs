@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use anyhow::{Result, Context};
 use memmap2::Mmap;
+use super::constants;
 
 static CONFIG_GENERATION: AtomicUsize = AtomicUsize::new(0);
 
@@ -38,7 +39,13 @@ impl<'a> MappedConfig<'a> {
             .with_context(|| format!("Failed to open config file for mmap: {:?}", path))?;
         let mmap = unsafe { Mmap::map(&file) }
             .context("Failed to memory-map config file")?;
-        let raw = unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(mmap.as_ptr(), mmap.len())) };
+        // Validate UTF-8 safety before creating the reference
+        std::str::from_utf8(&mmap)
+            .map_err(|e| anyhow::anyhow!("Config file is not valid UTF-8: {}", e))?;
+        // SAFETY: validated UTF-8 above; Arc<Mmap> keeps the data alive for 'a
+        let raw = unsafe {
+            std::str::from_utf8_unchecked(std::slice::from_raw_parts(mmap.as_ptr(), mmap.len()))
+        };
         let generation = CONFIG_GENERATION.fetch_add(1, Ordering::Relaxed);
         let mut parser = ConfigParser { input: raw, pos: 0 };
         let sections = parser.parse_all();
@@ -81,6 +88,7 @@ impl<'a> MappedConfig<'a> {
     pub fn get_bool(&self, section: &str, key: &str) -> Option<bool> {
         self.get(section, key).map(|s| {
             s.eq_ignore_ascii_case("true") || s == "1" || s.eq_ignore_ascii_case("yes")
+                || s.eq_ignore_ascii_case("enabled") || s.eq_ignore_ascii_case("on")
         })
     }
 }
@@ -220,7 +228,7 @@ impl ConfigManager {
     pub fn calibrate(&self) -> CalibratedParams {
         let cpus = num_cpus::get();
         let cfg = &self.local_config;
-        let thread_mode = cfg.get("engine", "thread_pool_mode").unwrap_or("auto");
+        let thread_mode = cfg.get("engine", "thread_pool_mode").unwrap_or(constants::DEFAULT_THREAD_POOL_MODE);
         let thread_pool_size = match thread_mode {
             "max" => cpus * 2,
             "half" => (cpus / 2).max(1),
@@ -229,22 +237,22 @@ impl ConfigManager {
         };
         CalibratedParams {
             thread_pool_size,
-            concurrent_downloads: cfg.get_usize("engine", "max_concurrent_downloads").unwrap_or(cpus.min(8)),
-            zstd_level: cfg.get_u64("engine", "zstd_level").unwrap_or(3) as i32,
+            concurrent_downloads: cfg.get_usize("engine", "max_concurrent_downloads").unwrap_or(cpus.min(constants::DEFAULT_MAX_CONCURRENT_DOWNLOADS)),
+            zstd_level: cfg.get_u64("engine", "zstd_level").unwrap_or(constants::DEFAULT_ZSTD_LEVEL as u64) as i32,
             io_parallelism: thread_pool_size.max(2),
             network_latency_adaptive: cfg.get_bool("network", "fallback_repos").unwrap_or(true),
-            latency_threshold_ms: cfg.get_u64("network", "latency_threshold_ms").unwrap_or(200),
-            bandwidth_threshold_kbps: cfg.get_u64("network", "bandwidth_threshold_kbps").unwrap_or(5000),
+            latency_threshold_ms: cfg.get_u64("network", "latency_threshold_ms").unwrap_or(constants::DEFAULT_LATENCY_THRESHOLD_MS),
+            bandwidth_threshold_kbps: cfg.get_u64("network", "bandwidth_threshold_kbps").unwrap_or(constants::DEFAULT_BANDWIDTH_THRESHOLD_KBPS),
         }
     }
 
     fn write_default_local(path: &Path) -> Result<()> {
-        fs::write(path, b"[engine]\nthread_pool_mode = auto\nmax_concurrent_downloads = 8\nzstd_level = 3\n\n[network]\nfallback_repos = enabled\nlatency_threshold_ms = 200\nbandwidth_threshold_kbps = 5000\n\n[security]\nverify_checksums = true\nallow_unverified = false\n\n[cache]\nlimit_bytes = 5368709120\nprune_age_hours = 168\n")?;
+        fs::write(path, constants::DEFAULT_CONFIG_INI.as_bytes())?;
         Ok(())
     }
 
     fn write_default_repo(path: &Path) -> Result<()> {
-        fs::write(path, b"[main]\nurl = https://packages.cudane.org\nenabled = true\npriority = 100\n\n[community]\nurl = https://community.cudane.org\nenabled = false\npriority = 200\n")?;
+        fs::write(path, constants::DEFAULT_REPO_INI.as_bytes())?;
         Ok(())
     }
 }
@@ -265,12 +273,12 @@ impl Default for CalibratedParams {
         let cpus = num_cpus::get();
         Self {
             thread_pool_size: cpus,
-            concurrent_downloads: cpus.min(8),
-            zstd_level: 3,
+            concurrent_downloads: cpus.min(constants::DEFAULT_MAX_CONCURRENT_DOWNLOADS),
+            zstd_level: constants::DEFAULT_ZSTD_LEVEL,
             io_parallelism: cpus.max(2),
             network_latency_adaptive: true,
-            latency_threshold_ms: 200,
-            bandwidth_threshold_kbps: 5000,
+            latency_threshold_ms: constants::DEFAULT_LATENCY_THRESHOLD_MS,
+            bandwidth_threshold_kbps: constants::DEFAULT_BANDWIDTH_THRESHOLD_KBPS,
         }
     }
 }

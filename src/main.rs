@@ -12,28 +12,32 @@ use std::sync::Arc;
 use crate::utils::ui::UserInterface;
 use crate::core::database::Database;
 use crate::core::config::ConfigManager;
+use crate::core::constants;
 use crate::core::profiler::{SystemProfile, DecisionEngine, NetworkProber};
 use crate::core::plugin::{PluginManager, PluginHook, PluginEvent};
 use crate::core::plugin::{PluginRegistry, CurlFetcher, DefaultBuilder, ZstdPacker};
 use crate::commands::add::AddLocalCommand;
 use crate::commands::clean::CleanCommand;
+use crate::commands::configuration::{ConfigEditorCommand, ConfigTarget};
+use crate::core::component::ComponentFilter;
 use crate::commands::install::InstallCommand;
 use crate::commands::remove::RemoveCommand;
 use crate::commands::search::SearchCommand;
+use crate::commands::service::ServiceCommand;
 use crate::commands::sync::SyncCommand;
 use crate::commands::system::SystemCommand;
 
 fn default_root() -> String {
     if is_root_process() {
-        "/".to_string()
+        constants::DEFAULT_ROOT.to_string()
     } else {
-        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp/.mcx".to_string());
+        let home = std::env::var("HOME").unwrap_or_else(|_| constants::DEFAULT_HOME.to_string());
         PathBuf::from(home).join(".mcx").to_string_lossy().to_string()
     }
 }
 
 #[derive(Parser)]
-    #[command(name = "mcx", version = "6.0.0", disable_version_flag = true)]
+    #[command(name = constants::APP_NAME, version = constants::APP_VERSION, disable_version_flag = true)]
 struct Cli {
     #[arg(long, global = true, default_value_t = default_root())]
     root: String,
@@ -46,13 +50,36 @@ struct Cli {
 #[derive(Subcommand)]
 pub enum Commands {
     #[command(short_flag = 'i', long_flag = "install", aliases = ["in", "add"])]
-    Install { packages: Vec<String> },
+    Install {
+        packages: Vec<String>,
+        #[arg(long, help = "Install only required components")]
+        minimal: bool,
+        #[arg(long, help = "Install all components including development")]
+        dev: bool,
+        #[arg(long, help = "Install specific components (comma-separated)")]
+        components: Option<String>,
+        #[arg(long, help = "Exclude specific components (comma-separated)")]
+        exclude: Option<String>,
+        #[arg(long, help = "Install only the specific binary/tool from the package")]
+        only: Option<String>,
+    },
 
     #[command(short_flag = 'a', long_flag = "add", aliases = ["local", "package", "xcs"])]
     AddLocal { file: String },
 
     #[command(short_flag = 'r', long_flag = "remove", aliases = ["rm", "uninstall", "delete"])]
-    Remove { packages: Vec<String> },
+    Remove {
+        packages: Vec<String>,
+        #[arg(long, help = "Remove specific components only (comma-separated)")]
+        components: Option<String>,
+        #[arg(long, help = "Purge broken files and caches")]
+        purge_broken: bool,
+    },
+
+    #[command(long_flag = "purge", aliases = ["full-remove"])]
+    Purge {
+        packages: Vec<String>,
+    },
 
     #[command(short_flag = 's', long_flag = "search", aliases = ["find", "look"])]
     Search { query: String },
@@ -61,7 +88,13 @@ pub enum Commands {
     Update { packages: Option<Vec<String>> },
 
     #[command(short_flag = 'U', long_flag = "upgrade", aliases = ["up", "dist-upgrade"])]
-    Upgrade { packages: Option<Vec<String>> },
+    Upgrade {
+        packages: Option<Vec<String>>,
+        #[arg(long, help = "Upgrade only specific components (comma-separated)")]
+        components: Option<String>,
+        #[arg(long, help = "Upgrade only the specific binary/tool")]
+        only: Option<String>,
+    },
 
     #[command(short_flag = 'q', long_flag = "query", aliases = ["info", "show"])]
     Query { package: String },
@@ -138,6 +171,26 @@ pub enum Commands {
         #[command(subcommand)]
         action: PluginAction,
     },
+
+    #[command(long_flag = "service", aliases = ["svc"])]
+    Service {
+        #[arg(trailing_var_arg = true)]
+        args: Vec<String>,
+    },
+
+    #[command(long_flag = "command-not-found", aliases = ["cnf"])]
+    CommandNotFound {
+        command: String,
+    },
+
+    #[command(long_flag = "binindex", aliases = ["bi"])]
+    BinIndex,
+
+    #[command(long_flag = "autoremove", aliases = ["ar", "autoclean"])]
+    AutoRemove {
+        #[arg(long, help = "Actually remove orphaned packages (default: dry-run)")]
+        apply: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -153,7 +206,7 @@ pub enum PluginAction {
     Info { name: String },
     Run { name: String, hook: Option<String> },
     Reload,
-    Daemon { name: String },
+    ReloadConfig,
     Add { source: String },
     Remove { name: String },
 }
@@ -204,7 +257,7 @@ impl EngineContext {
 async fn main() {
     let args = Cli::parse();
     if args.version {
-        UserInterface::version("mcx 6.0.0");
+        UserInterface::version(&format!("{} {}", constants::APP_NAME, constants::APP_VERSION));
         return;
     }
     crate::core::sudo::root_access();
@@ -219,24 +272,54 @@ async fn main() {
     let cgroup_mgr = crate::core::cgroup::CgroupController::new();
 
     match args.command {
-        Commands::Install { packages } => {
+        Commands::Install { packages, minimal, dev, components, exclude, only } => {
             UserInterface::info(&format!("Installing: {:?}", packages));
             let decisions = DecisionEngine::evaluate_thread_strategy(
                 &ctx.sys_profile,
-                &NetworkProber::probe("https://packages.cudane.org", std::time::Duration::from_secs(5)).await,
+                &NetworkProber::probe(constants::MAIN_REPO_URL, std::time::Duration::from_secs(constants::PROBE_TIMEOUT_SECS)).await,
                 &Default::default(),
             );
             if DecisionEngine::should_use_parallel(&decisions) {
                 UserInterface::info("Parallel install strategy selected");
             }
+
+            let filter = if let Some(ref binary_name) = only {
+                let mut resolved = ComponentFilter { minimal: false, include_dev: false, include: Vec::new(), exclude: Vec::new() };
+                for pkg_name in &packages {
+                    if let Ok(meta) = ctx.db.get_package_manifest(pkg_name) {
+                        if let Some(comp) = meta.find_component_for_binary(binary_name) {
+                            UserInterface::info(&format!("'{}' is in component '{}' of {}", binary_name, comp.name, pkg_name));
+                            resolved.include.push(comp.name.clone());
+                        } else {
+                            UserInterface::warning(&format!("Binary '{}' not found in package '{}'; installing all components", binary_name, pkg_name));
+                        }
+                    }
+                }
+                resolved
+            } else if minimal {
+                ComponentFilter { minimal: true, include_dev: false, include: Vec::new(), exclude: Vec::new() }
+            } else if dev {
+                ComponentFilter { minimal: false, include_dev: true, include: Vec::new(), exclude: Vec::new() }
+            } else if let Some(ref comp_str) = components {
+                let comps: Vec<String> = comp_str.split(',').map(|s| s.trim().to_string()).collect();
+                let excl: Vec<String> = exclude.as_ref()
+                    .map(|e| e.split(',').map(|s| s.trim().to_string()).collect())
+                    .unwrap_or_default();
+                ComponentFilter { minimal: false, include_dev: false, include: comps, exclude: excl }
+            } else {
+                ComponentFilter::none()
+            };
+
+                    let bin_before = crate::core::binindex::scan_system_binaries(&args.root);
             let cmd = InstallCommand::new(args.root.clone(), Arc::clone(&ctx.db))
                 .with_cgroup(cgroup_mgr)
                 .with_security(Arc::clone(&security_mon))
-                .with_plugin_mgr(Arc::clone(&ctx.plugin_mgr));
+                .with_plugin_mgr(Arc::clone(&ctx.plugin_mgr))
+                .with_component_filter(filter);
             match cmd.execute(&packages).await {
                 Ok(_) => {
                     let cas = crate::core::cas::CasStore::new(&root_path);
-                    if let Ok(stats) = cas.deduplicate_libraries(&root_path.join("usr/lib")) {
+                    if let Ok(stats) = cas.deduplicate_libraries(&root_path.join(constants::LIB_DIRS[0])) {
                     UserInterface::cas(&format!(
                         "CAS dedup: {} unique files, {} bytes saved",
                         stats.unique_files, stats.bytes_saved
@@ -269,45 +352,86 @@ async fn main() {
                         }
                     }
                     UserInterface::security(&format!("Tracking {} active packages", security_mon.active_count()));
+
+                    let new_bins = crate::core::binindex::detect_new_binaries(&args.root, &bin_before);
+                    if !new_bins.is_empty() {
+                        UserInterface::info(&format!("New binaries available: {}", new_bins.join(", ")));
+                    }
+
+                    let binindex = crate::core::binindex::BinaryIndex::new(args.root.clone(), Arc::clone(&ctx.db));
+                    if let Ok(count) = binindex.rebuild() {
+                        UserInterface::info(&format!("Binary index rebuilt: {} entries", count));
+                    }
+
                     UserInterface::success("Installation committed.");
+                    run_autoremove_scan(&ctx.db, &args.root);
                 }
                 Err(e) => { UserInterface::error(&format!("{e}")); process::exit(1); }
             }
         }
-        Commands::Remove { packages } => {
+        Commands::Remove { packages, components, purge_broken } => {
             UserInterface::info(&format!("Removing: {:?}", packages));
+
+            if purge_broken {
+                UserInterface::info("Scanning for broken files...");
+                let scanner = crate::core::integrity::IntegrityScanner::new(&root_path, Arc::clone(&ctx.db));
+                let report = scanner.verify_all();
+                let mut broken_files: Vec<String> = Vec::new();
+                for mf in &report.missing_files {
+                    broken_files.push(mf.path.to_string_lossy().to_string());
+                }
+                for cf in &report.corrupted_files {
+                    broken_files.push(cf.path.to_string_lossy().to_string());
+                }
+                if !broken_files.is_empty() {
+                    UserInterface::info(&format!("Found {} broken files, purging...", broken_files.len()));
+                    for f in &broken_files {
+                        let abs = root_path.join(f);
+                        if abs.exists() { let _ = fs::remove_file(&abs); }
+                    }
+                } else {
+                    UserInterface::success("No broken files found.");
+                }
+            }
+
+            let cmd = RemoveCommand::new(args.root.clone(), Arc::clone(&ctx.db))
+                .with_plugin_mgr(Arc::clone(&ctx.plugin_mgr))
+                .with_component_filter(components.as_deref().map(|c| {
+                    let comps: Vec<String> = c.split(',').map(|s| s.trim().to_string()).collect();
+                    crate::core::component::ComponentFilter { minimal: false, include_dev: false, include: comps, exclude: Vec::new() }
+                }));
+            match cmd.execute(&packages, &cgroup_mgr, &security_mon) {
+                Ok(_) => {
+                    let binindex = crate::core::binindex::BinaryIndex::new(args.root.clone(), Arc::clone(&ctx.db));
+                    let _ = binindex.rebuild();
+                    UserInterface::separator();
+                    UserInterface::security(&format!("Tracking {} active packages", security_mon.active_count()));
+                    UserInterface::success("Packages removed.");
+                    run_autoremove_scan(&ctx.db, &args.root);
+                }
+                Err(e) => { UserInterface::error(&format!("{e}")); process::exit(1); }
+            }
+        }
+        Commands::Purge { packages } => {
+            UserInterface::info(&format!("Purging: {:?}", packages));
             let cmd = RemoveCommand::new(args.root.clone(), Arc::clone(&ctx.db))
                 .with_plugin_mgr(Arc::clone(&ctx.plugin_mgr));
             match cmd.execute(&packages, &cgroup_mgr, &security_mon) {
                 Ok(_) => {
-                    UserInterface::separator();
-
-                    // profile validation after removal
-                    let profile_path = root_path.join("etc/mcx/profile.ini");
-                    if profile_path.exists() {
-                        match crate::core::declarative::ProfileValidator::load_profile(&profile_path) {
-                            Ok(profile) => {
-                                let current: Vec<String> = ctx.db.get_all_installed_packages()
-                                    .unwrap_or_default()
-                                    .iter()
-                                    .map(|p| p.pkg_name.clone())
-                                    .collect();
-                                let (to_install, to_remove) =
-                                    crate::core::declarative::ProfileValidator::compile_profile_diff(
-                                        &current, &profile.packages);
-                                if !to_install.is_empty() || !to_remove.is_empty() {
-                                    UserInterface::info(&format!(
-                                        "Profile drift: {} to install, {} to remove",
-                                        to_install.len(), to_remove.len()));
-                                }
-                            }
-                            Err(e) => {
-                                UserInterface::info(&format!("Profile check: {}", e));
-                            }
+                    let purge_dirs = vec![
+                        root_path.join("var/lib/mcx/active"),
+                        root_path.join("var/cache/mcx"),
+                        root_path.join("var/tmp/mcx"),
+                    ];
+                    for dir in &purge_dirs {
+                        for pkg in &packages {
+                            let pkg_dir = dir.join(pkg);
+                            if pkg_dir.exists() { let _ = fs::remove_dir_all(&pkg_dir); }
                         }
                     }
-                    UserInterface::security(&format!("Tracking {} active packages", security_mon.active_count()));
-                    UserInterface::success("Packages removed.");
+                    let binindex = crate::core::binindex::BinaryIndex::new(args.root.clone(), Arc::clone(&ctx.db));
+                    let _ = binindex.rebuild();
+                    UserInterface::success("Package fully purged (including caches).");
                 }
                 Err(e) => { UserInterface::error(&format!("{e}")); process::exit(1); }
             }
@@ -368,7 +492,10 @@ async fn main() {
                 let cmd = InstallCommand::new(args.root.clone(), Arc::clone(&ctx.db))
                     .with_plugin_mgr(Arc::clone(&ctx.plugin_mgr));
                 match cmd.execute(&pkgs).await {
-                    Ok(_) => UserInterface::success("Packages updated."),
+                    Ok(_) => {
+                        UserInterface::success("Packages updated.");
+                        run_autoremove_scan(&ctx.db, &args.root);
+                    }
                     Err(e) => { UserInterface::error(&format!("{}", e)); process::exit(1); }
                 }
             } else {
@@ -380,7 +507,7 @@ async fn main() {
                 }
             }
         }
-        Commands::Upgrade { packages } => {
+        Commands::Upgrade { packages, components, only } => {
             let pkgs_to_upgrade: Vec<String> = if let Some(pkgs) = packages {
                 pkgs
             } else {
@@ -390,11 +517,33 @@ async fn main() {
 
             UserInterface::info(&format!("Upgrading: {:?}", pkgs_to_upgrade));
 
+            let filter = if let Some(ref binary_name) = only {
+                let mut resolved = ComponentFilter { minimal: false, include_dev: false, include: Vec::new(), exclude: Vec::new() };
+                for pkg_name in &pkgs_to_upgrade {
+                    if let Ok(meta) = ctx.db.get_package_manifest(pkg_name) {
+                        if let Some(comp) = meta.find_component_for_binary(binary_name) {
+                            UserInterface::info(&format!("'{}' is in component '{}' of {}", binary_name, comp.name, pkg_name));
+                            resolved.include.push(comp.name.clone());
+                        }
+                    }
+                }
+                resolved
+            } else if let Some(ref comp_str) = components {
+                let comps: Vec<String> = comp_str.split(',').map(|s| s.trim().to_string()).collect();
+                ComponentFilter { minimal: false, include_dev: false, include: comps, exclude: Vec::new() }
+            } else {
+                ComponentFilter::none()
+            };
+
             let cmd = InstallCommand::new(args.root.clone(), Arc::clone(&ctx.db))
-                .with_plugin_mgr(Arc::clone(&ctx.plugin_mgr));
+                .with_plugin_mgr(Arc::clone(&ctx.plugin_mgr))
+                .with_component_filter(filter);
             match cmd.execute(&pkgs_to_upgrade).await {
                 Ok(_) => {
+                    let binindex = crate::core::binindex::BinaryIndex::new(args.root.clone(), Arc::clone(&ctx.db));
+                    let _ = binindex.rebuild();
                     UserInterface::success("Upgrade complete.");
+                    run_autoremove_scan(&ctx.db, &args.root);
                 }
                 Err(e) => { UserInterface::error(&format!("{}", e)); process::exit(1); }
             }
@@ -455,6 +604,22 @@ async fn main() {
                             .map(|p| p.to_string_lossy().to_string())
                             .collect();
                         UserInterface::render_list("Installed files", &file_strings);
+                    }
+                    if !meta.components.is_empty() {
+                        let comp_strings: Vec<String> = meta.components.iter()
+                            .map(|c| format!("{} [{}] ({} files)", c.name, c.priority, c.files.len()))
+                            .collect();
+                        UserInterface::render_list("Components", &comp_strings);
+                    }
+                    for svc in meta.all_services() {
+                        let mut svc_items: Vec<String> = Vec::new();
+                        svc_items.push(format!("Name: {}", svc.name));
+                        svc_items.push(format!("Exec: {}", svc.exec));
+                        svc_items.push(format!("Restart: {}", svc.restart));
+                        if !svc.requires.is_empty() {
+                            svc_items.push(format!("Requires: {}", svc.requires));
+                        }
+                        UserInterface::render_list("Service", &svc_items);
                     }
                 }
                 Err(_) => UserInterface::error("Not installed."),
@@ -552,6 +717,7 @@ async fn main() {
             } else {
                 UserInterface::success("All packages intact. No repair needed.");
             }
+            run_autoremove_scan(&ctx.db, &args.root);
         }
         Commands::Config { init } => {
             if init {
@@ -563,7 +729,7 @@ async fn main() {
 
                 let config_ini = config_dir.join("config.ini");
                 if !config_ini.exists() {
-                    fs::write(&config_ini, b"[engine]\nthread_pool_mode = auto\nmax_concurrent_downloads = 8\nzstd_level = 3\n\n[network]\nfallback_repos = enabled\nlatency_threshold_ms = 200\nbandwidth_threshold_kbps = 5000\n\n[security]\nverify_checksums = true\nallow_unverified = false\n\n[cache]\nlimit_bytes = 5368709120\nprune_age_hours = 168\n").unwrap_or_else(|e| {
+                    fs::write(&config_ini, constants::DEFAULT_CONFIG_INI.as_bytes()).unwrap_or_else(|e| {
                         UserInterface::error(&format!("Failed to write config.ini: {e}"));
                         process::exit(1);
                     });
@@ -571,7 +737,7 @@ async fn main() {
 
                 let repo_ini = config_dir.join("repo.ini");
                 if !repo_ini.exists() {
-                    fs::write(&repo_ini, b"[main]\nurl = https://packages.cudane.org\nenabled = true\npriority = 100\n\n[community]\nurl = https://community.cudane.org\nenabled = false\npriority = 200\n").unwrap_or_else(|e| {
+                    fs::write(&repo_ini, constants::DEFAULT_REPO_INI.as_bytes()).unwrap_or_else(|e| {
                         UserInterface::error(&format!("Failed to write repo.ini: {e}"));
                         process::exit(1);
                     });
@@ -594,7 +760,11 @@ async fn main() {
                     profile_ini.to_string_lossy().to_string(),
                 ]);
             } else {
-                UserInterface::success("Configuration saved.");
+                let editor = ConfigEditorCommand::new(&args.root, ConfigTarget::EngineConfig);
+                if let Err(e) = editor.execute() {
+                    UserInterface::error(&format!("Config editor error: {e}"));
+                    process::exit(1);
+                }
             }
         }
 
@@ -761,7 +931,7 @@ async fn main() {
         }
 
         Commands::SelfUpdate => {
-            let output_path = PathBuf::from("/system/bin/mcx");
+            let output_path = PathBuf::from(constants::SELF_UPDATE_BINARY_PATH);
 
             let repo_mgr = crate::core::repo::RepositoryManager::new(&root_path);
             let repos = repo_mgr.load_repositories()
@@ -779,7 +949,7 @@ async fn main() {
                 let binary_url = format!("{}/system/bin/mcx", repo.url.trim_end_matches('/'));
                 UserInterface::self_update(&format!("Downloading from {}...", binary_url));
 
-                let tmp = std::env::temp_dir().join("mcx-self-update-bin");
+                let tmp = std::env::temp_dir().join(constants::SELF_UPDATE_OLD_NAME);
                 let _ = std::fs::remove_file(&tmp);
 
                 match crate::core::update::SelfUpdateManager::binary(&binary_url, &tmp).await {
@@ -793,7 +963,7 @@ async fn main() {
                         UserInterface::info(&format!("Downloaded: {}", ver.trim()));
 
                         // atomic swap: write to .new, rename over target
-                        let new_path = output_path.with_extension("mcx.new");
+                        let new_path = output_path.with_extension(constants::SELF_UPDATE_NEW_EXT);
                         if let Some(parent) = new_path.parent() {
                             let _ = fs::create_dir_all(parent);
                         }
@@ -808,7 +978,7 @@ async fn main() {
                         #[cfg(unix)]
                         {
                             use std::os::unix::fs::PermissionsExt;
-                            let _ = fs::set_permissions(&new_path, fs::Permissions::from_mode(0o755));
+                            let _ = fs::set_permissions(&new_path, fs::Permissions::from_mode(constants::SELF_UPDATE_PERMISSIONS));
                         }
                         fs::rename(&new_path, &output_path).unwrap_or_else(|e| {
                             UserInterface::error(&format!("Atomic rename failed: {}", e));
@@ -834,7 +1004,7 @@ async fn main() {
                 process::exit(1);
             }
 
-            UserInterface::self_update("Self-update complete. New binary at /system/bin/mcx");
+            UserInterface::self_update(&format!("Self-update complete. New binary at {}", constants::SELF_UPDATE_BINARY_PATH));
         }
 
         Commands::Vendor { action } => {
@@ -937,11 +1107,10 @@ async fn main() {
                     let plugins = ctx.plugin_mgr.list();
                     if plugins.is_empty() {
                         UserInterface::info("No external plugins installed.");
-                        UserInterface::info("Place plugins in <root>/var/lib/mcx/plugins/<name>/plugin.ini");
+                        UserInterface::info(&format!("Configure plugins in <root>/{}", constants::PLUGIN_CONFIG_FILE));
                     } else {
                         let summary: Vec<String> = plugins.iter().map(|p| {
-                            let m = p.manifest();
-                            format!("{} v{} [{}] ({}) — {}", m.name, m.version, m.plugin_type, m.language, m.description)
+                            format!("{} ({})", p.name(), p.path().display())
                         }).collect();
                         UserInterface::render_list("External plugins", &summary);
                     }
@@ -949,17 +1118,10 @@ async fn main() {
                 PluginAction::Info { name } => {
                     match ctx.plugin_mgr.find(&name) {
                         Some(p) => {
-                            let m = p.manifest();
-                            UserInterface::block(&format!("Plugin: {}", m.name), &[
-                                &format!("Version: {}", m.version),
-                                &format!("Description: {}", m.description),
-                                &format!("Language: {}", m.language),
-                                &format!("Type: {}", m.plugin_type),
-                                &format!("Command: {}", m.command),
-                                &format!("Trigger: {}", m.trigger.as_deref().unwrap_or("(manual)")),
-                                &format!("Author: {}", m.author.as_deref().unwrap_or("(unknown)")),
-                                &format!("Homepage: {}", m.homepage.as_deref().unwrap_or("(none)")),
-                                &format!("Timeout: {}s", m.timeout_secs.unwrap_or(30)),
+                            UserInterface::block(&format!("Plugin: {}", p.name()), &[
+                                &format!("Name: {}", p.name()),
+                                &format!("Language: python"),
+                                &format!("File: {}", p.path().display()),
                             ]);
                         }
                         None => { UserInterface::error(&format!("Plugin '{}' not found", name)); process::exit(1); }
@@ -992,14 +1154,16 @@ async fn main() {
                     ctx.plugin_mgr.reload(&root_path);
                     UserInterface::success(&format!("{} plugins loaded", ctx.plugin_mgr.list().len()));
                 }
-                PluginAction::Daemon { name } => {
-                    match ctx.plugin_mgr.start_daemon(&name) {
-                        Ok(_) => UserInterface::success(&format!("Daemon '{}' started in background", name)),
+                PluginAction::ReloadConfig => {
+                    match ctx.plugin_mgr.reload_from_config(&root_path) {
+                        Ok(new_count) => {
+                            UserInterface::success(&format!("{} new plugin(s) loaded, {} total", new_count, ctx.plugin_mgr.list().len()));
+                        }
                         Err(e) => { UserInterface::error(&format!("{e}")); process::exit(1); }
                     }
                 }
                 PluginAction::Add { source } => {
-                    let plugins_dir = root_path.join("var/lib/mcx/plugins");
+                    let plugins_dir = root_path.join(constants::PATH_PLUGINS);
                     let source_path = PathBuf::from(&source);
                     if source_path.is_dir() {
                         let name = source_path.file_name()
@@ -1023,7 +1187,7 @@ async fn main() {
                     }
                 }
                 PluginAction::Remove { name } => {
-                    let plugins_dir = root_path.join("var/lib/mcx/plugins").join(&name);
+                    let plugins_dir = root_path.join(constants::PATH_PLUGINS).join(&name);
                     if !plugins_dir.exists() {
                         UserInterface::error(&format!("Plugin '{}' not found at {:?}", name, plugins_dir));
                         process::exit(1);
@@ -1036,6 +1200,51 @@ async fn main() {
                         Err(e) => { UserInterface::error(&format!("Failed to remove plugin: {e}")); process::exit(1); }
                     }
                 }
+            }
+        }
+        Commands::Service { args } => {
+            let cmd = ServiceCommand::new(root_path.to_string_lossy().to_string(), Arc::clone(&ctx.db));
+            if let Err(e) = cmd.execute(&args) {
+                UserInterface::error(&format!("{e}"));
+                process::exit(1);
+            }
+        }
+        Commands::CommandNotFound { command } => {
+            if let Err(e) = crate::core::binindex::command_not_found_handler(
+                &args.root, Arc::clone(&ctx.db), &command,
+            ) {
+                UserInterface::error(&format!("{e}"));
+                process::exit(1);
+            }
+        }
+        Commands::BinIndex => {
+            let binindex = crate::core::binindex::BinaryIndex::new(args.root.clone(), Arc::clone(&ctx.db));
+            match binindex.rebuild() {
+                Ok(count) => UserInterface::success(&format!("Binary index rebuilt: {} entries", count)),
+                Err(e) => { UserInterface::error(&format!("Failed to rebuild binary index: {e}")); process::exit(1); }
+            }
+        }
+        Commands::AutoRemove { apply } => {
+            UserInterface::info("Analyzing unnecessary packages...");
+            let analyzer = crate::core::autoremove::AutoRemoveAnalyzer::new(Arc::clone(&ctx.db), &args.root);
+            match analyzer.analyze() {
+                Ok(report) => {
+                    analyzer.print_report(&report);
+                    if apply && !report.orphaned_packages.is_empty() {
+                        UserInterface::info(&format!("Removing {} orphaned package(s)...", report.orphaned_packages.len()));
+                        match analyzer.execute_removal(&report) {
+                            Ok(count) => {
+                                let binindex = crate::core::binindex::BinaryIndex::new(args.root.clone(), Arc::clone(&ctx.db));
+                                let _ = binindex.rebuild();
+                                UserInterface::success(&format!("Auto-remove complete: {} package(s) removed.", count));
+                            }
+                            Err(e) => { UserInterface::error(&format!("Auto-remove failed: {e}")); process::exit(1); }
+                        }
+                    } else if !report.orphaned_packages.is_empty() {
+                        UserInterface::info("Dry-run: use --apply to actually remove orphaned packages.");
+                    }
+                }
+                Err(e) => { UserInterface::error(&format!("Analysis failed: {e}")); process::exit(1); }
             }
         }
     }
@@ -1065,11 +1274,28 @@ fn copy_dir_recursive(src: &PathBuf, dst: &PathBuf, base: &PathBuf) -> std::io::
 }
 
 fn is_root_process() -> bool {
-    std::process::Command::new("id")
+    std::process::Command::new(constants::TOOL_ID)
         .arg("-u")
         .output()
         .ok()
         .and_then(|o| String::from_utf8(o.stdout).ok())
         .map(|s| s.trim() == "0")
         .unwrap_or(false)
+}
+
+fn run_autoremove_scan(db: &Arc<Database>, root: &str) {
+    let analyzer = crate::core::autoremove::AutoRemoveAnalyzer::new(Arc::clone(db), root);
+    if let Ok(report) = analyzer.analyze() {
+        if !report.orphaned_packages.is_empty() {
+            UserInterface::separator();
+            UserInterface::info(&format!("Auto-remove: {} orphaned package(s) can be removed", report.orphaned_packages.len()));
+            for orphan in &report.orphaned_packages {
+                UserInterface::info(&format!("  {} {} — {:?}", orphan.name, orphan.version, orphan.reason));
+            }
+            UserInterface::info("Run `mcx --autoremove --apply` to remove them.");
+        }
+        if !report.unnecessary_libs.is_empty() {
+            UserInterface::info(&format!("Auto-remove: {} unnecessary library file(s) found", report.unnecessary_libs.len()));
+        }
+    }
 }

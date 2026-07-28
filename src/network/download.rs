@@ -10,6 +10,7 @@ use reqwest::header::{ACCEPT_RANGES, CONTENT_LENGTH, ETAG, IF_NONE_MATCH, RANGE}
 use reqwest::Client;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::Mutex;
+use crate::core::constants;
 
 #[derive(Clone)]
 pub struct Downloader {
@@ -23,17 +24,17 @@ pub struct Downloader {
 impl Downloader {
     pub fn new() -> Self {
         let client = Client::builder()
-            .pool_idle_timeout(Duration::from_secs(30))
-            .tcp_keepalive(Duration::from_secs(15))
-            .pool_max_idle_per_host(32)
+            .pool_idle_timeout(Duration::from_secs(constants::POOL_IDLE_TIMEOUT_SECS))
+            .tcp_keepalive(Duration::from_secs(constants::TCP_KEEPALIVE_SECS))
+            .pool_max_idle_per_host(constants::POOL_MAX_IDLE_PER_HOST)
             .build()
             .unwrap();
         Self {
             client,
-            max_concurrent_chunks: 16,
-            max_concurrent_packages: 8,
-            max_retries: 3,
-            base_delay_ms: 200,
+            max_concurrent_chunks: constants::DEFAULT_MAX_CONCURRENT_CHUNKS as u64,
+            max_concurrent_packages: constants::DEFAULT_MAX_CONCURRENT_PACKAGES,
+            max_retries: constants::DEFAULT_MAX_RETRIES,
+            base_delay_ms: constants::DEFAULT_BASE_DELAY_MS,
         }
     }
 
@@ -96,7 +97,7 @@ impl Downloader {
         let content_length = head_resp.headers().get(CONTENT_LENGTH)
             .and_then(|v| v.to_str().unwrap_or("").parse::<u64>().ok());
 
-        if accept_ranges && content_length.is_some() && content_length.unwrap() > 5 * 1024 * 1024 {
+        if accept_ranges && content_length.is_some() && content_length.unwrap() > constants::CHUNKED_DOWNLOAD_THRESHOLD {
             self.download_chunked(url, destination, content_length.unwrap()).await?;
         } else {
             self.download_streaming(url, destination).await?;
@@ -118,7 +119,7 @@ impl Downloader {
     }
 
     async fn download_chunked(&self, url: &str, destination: &Path, total_size: u64) -> Result<()> {
-        let chunk_size = (total_size / self.max_concurrent_chunks).max(1024 * 1024);
+        let chunk_size = (total_size / self.max_concurrent_chunks).max(constants::MIN_CHUNK_SIZE);
         let file = Arc::new(Mutex::new(
             OpenOptions::new().create(true).write(true).open(destination)
                 .with_context(|| format!("Failed to create {:?}", destination))?

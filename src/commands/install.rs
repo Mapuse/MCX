@@ -10,9 +10,11 @@ use crate::core::cgroup::CgroupController;
 use crate::core::declarative::ProfileValidator;
 use crate::core::security::SecurityMonitor;
 use crate::core::plugin::{PluginManager, PluginHook, PluginEvent};
+use crate::core::component::ComponentFilter;
 use crate::network::download::Downloader;
 use crate::archive::extract::Extractor;
 use crate::archive::hash::HashVerifier;
+use crate::core::constants;
 use crate::utils::ui::UserInterface;
 
 pub struct InstallCommand {
@@ -22,6 +24,7 @@ pub struct InstallCommand {
     security_mon: Option<Arc<SecurityMonitor>>,
     profile_path: Option<PathBuf>,
     plugin_mgr: Option<Arc<PluginManager>>,
+    component_filter: Option<ComponentFilter>,
 }
 
 impl InstallCommand {
@@ -33,6 +36,7 @@ impl InstallCommand {
             security_mon: None,
             profile_path: None,
             plugin_mgr: None,
+            component_filter: None,
         }
     }
 
@@ -40,6 +44,7 @@ impl InstallCommand {
     pub fn with_security(mut self, mon: Arc<SecurityMonitor>) -> Self { self.security_mon = Some(mon); self }
     pub fn with_profile(mut self, path: PathBuf) -> Self { self.profile_path = Some(path); self }
     pub fn with_plugin_mgr(mut self, mgr: Arc<PluginManager>) -> Self { self.plugin_mgr = Some(mgr); self }
+    pub fn with_component_filter(mut self, filter: ComponentFilter) -> Self { self.component_filter = Some(filter); self }
 
     pub async fn execute(&self, packages: &[String]) -> Result<()> {
         if packages.is_empty() {
@@ -64,7 +69,7 @@ impl InstallCommand {
             }
         }
         let root_path = Path::new(&self.root);
-        let cache_dir = root_path.join("var/cache/mcx");
+        let cache_dir = root_path.join(constants::PATH_CACHE);
         fs::create_dir_all(&cache_dir)?;
 
         let downloader = Downloader::new();
@@ -73,7 +78,7 @@ impl InstallCommand {
 
         for meta in &plan {
             if self.db.is_package_installed(&meta.pkg_name)? {
-                let active_dir = root_path.join("var/lib/mcx/active").join(&meta.pkg_name);
+                let active_dir = root_path.join(constants::PATH_ACTIVE).join(&meta.pkg_name);
                 if active_dir.exists() {
                     continue;
                 }
@@ -86,38 +91,53 @@ impl InstallCommand {
                 let dl = downloader.clone();
                 let url = meta.source.clone();
                 let dest = target_path.clone();
-                join_all(vec![tokio::spawn(async move {
-                    let _ = dl.package(&url, &dest).await?;
+                let results = join_all(vec![tokio::spawn(async move {
+                    dl.package(&url, &dest).await?;
                     Ok::<(), anyhow::Error>(())
                 })]).await;
+                for result in results {
+                    result.map_err(|e| anyhow!("Task join error: {}", e))??;
+                }
             }
         }
 
-        let use_parallel = sys_profile.cpu_count >= 4 && sys_profile.available_ram_mb >= 1024;
+        let use_parallel = sys_profile.cpu_count >= constants::CPU_THRESHOLD_LOW && sys_profile.available_ram_mb >= constants::RAM_THRESHOLD_MEDIUM_MB;
 
         if use_parallel {
             let mut handles = Vec::new();
+            let filter_clone = self.component_filter.clone();
             for (meta, path) in &pending {
                 let meta_clone = meta.clone();
                 let path_clone = path.clone();
                 let root = self.root.clone();
                 let ext = Extractor::new(&self.root);
+                let filter = filter_clone.clone();
 
                 handles.push(tokio::task::spawn_blocking(move || -> Result<()> {
                     HashVerifier::verify_integrity(&path_clone, &meta_clone.checksum.kind, &meta_clone.checksum.value)?;
                     let root_path = Path::new(&root);
-                    let stage_dir = root_path.join("var/tmp/mcx/stage");
-                    let installed_root = root_path.join("var/lib/mcx/active");
+                    let stage_base = root_path.join(constants::PATH_STAGE);
+                    let installed_root = root_path.join(constants::PATH_ACTIVE);
 
-                    let pkg_stage = stage_dir.join(&meta_clone.pkg_name);
+                    let pkg_stage = stage_base.join(&meta_clone.pkg_name);
                     if pkg_stage.exists() { fs::remove_dir_all(&pkg_stage)?; }
                     fs::create_dir_all(&pkg_stage)?;
 
-                    let extracted = ext.extract_zstd_archive(&path_clone, &stage_dir)?;
+                    let extracted = ext.extract_zstd_archive(&path_clone, &pkg_stage)?;
                     ext.verify_no_collisions(&extracted)?;
 
+                    let files_to_install = if let Some(ref f) = filter {
+                        crate::core::component::filter_files_by_components(
+                            &extracted,
+                            &meta_clone.components,
+                            f,
+                        ).into_iter().map(|p| p.to_string_lossy().to_string()).collect::<Vec<_>>()
+                    } else {
+                        extracted.iter().map(|p| p.to_string_lossy().to_string()).collect::<Vec<_>>()
+                    };
+
                     for file in &extracted {
-                        let src = stage_dir.join(file);
+                        let src = pkg_stage.join(file);
                         let dest = pkg_stage.join(file);
                         if let Some(parent) = dest.parent() { fs::create_dir_all(parent)?; }
                         if src.is_file() { fs::copy(&src, &dest)?; }
@@ -127,7 +147,7 @@ impl InstallCommand {
                     if pkg_active.exists() { fs::remove_dir_all(&pkg_active)?; }
                     fs::create_dir_all(&pkg_active)?;
 
-                    for file in &extracted {
+                    for file in &files_to_install {
                         let src = pkg_stage.join(file);
                         let dst = root_path.join(file);
                         if let Some(parent) = dst.parent() { fs::create_dir_all(parent)?; }
@@ -141,7 +161,7 @@ impl InstallCommand {
                         }
                     }
 
-                    if stage_dir.exists() { let _ = fs::remove_dir_all(&stage_dir); }
+                    if stage_base.exists() { let _ = fs::remove_dir_all(&stage_base); }
                     Ok(())
                 }));
             }
@@ -151,8 +171,8 @@ impl InstallCommand {
             }
         } else {
             let ext = Extractor::new(&self.root);
-            let stage_dir = root_path.join("var/tmp/mcx/stage");
-            let installed_root = root_path.join("var/lib/mcx/active");
+            let stage_dir = root_path.join(constants::PATH_STAGE);
+            let installed_root = root_path.join(constants::PATH_ACTIVE);
 
             for (meta, path) in &pending {
                 HashVerifier::verify_integrity(path, &meta.checksum.kind, &meta.checksum.value)?;
@@ -163,6 +183,23 @@ impl InstallCommand {
 
                 let extracted = ext.extract_zstd_archive(path, &stage_dir)?;
                 ext.verify_no_collisions(&extracted)?;
+
+                let files_to_install = if let Some(ref filter) = self.component_filter {
+                    crate::core::component::filter_files_by_components(
+                        &extracted,
+                        &meta.components,
+                        filter,
+                    ).into_iter().map(|p| p.to_string_lossy().to_string()).collect::<Vec<_>>()
+                } else {
+                    extracted.iter().map(|p| p.to_string_lossy().to_string()).collect::<Vec<_>>()
+                };
+
+                let installed_count = files_to_install.len();
+                let skipped = extracted.len() - installed_count;
+                if skipped > 0 {
+                    UserInterface::info(&format!("{}: {} files skipped by component filter",
+                        meta.pkg_name, skipped));
+                }
 
                 for file in &extracted {
                     let src = stage_dir.join(file);
@@ -175,7 +212,7 @@ impl InstallCommand {
                 if pkg_active.exists() { fs::remove_dir_all(&pkg_active)?; }
                 fs::create_dir_all(&pkg_active)?;
 
-                for file in &extracted {
+                for file in &files_to_install {
                     let src = pkg_stage.join(file);
                     let dst = root_path.join(file);
                     if let Some(parent) = dst.parent() { fs::create_dir_all(parent)?; }
@@ -196,7 +233,7 @@ impl InstallCommand {
         // sandbox setup for each installed package
         for (meta, _) in &pending {
             // cgroup: enforce resource limits (best-effort, may fail without root)
-            let _ = self.cgroup_mgr.enforce_resource_limits(&meta.pkg_name, 512, 80);
+            let _ = self.cgroup_mgr.enforce_resource_limits(&meta.pkg_name, constants::DEFAULT_CGROUP_MAX_MEMORY_MB, constants::DEFAULT_CGROUP_MAX_CPU_PERCENT.into());
 
             // security monitor: register package
             if let Some(ref mon) = self.security_mon {
@@ -232,6 +269,19 @@ impl InstallCommand {
             transaction.register_package_placement(meta)?;
         }
         transaction.commit()?;
+
+        for (meta, _) in &pending {
+            for svc in meta.all_services() {
+                let svc_cmd = crate::commands::service::ServiceCommand::new(
+                    self.root.clone(),
+                    Arc::clone(&self.db),
+                );
+                if let Err(e) = svc_cmd.register_service(svc) {
+                    UserInterface::warning(&format!("Failed to register service '{}' for {}: {}",
+                        svc.name, meta.pkg_name, e));
+                }
+            }
+        }
 
         self.fire_hooks(PluginHook::PostInstall, packages);
 

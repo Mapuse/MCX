@@ -3,6 +3,7 @@ use std::path::Path;
 use std::time::{Instant, Duration};
 use crate::core::arch::Architecture;
 use crate::core::config::CalibratedParams;
+use crate::core::constants;
 
 #[derive(Debug, Clone)]
 pub struct SystemProfile {
@@ -115,23 +116,23 @@ impl SystemProfile {
     }
 
     pub fn calibrate_params(&self) -> CalibratedParams {
-        let thread_pool_size = if self.cpu_count >= 16 {
+        let thread_pool_size = if self.cpu_count >= constants::CPU_THRESHOLD_HIGH {
             self.cpu_count
-        } else if self.available_ram_mb < 1024 {
+        } else if self.available_ram_mb < constants::RAM_THRESHOLD_MEDIUM_MB {
             (self.cpu_count / 2).max(1)
         } else {
             self.cpu_count
         };
         CalibratedParams {
             thread_pool_size,
-            concurrent_downloads: if self.available_ram_mb < 512 { 2 }
-                else if self.available_ram_mb < 2048 { 4 }
-                else { self.cpu_count.min(8) },
-            zstd_level: if self.cpu_count >= 8 { 5 } else { 3 },
-            io_parallelism: thread_pool_size.max(2),
+            concurrent_downloads: if self.available_ram_mb < constants::RAM_THRESHOLD_LOW_MB { 2 }
+                else if self.available_ram_mb < constants::RAM_THRESHOLD_HIGH_MB { 4 }
+                else { self.cpu_count.min(constants::DEFAULT_MAX_CONCURRENT_DOWNLOADS) },
+            zstd_level: if self.cpu_count >= constants::CPU_THRESHOLD_MEDIUM { constants::HIGH_ZSTD_LEVEL } else { constants::DEFAULT_ZSTD_LEVEL },
+            io_parallelism: thread_pool_size.max(constants::CONCURRENCY_SCALE_DOWN),
             network_latency_adaptive: true,
-            latency_threshold_ms: 200,
-            bandwidth_threshold_kbps: 5000,
+            latency_threshold_ms: constants::DEFAULT_LATENCY_THRESHOLD_MS,
+            bandwidth_threshold_kbps: constants::DEFAULT_BANDWIDTH_THRESHOLD_KBPS,
         }
     }
 }
@@ -145,9 +146,9 @@ impl NetworkProber {
             .no_proxy()
             .build()
             .ok();
-        let mut samples: Vec<f64> = Vec::with_capacity(5);
+        let mut samples: Vec<f64> = Vec::with_capacity(constants::PROBE_SAMPLES);
         if let Some(ref c) = client {
-            for _ in 0..5 {
+            for _ in 0..constants::PROBE_SAMPLES {
                 let t0 = Instant::now();
                 match c.head(target).send().await {
                     Ok(r) => {
@@ -161,16 +162,16 @@ impl NetworkProber {
                 }
             }
         }
-        let latency_ms = if samples.is_empty() { 999.9 } else { samples.iter().sum::<f64>() / samples.len() as f64 };
+        let latency_ms = if samples.is_empty() { constants::DEFAULT_FALLBACK_LATENCY } else { samples.iter().sum::<f64>() / samples.len() as f64 };
         let rtt_jitter_ms = if samples.len() < 2 { 0.0 } else {
             let mean = latency_ms;
             samples.iter().map(|s| (s - mean).abs()).sum::<f64>() / samples.len() as f64
         };
         NetworkProfile {
             latency_ms,
-            bandwidth_kbps: 100,
+            bandwidth_kbps: constants::DEFAULT_BANDWIDTH_KBPS,
             rtt_jitter_ms,
-            fallback_available: latency_ms < 5000.0,
+            fallback_available: latency_ms < constants::FALLBACK_LATENCY_THRESHOLD,
         }
     }
 }
@@ -184,60 +185,60 @@ impl DecisionEngine {
         let latency_ratio = net.latency_ms / params.latency_threshold_ms as f64;
 
         decisions.push({
-            if sys.cpu_count >= 8 && sys.available_ram_mb >= 2048 && latency_ratio < 2.0 {
+            if sys.cpu_count >= constants::CPU_THRESHOLD_MEDIUM && sys.available_ram_mb >= constants::RAM_THRESHOLD_HIGH_MB && latency_ratio < constants::LATENCY_RATIO_PARALLEL {
                 DecisionMatrix {
                     verdict: HeuristicVerdict::UseParallel,
-                    confidence: 0.95,
+                    confidence: constants::DECISION_CONFIDENCE_HIGH,
                     rationale: "CPU cores >= 8, RAM >= 2GB, low network latency",
                 }
-            } else if sys.cpu_count >= 4 && latency_ratio < 1.0 {
+            } else if sys.cpu_count >= constants::CPU_THRESHOLD_LOW && latency_ratio < constants::LATENCY_RATIO_SEQUENTIAL {
                 DecisionMatrix {
                     verdict: HeuristicVerdict::UseParallel,
-                    confidence: 0.85,
+                    confidence: constants::DECISION_CONFIDENCE_MEDIUM,
                     rationale: "Adequate CPU with low latency",
                 }
             } else {
                 DecisionMatrix {
                     verdict: HeuristicVerdict::UseSequential,
-                    confidence: 0.75,
+                    confidence: constants::DECISION_CONFIDENCE_LOW,
                     rationale: "Constrained resources or high latency",
                 }
             }
         });
 
         decisions.push({
-            if net.latency_ms > params.latency_threshold_ms as f64 * 3.0 || net.bandwidth_kbps < params.bandwidth_threshold_kbps / 2 {
+            if net.latency_ms > params.latency_threshold_ms as f64 * constants::LATENCY_SPIKE_CRITICAL || net.bandwidth_kbps < params.bandwidth_threshold_kbps / 2 {
                 DecisionMatrix {
                     verdict: HeuristicVerdict::UseFallbackRepo,
-                    confidence: 0.80,
+                    confidence: constants::DECISION_CONFIDENCE_MEDIUM,
                     rationale: "Primary repo degradation detected",
                 }
             } else {
                 DecisionMatrix {
                     verdict: HeuristicVerdict::UsePrimaryRepo,
-                    confidence: 0.90,
+                    confidence: constants::DECISION_CONFIDENCE_HIGH,
                     rationale: "Primary repo within acceptable thresholds",
                 }
             }
         });
 
         decisions.push({
-            if net.rtt_jitter_ms > 50.0 && sys.cpu_count >= 4 {
+            if net.rtt_jitter_ms > constants::JITTER_THRESHOLD_MS && sys.cpu_count >= constants::CPU_THRESHOLD_LOW {
                 DecisionMatrix {
                     verdict: HeuristicVerdict::ScaleUpThreadPool,
-                    confidence: 0.70,
+                    confidence: constants::DECISION_CONFIDENCE_LOW,
                     rationale: "High jitter suggests variable network; scale threads to mask latency",
                 }
-            } else if sys.available_ram_mb < 512 {
+            } else if sys.available_ram_mb < constants::RAM_THRESHOLD_LOW_MB {
                 DecisionMatrix {
                     verdict: HeuristicVerdict::ScaleDownThreadPool,
-                    confidence: 0.85,
+                    confidence: constants::DECISION_CONFIDENCE_MEDIUM,
                     rationale: "Limited RAM; reduce thread pool to avoid OOM",
                 }
             } else {
                 DecisionMatrix {
                     verdict: HeuristicVerdict::UseParallel,
-                    confidence: 0.60,
+                    confidence: constants::DECISION_CONFIDENCE_LOW,
                     rationale: "Stable conditions; maintain current pool",
                 }
             }
@@ -250,8 +251,8 @@ impl DecisionEngine {
         for d in decisions {
             match d.verdict {
                 HeuristicVerdict::ScaleUpThreadPool => {
-                    let scaled = (sys.cpu_count as f64 * 1.5).ceil() as usize;
-                    return scaled.min(sys.cpu_count * 4);
+                    let scaled = (sys.cpu_count as f64 * constants::THREAD_SCALE_FACTOR).ceil() as usize;
+                    return scaled.min(sys.cpu_count * constants::THREAD_SCALE_MAX);
                 }
                 HeuristicVerdict::ScaleDownThreadPool => {
                     return (sys.cpu_count / 2).max(1);
@@ -276,9 +277,9 @@ impl AutoHealer {
     }
 
     pub fn hotswap_decision(spike_ratio: f64) -> HeuristicVerdict {
-        if spike_ratio > 3.0 {
+        if spike_ratio > constants::LATENCY_SPIKE_CRITICAL {
             HeuristicVerdict::UseFallbackRepo
-        } else if spike_ratio > 1.5 {
+        } else if spike_ratio > constants::LATENCY_SPIKE_WARNING {
             HeuristicVerdict::ScaleUpThreadPool
         } else {
             HeuristicVerdict::UsePrimaryRepo
