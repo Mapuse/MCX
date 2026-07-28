@@ -9,7 +9,7 @@ project('mcx', 'rust',
 )
 
 # ── Auto-detect architecture via gen-cross.sh ──────────────────────────
-gen_cross = find_program('/home/m/cudane-build/gen-cross.sh')
+gen_cross = find_program('gen-cross.sh')
 run_command(gen_cross, check : true)
 
 build_dir = meson.project_build_root() / 'cargo'
