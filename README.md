@@ -1054,7 +1054,7 @@ All paths are relative to the `--root` directory (default `/`).
 etc/mcx/
 ├── config.ini          # Engine configuration (mmap-based, INI format)
 ├── repo.ini            # Repository definitions (INI format, CLI-managed)
-├── profile.ini         # Declarative package profile (INI format)
+└── profile.ini         # Declarative package profile (INI format)
 
 var/
 ├── lib/mcx/
