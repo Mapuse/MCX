@@ -2271,7 +2271,7 @@ When editing manually, observe these rules:
 
 ---
 
-## Programmatic API
+## API
 
 ```rust
 use std::path::Path;
