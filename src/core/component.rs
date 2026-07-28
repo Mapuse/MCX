@@ -152,7 +152,7 @@ mod tests {
         assert!(!ComponentPriority::Optional.should_install(false, false));
         assert!(!ComponentPriority::Development.should_install(false, false));
 
-        assert!(!ComponentPriority::Required.should_install(true, false));
+        assert!(ComponentPriority::Required.should_install(true, false));
         assert!(!ComponentPriority::Recommended.should_install(true, false));
 
         assert!(ComponentPriority::Development.should_install(false, true));
