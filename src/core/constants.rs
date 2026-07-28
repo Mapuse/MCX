@@ -72,6 +72,7 @@ pub const PATH_SYNC: &str = "var/lib/mcx/sync";
 pub const PATH_BUILD: &str = "var/mcx/build";
 pub const PATH_MCX_STAGE: &str = "var/mcx/stage";
 pub const PATH_LOG_HISTORY: &str = "var/log/mcx/history";
+pub const PATH_LIB_MCX: &str = "var/lib/mcx";
 pub const PATH_ETC_MCX: &str = "etc/mcx";
 pub const PATH_CONFIG_INI: &str = "etc/mcx/config.ini";
 pub const PATH_REPO_INI: &str = "etc/mcx/repo.ini";

@@ -419,9 +419,9 @@ async fn main() {
             match cmd.execute(&packages, &cgroup_mgr, &security_mon) {
                 Ok(_) => {
                     let purge_dirs = vec![
-                        root_path.join("var/lib/mcx/active"),
-                        root_path.join("var/cache/mcx"),
-                        root_path.join("var/tmp/mcx"),
+                        root_path.join(constants::PATH_ACTIVE),
+                        root_path.join(constants::PATH_CACHE),
+                        root_path.join(constants::PATH_TMP),
                     ];
                     for dir in &purge_dirs {
                         for pkg in &packages {
@@ -459,8 +459,8 @@ async fn main() {
             let cmd = AddLocalCommand::new(args.root.clone(), Arc::clone(&ctx.db));
             match cmd.execute(&file) {
                 Ok(_) => {
-                    let staging = PathBuf::from(&args.root).join("var/tmp/mcx/stage");
-                    let installed_root = PathBuf::from(&args.root).join("var/lib/mcx/active");
+                    let staging = PathBuf::from(&args.root).join(constants::PATH_STAGE);
+                    let installed_root = PathBuf::from(&args.root).join(constants::PATH_ACTIVE);
                     if let Ok(pkgs) = ctx.db.get_all_installed_packages() {
                         if let Some(last) = pkgs.last() {
                             let pkg_path = staging.join(&last.pkg_name);
@@ -473,7 +473,7 @@ async fn main() {
                         }
                     }
                     let rollback_mgr = crate::core::rollback::RollbackManager::new(&root_path);
-                    let gen_root = root_path.join("var/lib/mcx/active");
+                    let gen_root = root_path.join(constants::PATH_ACTIVE);
                     if gen_root.exists() {
                         let _ = rollback_mgr.enable_atomic_rollback("local", &gen_root);
                     }

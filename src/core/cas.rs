@@ -21,7 +21,7 @@ pub struct CasStats {
 impl CasStore {
     pub fn new(root: &Path) -> Self {
         Self {
-            cas_dir: root.join("var/lib/mcx/cas"),
+            cas_dir: root.join(crate::core::constants::PATH_CAS),
         }
     }
 

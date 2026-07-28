@@ -100,7 +100,7 @@ pub struct DbTransaction<'e> {
 
 impl Database {
     pub fn open<P: AsRef<Path>>(root: P) -> Result<Self> {
-        let db_path = root.as_ref().join("var/lib/mcx/data");
+        let db_path = root.as_ref().join(crate::core::constants::PATH_DATA);
         fs::create_dir_all(&db_path)?;
 
         let env = unsafe {

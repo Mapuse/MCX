@@ -266,7 +266,7 @@ impl RemoveCommand {
     fn scour_system_residue(&self, removed: &[String]) -> Result<()> {
         let config_dirs = vec![
             self.root.join(constants::PATH_ETC_MCX),
-            self.root.join("var/lib/mcx"),
+            self.root.join(constants::PATH_LIB_MCX),
             self.root.join(constants::PATH_TMP),
             self.root.join(constants::PATH_CACHE),
         ];
