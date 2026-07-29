@@ -44,6 +44,7 @@ impl CasStore {
 
             if cas_path.exists() {
                 let original_len = lib_path.metadata().map(|m| m.len()).unwrap_or(0);
+                fs::remove_file(lib_path)?;
                 fs::hard_link(&cas_path, lib_path)
                     .with_context(|| format!("Failed to hard-link CAS copy to {:?}", lib_path))?;
                 stats.bytes_saved += original_len;
