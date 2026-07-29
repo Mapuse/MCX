@@ -1,28 +1,23 @@
-#
-
-`▐▀` `-` `▀▀▀▀▀▀▀▀▌`
+##
 
 ```shell
-███╗   ███╗  ██████╗ ██╗    ██╗     ██████╗  █████╗  ██████╗██╗  ██╗ █████╗  ██████╗ ███████╗
-████╗ ████║██╔════╝  ╚██╗  ██╔╝     ██╔══██╗██╔══██╗██╔════╝██║ ██╔╝██╔══██╗██╔════╝ ██╔════╝
-██╔████╔██║██║         ╚███╔╝       ██████╔╝███████║██║     █████╔╝ ███████║██║  ███╗█████╗  
-██║╚██╔╝██║██║       ██╔    ██╗     ██╔═══╝ ██╔══██║██║     ██╔═██╗ ██╔══██║██║   ██║██╔══╝  
-██║ ╚═╝ ██║╚██████╗ ██╔╝     ██╗    ██║     ██║  ██║╚██████╗██║  ██╗██║  ██║╚██████╔╝███████╗
-╚═╝     ╚═╝ ╚═════╝ ╚═╝      ╚═╝    ╚═╝     ╚═╝  ╚═╝ ╚═════╝╚═╝  ╚═╝╚═╝  ╚═╝ ╚═════╝ ╚══════╝
-                                                                                        
-███╗   ███╗ █████╗ ███╗   ██╗ █████╗  ██████╗ ███████╗██████╗                           
-████╗ ████║██╔══██╗████╗  ██║██╔══██╗██╔════╝ ██╔════╝██╔══██╗                          
-██╔████╔██║███████║██╔██╗ ██║███████║██║  ███╗█████╗  ██████╔╝                          
-██║╚██╔╝██║██╔══██║██║╚██╗██║██╔══██║██║   ██║██╔══╝  ██╔══██╗                          
-██║ ╚═╝ ██║██║  ██║██║ ╚████║██║  ██║╚██████╔╝███████╗██║  ██║                          
-╚═╝     ╚═╝╚═╝  ╚═╝╚═╝  ╚═══╝╚═╝  ╚═╝ ╚═════╝ ╚══════╝╚═╝  ╚═╝                          
+███╗   ███╗  ██████╗ ██╗    ██╗
+████╗ ████║██╔════╝  ╚██╗  ██╔╝
+██╔████╔██║██║         ╚███╔╝
+██║╚██╔╝██║██║       ██╔    ██╗
+██║ ╚═╝ ██║╚██████╗ ██╔╝     ██╗
+╚═╝     ╚═╝ ╚═════╝ ╚═╝      ╚═╝
 ```
+
+##
 
 `▐▀` `-` `▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▌`
 
-- **`The Package Manager of Cudane`**.
+**`MCX`** is a Package Manager of **`Cudane`** by **`Mapuse`** written in **`Rust`**, built for a full lifecycle and heavy workflows, no one needs a full-featured Package Manager in the same much of needing a Package Manager that just *`Works`*, but also no one want to be restricted, so it has a full **`Python`** Plugins and Theming with **`No Limits`**, you can design a full system inside **`MCX`** as a plugin, or design a full TUI with literally **`any`** library, the only limit is the **`Python`** Language itself.
 
-`▐▄` `-` `▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▌`
+- **`Version`:** **`7.0.0`**.
+
+`▐▄` `-` `▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▌`
 
 
 <details><summary id="contents">Contents</summary>
@@ -70,8 +65,8 @@
   - [Continuous integration]
 - [Plugin authoring & linking]
 - [Configuration guide]
-- [Credits]
 - [License]
+- [Credits]
 
 </details>
 
@@ -2491,16 +2486,6 @@ strip = true            # Strip symbols
 
 </details>
 
-<details><summary id="credits">Credits</summary>
-
-**`MCX`** is part of the **`Cudane`** ecosystem.
-
-- **`Cudane`** — The Distribution.
-- **`MCX`** — Package Manager.
-- **`Cesar`** — Init System (PID 1).
-
-</details>
-
 <details><summary id="license">License</summary>
 
 ## License
@@ -2508,8 +2493,9 @@ strip = true            # Strip symbols
 
 </details>
 
-`▐▀` `-` `▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▌`
+<details><summary id="credits">Credits</summary>
 
-- **`Version`:** **`7.0.0`**.
+- **`Cudane`** — The Distribution.
+- **`Cesar`** — Init System (PID 1).
 
-`▐▄` `-` `▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▌`
+</details>
