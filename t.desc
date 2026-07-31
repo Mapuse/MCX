@@ -1,0 +1,26 @@
+# MCX Theme Descriptor
+# Register themes for the MCX package manager.
+# Each [theme.<id>] section defines one theme.
+# - name:  display name (shown in `mcx theme list`)
+# - path:  path to the Python theme file (absolute or ~ expanded)
+# - description: optional human-readable description
+#
+# A theme file is a single .py module that may define:
+#   render_prompt(**context)            -> dict | str
+#   render_right_prompt(**context)      -> str
+#   render_command_summary(**context)   -> str
+#   run()                               -> bool   (TUI mode)
+#
+# MCX ThemeResult fields: lines_above, input_prefix, right_prompt,
+# colors, extra. Colors map may include: accent, success, error,
+# primary, dim, text, cwd.
+
+[theme.mcx]
+name = "MCX"
+path = "~/MCX/themes/mcx.py"
+description = "Default MCX theme — green accent, package-aware prompt"
+
+[theme.minimal]
+name = "Minimal"
+path = "~/MCX/themes/minimal.py"
+description = "Minimal single-line prompt with exit-code indicator"
