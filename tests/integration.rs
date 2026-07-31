@@ -18,8 +18,8 @@ use mcx::network::download::Downloader;
 
 fn create_temporary_root(identifier: &str) -> PathBuf {
     let mut path = std::env::temp_dir();
-    path.push(format!("mcx_test_{}_{}", identifier, std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
-    fs::create_dir_all(&path).unwrap();
+    path.push(format!("mcx_test_{}_{}", identifier, std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("system clock").as_nanos()));
+    fs::create_dir_all(&path).expect("create temp root");
     path
 }
 
@@ -28,7 +28,7 @@ fn create_temporary_root(identifier: &str) -> PathBuf {
 #[tokio::test]
 async fn test_atomic_database_write_and_conflict_prevention() {
     let root = create_temporary_root("conflict_prevention");
-    let db = Database::open(&root).unwrap();
+    let db = Database::open(&root).expect("open test database");
 
     let package_a = PackageMetadata {
         pkg_name: "package-a".to_string(), version: "1.0.0".to_string(),
@@ -42,10 +42,10 @@ async fn test_atomic_database_write_and_conflict_prevention() {
         binaries: Vec::new(),
     };
 
-    let mut tx_a = db.begin_transaction().unwrap();
-    tx_a.register_package_placement(&package_a).unwrap();
-    tx_a.commit().unwrap();
-    assert!(db.is_package_installed("package-a").unwrap());
+    let mut tx_a = db.begin_transaction().expect("begin transaction");
+    tx_a.register_package_placement(&package_a).expect("register package placement");
+    tx_a.commit().expect("commit transaction");
+    assert!(db.is_package_installed("package-a").expect("package-a installed"));
 
     let package_b = PackageMetadata {
         pkg_name: "package-b".to_string(), version: "2.0.0".to_string(),
@@ -59,36 +59,36 @@ async fn test_atomic_database_write_and_conflict_prevention() {
         binaries: Vec::new(),
     };
 
-    let mut tx_b = db.begin_transaction().unwrap();
+    let mut tx_b = db.begin_transaction().expect("begin transaction");
     let result = tx_b.register_package_placement(&package_b);
     assert!(result.is_err());
 
-    fs::remove_dir_all(&root).unwrap();
+    fs::remove_dir_all(&root).expect("remove temp root");
 }
 
 #[tokio::test]
 async fn test_concurrent_transaction_serialization_isolation() {
     let root = create_temporary_root("isolation_lock");
-    let db = Database::open(&root).unwrap();
+    let db = Database::open(&root).expect("open test database");
 
     // LMDB enforces single-writer; commit first txn before starting second
-    let tx_primary = db.begin_transaction().unwrap();
-    tx_primary.commit().unwrap();
+    let tx_primary = db.begin_transaction().expect("begin transaction");
+    tx_primary.commit().expect("commit transaction");
 
-    let tx_secondary = db.begin_transaction().unwrap();
-    tx_secondary.commit().unwrap();
+    let tx_secondary = db.begin_transaction().expect("begin transaction");
+    tx_secondary.commit().expect("commit transaction");
 
-    fs::remove_dir_all(&root).unwrap();
+    fs::remove_dir_all(&root).expect("remove temp root");
 }
 
 #[tokio::test]
 async fn test_empty_installation_command_error() {
     let root = create_temporary_root("install_command");
-    let db = Database::open(&root).unwrap();
+    let db = Database::open(&root).expect("open test database");
     let command = InstallCommand::new(root.to_string_lossy().into_owned(), Arc::new(db));
     let result = command.execute(&[]).await;
     assert!(result.is_err());
-    fs::remove_dir_all(&root).unwrap();
+    fs::remove_dir_all(&root).expect("remove temp root");
 }
 
 // ── Remove + Sandbox Cleanup ────────────────────────────────────────────────
@@ -97,11 +97,11 @@ async fn test_empty_installation_command_error() {
 async fn test_package_removal_and_filesystem_cleanup() {
     let root = create_temporary_root("filesystem_cleanup");
     let binary_dir = root.join("usr/bin");
-    fs::create_dir_all(&binary_dir).unwrap();
+    fs::create_dir_all(&binary_dir).expect("create binary dir");
     let binary_file = binary_dir.join("app-binary");
-    fs::write(&binary_file, b"ELF").unwrap();
+    fs::write(&binary_file, b"ELF").expect("write temp file");
 
-    let db = Database::open(&root).unwrap();
+    let db = Database::open(&root).expect("open test database");
     let package = PackageMetadata {
         pkg_name: "app".to_string(), version: "1.5.2".to_string(),
         license: "GPL-3.0".to_string(), source: "https://example.com/app".to_string(),
@@ -114,19 +114,19 @@ async fn test_package_removal_and_filesystem_cleanup() {
         binaries: Vec::new(),
     };
 
-    let mut tx = db.begin_transaction().unwrap();
-    tx.register_package_placement(&package).unwrap();
-    tx.commit().unwrap();
+    let mut tx = db.begin_transaction().expect("begin transaction");
+    tx.register_package_placement(&package).expect("register package placement");
+    tx.commit().expect("commit transaction");
 
     let db_share = Arc::new(db);
     let command = RemoveCommand::new(root.to_string_lossy().into_owned(), db_share.clone());
     let cg = mcx::CgroupController::new();
     let sm = mcx::SecurityMonitor::new();
-    command.execute(&["app".to_string()], &cg, &sm).unwrap();
+    command.execute(&["app".to_string()], &cg, &sm).expect("execute remove command");
 
-    assert!(!db_share.is_package_installed("app").unwrap());
+    assert!(!db_share.is_package_installed("app").expect("app not installed"));
     assert!(!binary_file.exists());
-    fs::remove_dir_all(&root).unwrap();
+    fs::remove_dir_all(&root).expect("remove temp root");
 }
 
 // ── Completion ──────────────────────────────────────────────────────────────
@@ -134,7 +134,7 @@ async fn test_package_removal_and_filesystem_cleanup() {
 #[tokio::test]
 async fn test_shell_completion_engine_querying() {
     let root = create_temporary_root("completion_engine");
-    let db = Database::open(&root).unwrap();
+    let db = Database::open(&root).expect("open test database");
 
     let package = PackageMetadata {
         pkg_name: "neovim".to_string(), version: "0.9.0".to_string(),
@@ -147,18 +147,18 @@ async fn test_shell_completion_engine_querying() {
         binaries: Vec::new(),
     };
 
-    let mut tx = db.begin_transaction().unwrap();
-    tx.register_package_placement(&package).unwrap();
-    tx.commit().unwrap();
+    let mut tx = db.begin_transaction().expect("begin transaction");
+    tx.register_package_placement(&package).expect("register package placement");
+    tx.commit().expect("commit transaction");
 
     let engine = CompletionEngine::new(Arc::new(db));
     let subcommands = engine.complete_subcommand("inst");
     assert!(subcommands.contains(&"install".to_string()));
 
-    let packages = engine.complete_installed_package("neo").unwrap();
+    let packages = engine.complete_installed_package("neo").expect("complete package");
     assert!(packages.contains(&"neovim".to_string()));
 
-    fs::remove_dir_all(&root).unwrap();
+    fs::remove_dir_all(&root).expect("remove temp root");
 }
 
 // ── UI ──────────────────────────────────────────────────────────────────────
@@ -192,10 +192,10 @@ fn test_user_interface_output_nodes() {
 fn test_config_init_generates_defaults() {
     let root = create_temporary_root("config_init");
     let config_dir = root.join("etc/mcx");
-    fs::create_dir_all(&config_dir).unwrap();
+    fs::create_dir_all(&config_dir).expect("create config dir");
 
     // mark config.ini as "already exists" to test skip-behaviour
-    fs::write(config_dir.join("config.ini"), b"[engine]\nthread_pool_mode = auto\n").unwrap();
+    fs::write(config_dir.join("config.ini"), b"[engine]\nthread_pool_mode = auto\n").expect("write config file");
 
     let config_ini = config_dir.join("config.ini");
     let repo_ini = config_dir.join("repo.ini");
@@ -208,30 +208,30 @@ fn test_config_init_generates_defaults() {
 
     // simulate init logic (same as main.rs Commands::Config { init: true })
     if !config_ini.exists() {
-        fs::write(&config_ini, b"[engine]\nthread_pool_mode = auto\nmax_concurrent_downloads = 8\nzstd_level = 3\n\n[network]\nfallback_repos = enabled\nlatency_threshold_ms = 200\nbandwidth_threshold_kbps = 5000\n\n[security]\nverify_checksums = true\nallow_unverified = false\n\n[cache]\nlimit_bytes = 5368709120\nprune_age_hours = 168\n").unwrap();
+        fs::write(&config_ini, b"[engine]\nthread_pool_mode = auto\nmax_concurrent_downloads = 8\nzstd_level = 3\n\n[network]\nfallback_repos = enabled\nlatency_threshold_ms = 200\nbandwidth_threshold_kbps = 5000\n\n[security]\nverify_checksums = true\nallow_unverified = false\n\n[cache]\nlimit_bytes = 5368709120\nprune_age_hours = 168\n").expect("write config file");
     }
     if !repo_ini.exists() {
-        fs::write(&repo_ini, b"[main]\nurl = https://packages.cudane.org\nenabled = true\npriority = 100\n\n[community]\nurl = https://community.cudane.org\nenabled = false\npriority = 200\n").unwrap();
+        fs::write(&repo_ini, b"[main]\nurl = https://packages.cudane.org\nenabled = true\npriority = 100\n\n[community]\nurl = https://community.cudane.org\nenabled = false\npriority = 200\n").expect("write config file");
     }
     if !profile_ini.exists() {
-        fs::write(&profile_ini, b"[profile]\nversion = 1.0.0\narchitecture = x86_64\npackages = \n").unwrap();
+        fs::write(&profile_ini, b"[profile]\nversion = 1.0.0\narchitecture = x86_64\npackages = \n").expect("write config file");
     }
 
     // config.ini content preserved (not overwritten)
-    let cfg_content = fs::read_to_string(&config_ini).unwrap();
+    let cfg_content = fs::read_to_string(&config_ini).expect("read config file");
     assert!(cfg_content.contains("thread_pool_mode"));
 
     // repo.ini created
     assert!(repo_ini.exists());
-    let repo_content = fs::read_to_string(&repo_ini).unwrap();
+    let repo_content = fs::read_to_string(&repo_ini).expect("read config file");
     assert!(repo_content.contains("packages.cudane.org"));
 
     // profile.ini created
     assert!(profile_ini.exists());
-    let profile_content = fs::read_to_string(&profile_ini).unwrap();
+    let profile_content = fs::read_to_string(&profile_ini).expect("read config file");
     assert!(profile_content.contains("version = 1.0.0"));
 
-    fs::remove_dir_all(&root).unwrap();
+    fs::remove_dir_all(&root).expect("remove temp root");
 }
 
 // ── Network Download ────────────────────────────────────────────────────────
@@ -248,9 +248,9 @@ async fn test_network_downloader_endpoint_handling() {
     let result = downloader.package("https://www.google.com", &destination).await;
     assert!(result.is_ok());
     assert!(destination.exists());
-    assert!(fs::metadata(&destination).unwrap().len() > 0);
+    assert!(fs::metadata(&destination).expect("destination metadata").len() > 0);
 
-    fs::remove_dir_all(&root).unwrap();
+    fs::remove_dir_all(&root).expect("remove temp root");
 }
 
 #[tokio::test]
@@ -267,7 +267,7 @@ async fn test_network_downloader_transient_failure_recovery() {
     let availability = downloader.check_endpoint_availability(invalid_endpoint).await;
     assert!(!availability);
 
-    fs::remove_dir_all(&root).unwrap();
+    fs::remove_dir_all(&root).expect("remove temp root");
 }
 
 // ── Database / Dependency Graph ─────────────────────────────────────────────
@@ -275,7 +275,7 @@ async fn test_network_downloader_transient_failure_recovery() {
 #[tokio::test]
 async fn test_database_dependency_graph_relations() {
     let root = create_temporary_root("database_relations");
-    let db = Database::open(&root).unwrap();
+    let db = Database::open(&root).expect("open test database");
 
     let base_package = PackageMetadata {
         pkg_name: "openssl".to_string(), version: "5.0.0".to_string(),
@@ -288,9 +288,9 @@ async fn test_database_dependency_graph_relations() {
         binaries: Vec::new(),
     };
 
-    let mut tx = db.begin_transaction().unwrap();
-    tx.register_package_placement(&base_package).unwrap();
-    tx.commit().unwrap();
+    let mut tx = db.begin_transaction().expect("begin transaction");
+    tx.register_package_placement(&base_package).expect("register package placement");
+    tx.commit().expect("commit transaction");
 
     let dependent_package = PackageMetadata {
         pkg_name: "curl".to_string(), version: "8.0.0".to_string(),
@@ -304,14 +304,14 @@ async fn test_database_dependency_graph_relations() {
         binaries: Vec::new(),
     };
 
-    let mut tx2 = db.begin_transaction().unwrap();
-    tx2.register_package_placement(&dependent_package).unwrap();
-    tx2.commit().unwrap();
+    let mut tx2 = db.begin_transaction().expect("begin transaction");
+    tx2.register_package_placement(&dependent_package).expect("register package placement");
+    tx2.commit().expect("commit transaction");
 
-    assert!(db.has_dependent_packages("openssl").unwrap());
-    assert!(!db.has_dependent_packages("curl").unwrap());
+    assert!(db.has_dependent_packages("openssl").expect("openssl has dependents"));
+    assert!(!db.has_dependent_packages("curl").expect("curl has no dependents"));
 
-    fs::remove_dir_all(&root).unwrap();
+    fs::remove_dir_all(&root).expect("remove temp root");
 }
 
 // ── Solver / Resolution ─────────────────────────────────────────────────────
@@ -319,7 +319,7 @@ async fn test_database_dependency_graph_relations() {
 #[tokio::test]
 async fn test_cyclic_dependency_deadlock_breaking() {
     let root = create_temporary_root("cyclic_deadlock");
-    let db = Database::open(&root).unwrap();
+    let db = Database::open(&root).expect("open test database");
 
     let node_x = PackageMetadata {
         pkg_name: "node-x".to_string(), version: "1.0.0".to_string(),
@@ -345,24 +345,24 @@ async fn test_cyclic_dependency_deadlock_breaking() {
         binaries: Vec::new(),
     };
 
-    let mut tx = db.begin_transaction().unwrap();
-    tx.register_package_placement(&node_x).unwrap();
-    tx.register_package_placement(&node_y).unwrap();
-    tx.commit().unwrap();
+    let mut tx = db.begin_transaction().expect("begin transaction");
+    tx.register_package_placement(&node_x).expect("register package placement");
+    tx.register_package_placement(&node_y).expect("register package placement");
+    tx.commit().expect("commit transaction");
 
     let solver = mcx::core::solver::DependencySolver::new(Arc::new(db)).add_target("node-x");
     let resolve_result = solver.solve_with_analysis();
     assert!(resolve_result.is_ok());
-    let verdict = resolve_result.unwrap();
+    let verdict = resolve_result.expect("solver result");
     assert!(verdict.cycles_broken > 0, "Expected cycle to be detected and broken");
 
-    fs::remove_dir_all(&root).unwrap();
+    fs::remove_dir_all(&root).expect("remove temp root");
 }
 
 #[tokio::test]
 async fn test_dependency_solver_topological_sorting_and_resolution() {
     let root = create_temporary_root("dependency_sorting");
-    let db = Database::open(&root).unwrap();
+    let db = Database::open(&root).expect("open test database");
 
     let dep_b = PackageMetadata {
         pkg_name: "library-b".to_string(), version: "1.0.0".to_string(),
@@ -399,27 +399,27 @@ async fn test_dependency_solver_topological_sorting_and_resolution() {
         binaries: Vec::new(),
     };
 
-    let mut tx = db.begin_transaction().unwrap();
-    tx.register_package_placement(&dep_b).unwrap();
-    tx.register_package_placement(&dep_a).unwrap();
-    tx.register_package_placement(&target_pkg).unwrap();
-    tx.commit().unwrap();
+    let mut tx = db.begin_transaction().expect("begin transaction");
+    tx.register_package_placement(&dep_b).expect("register package placement");
+    tx.register_package_placement(&dep_a).expect("register package placement");
+    tx.register_package_placement(&target_pkg).expect("register package placement");
+    tx.commit().expect("commit transaction");
 
     let solver = mcx::core::solver::DependencySolver::new(Arc::new(db)).add_target("main-app");
-    let ordered_plan = solver.solve().unwrap();
+    let ordered_plan = solver.solve().expect("solve dependencies");
 
     assert_eq!(ordered_plan.len(), 3);
     assert_eq!(ordered_plan[0].pkg_name, "main-app");
     assert_eq!(ordered_plan[1].pkg_name, "library-a");
     assert_eq!(ordered_plan[2].pkg_name, "library-b");
 
-    fs::remove_dir_all(&root).unwrap();
+    fs::remove_dir_all(&root).expect("remove temp root");
 }
 
 #[tokio::test]
 async fn test_dependency_solver_library_provider_resolution() {
     let root = create_temporary_root("dependency_library_resolution");
-    let db = Database::open(&root).unwrap();
+    let db = Database::open(&root).expect("open test database");
 
     let provider_pkg = PackageMetadata {
         pkg_name: "gio-2.0".to_string(), version: "1.0.0".to_string(),
@@ -459,21 +459,21 @@ async fn test_dependency_solver_library_provider_resolution() {
         binaries: Vec::new(),
     };
 
-    let mut tx = db.begin_transaction().unwrap();
-    tx.register_package_placement(&provider_pkg).unwrap();
-    tx.register_package_placement(&build_dep_pkg).unwrap();
-    tx.register_package_placement(&json_glib_pkg).unwrap();
-    tx.commit().unwrap();
+    let mut tx = db.begin_transaction().expect("begin transaction");
+    tx.register_package_placement(&provider_pkg).expect("register package placement");
+    tx.register_package_placement(&build_dep_pkg).expect("register package placement");
+    tx.register_package_placement(&json_glib_pkg).expect("register package placement");
+    tx.commit().expect("commit transaction");
 
     let solver = mcx::core::solver::DependencySolver::new(Arc::new(db)).add_target("json-glib");
-    let ordered_plan = solver.solve().unwrap();
+    let ordered_plan = solver.solve().expect("solve dependencies");
 
     assert_eq!(ordered_plan.len(), 3);
     assert_eq!(ordered_plan[0].pkg_name, "json-glib");
     assert!(ordered_plan.iter().any(|p| p.pkg_name == "glib-2.0"));
     assert!(ordered_plan.iter().any(|p| p.pkg_name == "gio-2.0"));
 
-    fs::remove_dir_all(&root).unwrap();
+    fs::remove_dir_all(&root).expect("remove temp root");
 }
 
 // ── Hash Verification ───────────────────────────────────────────────────────
@@ -482,16 +482,16 @@ async fn test_dependency_solver_library_provider_resolution() {
 async fn test_corrupted_archive_hash_verification_failure() {
     let root = create_temporary_root("hash_failure");
     let cache_dir = root.join("var/cache/mcx");
-    fs::create_dir_all(&cache_dir).unwrap();
+    fs::create_dir_all(&cache_dir).expect("create cache dir");
 
     let archive_file = cache_dir.join("corrupted-package-1.0.0.xcs");
-    fs::write(&archive_file, b"corrupted payload data").unwrap();
+    fs::write(&archive_file, b"corrupted payload data").expect("write temp file");
 
     let expected_valid_hash = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
     let verification_result = mcx::archive::hash::HashVerifier::verify_integrity(&archive_file, "sha256", expected_valid_hash);
     assert!(verification_result.is_err());
 
-    fs::remove_dir_all(&root).unwrap();
+    fs::remove_dir_all(&root).expect("remove temp root");
 }
 
 // ── History / Rollback ──────────────────────────────────────────────────────
@@ -499,14 +499,14 @@ async fn test_corrupted_archive_hash_verification_failure() {
 #[tokio::test]
 async fn test_temporal_history_ledger_rollback() {
     let root = create_temporary_root("temporal_rollback");
-    let db = Database::open(&root).unwrap();
+    let db = Database::open(&root).expect("open test database");
     let db_arc = Arc::new(db);
 
     let history_engine = mcx::core::history::HistoryEngine::new(&root, Arc::clone(&db_arc));
 
     let state_file = root.join("var/lib/mcx/history.json");
-    fs::create_dir_all(state_file.parent().unwrap()).unwrap();
-    fs::write(&state_file, b"[]").unwrap();
+    fs::create_dir_all(state_file.parent().expect("state file has parent")).expect("create state dir");
+    fs::write(&state_file, b"[]").expect("write state file");
 
     let mutated_pkg = PackageMetadata {
         pkg_name: "ephemeral-module".to_string(), version: "1.0.0".to_string(),
@@ -519,19 +519,19 @@ async fn test_temporal_history_ledger_rollback() {
         binaries: Vec::new(),
     };
 
-    let mut tx = db_arc.begin_transaction().unwrap();
-    tx.register_package_placement(&mutated_pkg).unwrap();
-    tx.commit().unwrap();
-    assert!(db_arc.is_package_installed("ephemeral-module").unwrap());
+    let mut tx = db_arc.begin_transaction().expect("begin transaction");
+    tx.register_package_placement(&mutated_pkg).expect("register package placement");
+    tx.commit().expect("commit transaction");
+    assert!(db_arc.is_package_installed("ephemeral-module").expect("ephemeral-module installed"));
 
-    fs::write(&state_file, b"[]").unwrap();
-    let mut tx_rollback = db_arc.begin_transaction().unwrap();
-    tx_rollback.stage_package_removal("ephemeral-module").unwrap();
-    tx_rollback.commit().unwrap();
-    assert!(!db_arc.is_package_installed("ephemeral-module").unwrap());
+    fs::write(&state_file, b"[]").expect("write state file");
+    let mut tx_rollback = db_arc.begin_transaction().expect("begin transaction");
+    tx_rollback.stage_package_removal("ephemeral-module").expect("stage package removal");
+    tx_rollback.commit().expect("commit transaction");
+    assert!(!db_arc.is_package_installed("ephemeral-module").expect("ephemeral-module removed"));
     let _ = history_engine;
 
-    fs::remove_dir_all(&root).unwrap();
+    fs::remove_dir_all(&root).expect("remove temp root");
 }
 
 #[tokio::test]
@@ -594,9 +594,9 @@ fn test_profile_validator_load_and_diff() {
     let profile_path = root.join("profile.ini");
 
     let profile_content = "[profile]\nversion = 1.0.0\narchitecture = x86_64\npackages = nginx, openssl, curl\n";
-    fs::write(&profile_path, profile_content).unwrap();
+    fs::write(&profile_path, profile_content).expect("write profile file");
 
-    let profile = ProfileValidator::load_profile(&profile_path).unwrap();
+    let profile = ProfileValidator::load_profile(&profile_path).expect("load profile");
     assert_eq!(profile.version, "1.0.0");
     assert_eq!(profile.packages.len(), 3);
 
@@ -605,7 +605,7 @@ fn test_profile_validator_load_and_diff() {
     assert_eq!(to_install, vec!["openssl"]);
     assert!(to_remove.is_empty());
 
-    fs::remove_dir_all(&root).unwrap();
+    fs::remove_dir_all(&root).expect("remove temp root");
 }
 
 #[test]
@@ -615,17 +615,17 @@ fn test_profile_validator_rejects_invalid_blueprints() {
 
     // empty version
     let bad = "[profile]\nversion = \narchitecture = x86_64\npackages = \n";
-    fs::write(&profile_path, bad).unwrap();
+    fs::write(&profile_path, bad).expect("write profile file");
     let result = ProfileValidator::load_profile(&profile_path);
     assert!(result.is_err());
 
     // duplicate packages
     let dup = "[profile]\nversion = 1.0\narchitecture = x86_64\npackages = nginx, nginx\n";
-    fs::write(&profile_path, dup).unwrap();
+    fs::write(&profile_path, dup).expect("write profile file");
     let result = ProfileValidator::load_profile(&profile_path);
     assert!(result.is_err());
 
-    fs::remove_dir_all(&root).unwrap();
+    fs::remove_dir_all(&root).expect("remove temp root");
 }
 
 // ── CAS ─────────────────────────────────────────────────────────────────────
@@ -634,22 +634,22 @@ fn test_profile_validator_rejects_invalid_blueprints() {
 fn test_cas_store_deduplication() {
     let root = create_temporary_root("cas_dedup");
     let lib_dir = root.join("usr/lib");
-    fs::create_dir_all(&lib_dir).unwrap();
+    fs::create_dir_all(&lib_dir).expect("create lib dir");
 
     // create identical files
     let content = b"identical library content";
-    fs::write(lib_dir.join("libfoo.so.1"), content).unwrap();
-    fs::write(lib_dir.join("libfoo.so.2"), content).unwrap();
-    fs::write(lib_dir.join("libbar.so.1"), b"different content").unwrap();
+    fs::write(lib_dir.join("libfoo.so.1"), content).expect("write temp file");
+    fs::write(lib_dir.join("libfoo.so.2"), content).expect("write temp file");
+    fs::write(lib_dir.join("libbar.so.1"), b"different content").expect("write temp file");
 
     let cas = CasStore::new(&root);
-    let stats = cas.deduplicate_libraries(&root).unwrap();
+    let stats = cas.deduplicate_libraries(&root).expect("deduplicate libraries");
 
     assert_eq!(stats.unique_files, 2);
     assert_eq!(stats.total_files, 3);
     assert!(stats.bytes_saved > 0);
 
-    fs::remove_dir_all(&root).unwrap();
+    fs::remove_dir_all(&root).expect("remove temp root");
 }
 
 // ── Config ──────────────────────────────────────────────────────────────────
@@ -658,9 +658,9 @@ fn test_cas_store_deduplication() {
 async fn test_configuration_text_editor_spawning_and_mutation() {
     let root = create_temporary_root("text_editor");
     let config_dir = root.join("etc/mcx");
-    fs::create_dir_all(&config_dir).unwrap();
+    fs::create_dir_all(&config_dir).expect("create config dir");
     let config_file = config_dir.join("mcx.conf");
-    fs::write(&config_file, b"initial_key = initial_value\n").unwrap();
+    fs::write(&config_file, b"initial_key = initial_value\n").expect("write config file");
 
     let root_str = root.to_string_lossy();
     let _editor_command = mcx::commands::configuration::ConfigEditorCommand::new(&root_str, ConfigTarget::EngineConfig);
@@ -668,11 +668,11 @@ async fn test_configuration_text_editor_spawning_and_mutation() {
     let result = fs::write(&config_file, b"initial_key = mutated_value\n");
     assert!(result.is_ok());
 
-    let updated_content = fs::read_to_string(&config_file).unwrap();
+    let updated_content = fs::read_to_string(&config_file).expect("read config file");
     assert!(updated_content.contains("mutated_value"));
     assert!(!updated_content.contains("initial_value"));
 
-    fs::remove_dir_all(&root).unwrap();
+    fs::remove_dir_all(&root).expect("remove temp root");
 }
 
 // ── Completion Script ───────────────────────────────────────────────────────
@@ -680,12 +680,12 @@ async fn test_configuration_text_editor_spawning_and_mutation() {
 #[tokio::test]
 async fn test_completion_engine_shell_script_generation() {
     let root = create_temporary_root("completion_gen");
-    let db = Database::open(&root).unwrap();
+    let db = Database::open(&root).expect("open test database");
     let engine = CompletionEngine::new(Arc::new(db));
 
     let bash_script = engine.generate_shell_blueprint("bash");
     assert!(bash_script.is_ok());
-    assert!(bash_script.unwrap().contains("mcx"));
+    assert!(bash_script.expect("bash script").contains("mcx"));
 
     let zsh_script = engine.generate_shell_blueprint("zsh");
     assert!(zsh_script.is_ok());
@@ -693,7 +693,7 @@ async fn test_completion_engine_shell_script_generation() {
     let bad_shell = engine.generate_shell_blueprint("tcsh");
     assert!(bad_shell.is_err());
 
-    fs::remove_dir_all(&root).unwrap();
+    fs::remove_dir_all(&root).expect("remove temp root");
 }
 
 // ── Workspace ───────────────────────────────────────────────────────────────
@@ -752,13 +752,13 @@ fn test_lifecycle_engine_state_machine_full_walk() {
 
     // purge
     assert!(eng.transition("core-lib", PackageState::Purged).is_ok());
-    assert!(eng.state("core-lib").unwrap().is_terminal());
+    assert!(eng.state("core-lib").expect("core-lib state").is_terminal());
 
     // invalid transition: Installed -> Resolved is not allowed by the matrix
     assert!(eng.transition("app", PackageState::Resolved).is_err());
 
     // transition to same state succeeds without error (returns id 0)
-    let noop = eng.transition("app", PackageState::Installed).unwrap();
+    let noop = eng.transition("app", PackageState::Installed).expect("noop transition");
     assert_eq!(noop, 0);
 
     // unregistered package
@@ -796,21 +796,21 @@ fn test_lifecycle_engine_pre_and_post_hooks_fire() {
     let post = post_fired.clone();
 
     eng.add_pre_hook(move |_, _, _| {
-        *pre.lock().unwrap() = true;
+        *pre.lock().expect("pre hook lock") = true;
         Ok(())
     });
     eng.add_post_hook(move |_, _, _| {
-        *post.lock().unwrap() = true;
+        *post.lock().expect("post hook lock") = true;
         Ok(())
     });
 
-    assert!(!*pre_fired.lock().unwrap());
-    assert!(!*post_fired.lock().unwrap());
+    assert!(!*pre_fired.lock().expect("pre fired lock"));
+    assert!(!*post_fired.lock().expect("post fired lock"));
 
-    eng.transition("test-pkg", PackageState::Resolved).unwrap();
+    eng.transition("test-pkg", PackageState::Resolved).expect("resolve transition");
 
-    assert!(*pre_fired.lock().unwrap());
-    assert!(*post_fired.lock().unwrap());
+    assert!(*pre_fired.lock().expect("pre fired lock"));
+    assert!(*post_fired.lock().expect("post fired lock"));
 }
 
 #[test]
@@ -889,19 +889,19 @@ fn test_dependency_graph_reachability_and_orphans() {
 async fn test_network_sync_engine_ldex() {
     let root = create_temporary_root("sync_engine");
     let sync_dir = root.join("var/lib/mcx/sync");
-    fs::create_dir_all(&sync_dir).unwrap();
+    fs::create_dir_all(&sync_dir).expect("create sync dir");
 
-    let db = Database::open(&root).unwrap();
+    let db = Database::open(&root).expect("open test database");
     let engine = mcx::network::sync::NetworkSyncEngine::new(Arc::new(db), root.to_string_lossy().into_owned());
 
     // no index exists yet
-    assert!(!engine.ldex("test-repo").unwrap());
+    assert!(!engine.ldex("test-repo").expect("ldex result"));
 
     // create one
-    fs::write(sync_dir.join("test-repo.json"), b"{}").unwrap();
-    assert!(engine.ldex("test-repo").unwrap());
+    fs::write(sync_dir.join("test-repo.json"), b"{}").expect("write index file");
+    assert!(engine.ldex("test-repo").expect("ldex result"));
 
-    fs::remove_dir_all(&root).unwrap();
+    fs::remove_dir_all(&root).expect("remove temp root");
 }
 
 // ── IntegrityScanner ─────────────────────────────────────────────────────────
@@ -909,22 +909,22 @@ async fn test_network_sync_engine_ldex() {
 #[tokio::test]
 async fn test_integrity_scanner_clean_root() {
     let root = create_temporary_root("integrity_clean");
-    fs::create_dir_all(&root.join("var/lib/mcx/active")).unwrap();
-    let db = Database::open(&root).unwrap();
+    fs::create_dir_all(root.join("var/lib/mcx/active")).expect("create active dir");
+    let db = Database::open(&root).expect("open test database");
     let scanner = mcx::core::integrity::IntegrityScanner::new(&root, Arc::new(db));
     let report = scanner.verify_all();
     assert_eq!(report.total_packages, 0);
     assert!(report.errors.is_empty());
-    fs::remove_dir_all(&root).unwrap();
+    fs::remove_dir_all(&root).expect("remove temp root");
 }
 
 #[tokio::test]
 async fn test_integrity_scanner_detects_missing_files() {
     let root = create_temporary_root("integrity_missing");
-    fs::create_dir_all(&root.join("var/lib/mcx/active/test-pkg")).unwrap();
-    fs::create_dir_all(&root.join("usr/bin")).unwrap();
+    fs::create_dir_all(root.join("var/lib/mcx/active/test-pkg")).expect("create active dir");
+    fs::create_dir_all(root.join("usr/bin")).expect("create usr bin dir");
 
-    let db = Database::open(&root).unwrap();
+    let db = Database::open(&root).expect("open test database");
     let pkg = PackageMetadata {
         pkg_name: "test-pkg".into(), version: "1.0".into(),
         license: "MIT".into(), source: "https://example.com".into(),
@@ -937,9 +937,9 @@ async fn test_integrity_scanner_detects_missing_files() {
         services: Vec::new(),
         binaries: Vec::new(),
     };
-    let mut tx = db.begin_transaction().unwrap();
-    tx.register_package_placement(&pkg).unwrap();
-    tx.commit().unwrap();
+    let mut tx = db.begin_transaction().expect("begin transaction");
+    tx.register_package_placement(&pkg).expect("register package placement");
+    tx.commit().expect("commit transaction");
 
     let scanner = mcx::core::integrity::IntegrityScanner::new(&root, Arc::new(db));
     let report = scanner.verify_all();
@@ -947,7 +947,7 @@ async fn test_integrity_scanner_detects_missing_files() {
     assert_eq!(report.missing_files.len(), 1);
     assert_eq!(report.missing_files[0].pkg, "test-pkg");
 
-    fs::remove_dir_all(&root).unwrap();
+    fs::remove_dir_all(&root).expect("remove temp root");
 }
 
 // ── PythonPlugin / PluginManager ────────────────────────────────────────────
@@ -956,33 +956,33 @@ async fn test_integrity_scanner_detects_missing_files() {
 async fn test_plugin_manager_discovery_and_list() {
     let root = create_temporary_root("plugin_mgr");
     let plugins_dir = root.join("var/lib/mcx/plugins");
-    fs::create_dir_all(&plugins_dir).unwrap();
-    fs::write(plugins_dir.join("alpha.py"), "print('alpha')\n").unwrap();
-    fs::write(plugins_dir.join("beta.py"), "print('beta')\n").unwrap();
+    fs::create_dir_all(&plugins_dir).expect("create plugins dir");
+    fs::write(plugins_dir.join("alpha.py"), "print('alpha')\n").expect("write temp plugin");
+    fs::write(plugins_dir.join("beta.py"), "print('beta')\n").expect("write temp plugin");
 
     let mgr = mcx::core::plugin::PluginManager::new(&root);
     let list = mgr.list();
     assert_eq!(list.len(), 2);
 
-    let alpha = mgr.find("alpha").unwrap();
+    let alpha = mgr.find("alpha").expect("alpha plugin present");
     assert_eq!(alpha.name(), "alpha");
 
-    let beta = mgr.find("beta").unwrap();
+    let beta = mgr.find("beta").expect("beta plugin present");
     assert_eq!(beta.name(), "beta");
 
     let missing = mgr.find("nonexistent");
     assert!(missing.is_none());
 
-    fs::remove_dir_all(&root).unwrap();
+    fs::remove_dir_all(&root).expect("remove temp root");
 }
 
 #[tokio::test]
 async fn test_plugin_manager_run_plugin_once() {
     let root = create_temporary_root("plugin_run");
     let plugins_dir = root.join("var/lib/mcx/plugins");
-    fs::create_dir_all(&plugins_dir).unwrap();
+    fs::create_dir_all(&plugins_dir).expect("create plugins dir");
     fs::write(plugins_dir.join("greeter.py"),
-        "import json\nprint(json.dumps({'success': True, 'message': 'hello'}))\n").unwrap();
+        "import json\nprint(json.dumps({'success': True, 'message': 'hello'}))\n").expect("write temp plugin");
 
     let mgr = mcx::core::plugin::PluginManager::new(&root);
     let event = mcx::core::plugin::PluginEvent {
@@ -991,23 +991,23 @@ async fn test_plugin_manager_run_plugin_once() {
         root: root.to_string_lossy().into_owned(),
         timestamp: "now".into(),
     };
-    let result = mgr.run_plugin_once("greeter", &event).unwrap();
+    let result = mgr.run_plugin_once("greeter", &event).expect("run plugin once");
     assert!(result.success);
     assert!(result.message.unwrap_or_default().contains("hello"));
 
     let err = mgr.run_plugin_once("nonexistent", &event);
     assert!(err.is_err());
 
-    fs::remove_dir_all(&root).unwrap();
+    fs::remove_dir_all(&root).expect("remove temp root");
 }
 
 #[tokio::test]
 async fn test_plugin_run_any_code() {
     let root = create_temporary_root("plugin_run_any");
     let plugins_dir = root.join("var/lib/mcx/plugins");
-    fs::create_dir_all(&plugins_dir).unwrap();
+    fs::create_dir_all(&plugins_dir).expect("create plugins dir");
     fs::write(plugins_dir.join("arbitrary.py"),
-        "import json\nresult = {'success': True, 'message': 'arbitrary ran'}\nprint(json.dumps(result))\n").unwrap();
+        "import json\nresult = {'success': True, 'message': 'arbitrary ran'}\nprint(json.dumps(result))\n").expect("write temp plugin");
 
     let mgr = mcx::core::plugin::PluginManager::new(&root);
     let event = mcx::core::plugin::PluginEvent {
@@ -1016,8 +1016,8 @@ async fn test_plugin_run_any_code() {
         root: root.to_string_lossy().into_owned(),
         timestamp: "now".into(),
     };
-    let result = mgr.run_plugin_once("arbitrary", &event).unwrap();
+    let result = mgr.run_plugin_once("arbitrary", &event).expect("run plugin once");
     assert!(result.success);
 
-    fs::remove_dir_all(&root).unwrap();
+    fs::remove_dir_all(&root).expect("remove temp root");
 }

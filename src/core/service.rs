@@ -280,10 +280,10 @@ Environment=INTERFACE=eth0
 WantedBy=multi-user.target
 ";
 
-        let cesar = CesarService::from_systemd_unit(systemd).unwrap();
+        let cesar = CesarService::from_systemd_unit(systemd).expect("parse systemd unit");
         assert_eq!(cesar.exec, "/usr/sbin/dhclient");
         assert_eq!(cesar.restart, "on-failure");
-        assert_eq!(cesar.environment.get("INTERFACE").unwrap(), "eth0");
+        assert_eq!(cesar.environment.get("INTERFACE").expect("INTERFACE set"), "eth0");
         assert!(cesar.requires.contains("network"));
     }
 
@@ -301,7 +301,7 @@ WantedBy=multi-user.target
         };
 
         let ini = service.to_ini();
-        let parsed = CesarService::from_ini(&ini).unwrap();
+        let parsed = CesarService::from_ini(&ini).expect("parse ini service");
         assert_eq!(parsed.name, "test-svc");
         assert_eq!(parsed.exec, "/bin/test");
         assert_eq!(parsed.restart, "always");
@@ -327,7 +327,7 @@ WantedBy=multi-user.target
         ];
         for (input, expected) in cases {
             let systemd = format!("[Service]\nExecStart=/bin/test\nRestart={}\n", input);
-            let cesar = CesarService::from_systemd_unit(&systemd).unwrap();
+            let cesar = CesarService::from_systemd_unit(&systemd).expect("parse systemd unit");
             assert_eq!(cesar.restart, expected, "Failed for Restart={}", input);
         }
     }

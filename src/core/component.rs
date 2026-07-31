@@ -9,15 +9,23 @@ pub enum ComponentPriority {
     Development,
 }
 
-impl ComponentPriority {
-    pub fn from_str(s: &str) -> Self {
+impl std::str::FromStr for ComponentPriority {
+    type Err = ();
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
-            "required" | "req" | "mandatory" => Self::Required,
-            "recommended" | "rec" | "default" => Self::Recommended,
-            "optional" | "opt" => Self::Optional,
-            "development" | "dev" | "debug" => Self::Development,
-            _ => Self::Optional,
+            "required" | "req" | "mandatory" => Ok(Self::Required),
+            "recommended" | "rec" | "default" => Ok(Self::Recommended),
+            "optional" | "opt" => Ok(Self::Optional),
+            "development" | "dev" | "debug" => Ok(Self::Development),
+            _ => Err(()),
         }
+    }
+}
+
+impl ComponentPriority {
+    #[allow(clippy::should_implement_trait)]
+    pub fn from_str(s: &str) -> Option<Self> {
+        s.parse().ok()
     }
 
     pub fn as_str(&self) -> &'static str {

@@ -137,14 +137,13 @@ impl DependencySolver {
                 }
             }
             for file in &meta.files {
-                if let Some(fname) = file.file_name().and_then(|n| n.to_str()) {
-                    if fname.contains(".so") || fname.ends_with(".dll") || fname.ends_with(".dylib") || fname.ends_with(".a") {
+                if let Some(fname) = file.file_name().and_then(|n| n.to_str())
+                    && (fname.contains(".so") || fname.ends_with(".dll") || fname.ends_with(".dylib") || fname.ends_with(".a")) {
                         let normalized = normalize_library(fname);
                         for n in normalized {
                             lib_to_pkgs.entry(n).or_default().push(meta.pkg_name.clone());
                         }
                     }
-                }
             }
         }
 
@@ -156,6 +155,7 @@ impl DependencySolver {
         Ok(LibraryIndex { lib_to_pkgs })
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn resolve_node(
         &self,
         target: &str,
@@ -278,13 +278,11 @@ impl DependencySolver {
                     if let Some(fname) = file.file_name().and_then(|n| n.to_str()) {
                         let fname_normalized = normalize_library(fname);
                         let lib_normalized = normalize_library(library);
-                        if fname_normalized.iter().any(|fn_item| lib_normalized.contains(fn_item))
-                            || lib_normalized.iter().any(|ln_item| fname_normalized.contains(ln_item))
-                        {
-                            if !matches.contains(&pkg.pkg_name) {
+                        if (fname_normalized.iter().any(|fn_item| lib_normalized.contains(fn_item))
+                            || lib_normalized.iter().any(|ln_item| fname_normalized.contains(ln_item)))
+                            && !matches.contains(&pkg.pkg_name) {
                                 matches.push(pkg.pkg_name.clone());
                             }
-                        }
                     }
                 }
             }
@@ -292,7 +290,7 @@ impl DependencySolver {
 
         match matches.len() {
             0 => Err(anyhow!("No package provides library '{}'", library)),
-            1 => Ok(matches.into_iter().next().unwrap()),
+            1 => Ok(matches.into_iter().next().expect("single match present")),
             _ => {
                 let installed: HashSet<String> = self.db.get_all_installed_packages()
                     .unwrap_or_default().into_iter().map(|p| p.pkg_name).collect();
@@ -300,7 +298,7 @@ impl DependencySolver {
                     Ok(preferred.clone())
                 } else {
                     matches.sort();
-                    Ok(matches.into_iter().next().unwrap())
+                    Ok(matches.into_iter().next().expect("non-empty match list"))
                 }
             }
         }
@@ -369,16 +367,14 @@ impl DependencySolver {
 
             let installed = self.db.get_all_installed_packages().unwrap_or_default();
             for installed_pkg in &installed {
-                if !active_pkgs.contains(&installed_pkg.pkg_name) {
-                    if let Some(conflicts) = &installed_pkg.conflicts {
-                        if conflicts.contains(&meta.pkg_name) {
+                if !active_pkgs.contains(&installed_pkg.pkg_name)
+                    && let Some(conflicts) = &installed_pkg.conflicts
+                        && conflicts.contains(&meta.pkg_name) {
                             return Err(anyhow!(
                                 "Conflict: installed '{}' conflicts with '{}'",
                                 installed_pkg.pkg_name, meta.pkg_name
                             ));
                         }
-                    }
-                }
             }
         }
 
@@ -422,9 +418,9 @@ impl DependencySolver {
             .map(|p| (p.pkg_name.as_str(), p)).collect();
 
         for meta in plan {
-            if targets.contains(&meta.pkg_name) {
-                if let Some(current) = installed_map.get(meta.pkg_name.as_str()) {
-                    if current.version != meta.version {
+            if targets.contains(&meta.pkg_name)
+                && let Some(current) = installed_map.get(meta.pkg_name.as_str())
+                    && current.version != meta.version {
                         paths.push(UpgradePath {
                             package: meta.pkg_name.clone(),
                             from_version: current.version.clone(),
@@ -437,22 +433,19 @@ impl DependencySolver {
                             conflict_free: !self.has_conflicts_with_installed(meta),
                         });
                     }
-                }
-            }
         }
         Ok(paths)
     }
 
     fn has_conflicts_with_installed(&self, pkg: &PackageMetadata) -> bool {
-        if let Some(conflicts) = &pkg.conflicts {
-            if let Ok(installed) = self.db.get_all_installed_packages() {
+        if let Some(conflicts) = &pkg.conflicts
+            && let Ok(installed) = self.db.get_all_installed_packages() {
                 for installed_pkg in &installed {
                     if conflicts.contains(&installed_pkg.pkg_name) {
                         return true;
                     }
                 }
             }
-        }
         false
     }
 
@@ -546,11 +539,10 @@ impl DependencySolver {
                     let path = entry.path();
                     if path.is_dir() {
                         stack.push(path);
-                    } else if path.is_file() {
-                        if is_elf_file(&path) {
+                    } else if path.is_file()
+                        && is_elf_file(&path) {
                             results.push(path);
                         }
-                    }
                 }
             }
         }
@@ -561,11 +553,10 @@ impl DependencySolver {
 
 fn is_elf_file(path: &Path) -> bool {
     let mut buf = [0u8; 4];
-    if let Ok(mut f) = fs::File::open(path) {
-        if f.read_exact(&mut buf).is_ok() {
+    if let Ok(mut f) = fs::File::open(path)
+        && f.read_exact(&mut buf).is_ok() {
             return buf == constants::ELF_MAGIC;
         }
-    }
     false
 }
 
@@ -580,21 +571,26 @@ fn read_elf_needed(path: &Path) -> Result<Vec<String>> {
         return Ok(Vec::new());
     }
 
-    let phoff = read_u64(&data[constants::ELF64_PHOFF_RANGE]);
-    let phentsize = read_u16(&data[constants::ELF64_PHENTSIZE_RANGE]);
-    let phnum = read_u16(&data[constants::ELF64_PHNUM_RANGE]);
+    // e_ident[EI_CLASS] lives at offset 4; this parser only handles ELFCLASS64.
+    if data.get(4) != Some(&constants::ELFCLASS64) {
+        return Ok(Vec::new());
+    }
+
+    let phoff = read_u64(data.get(constants::ELF64_PHOFF_RANGE).unwrap_or(&[]));
+    let phentsize = read_u16(data.get(constants::ELF64_PHENTSIZE_RANGE).unwrap_or(&[]));
+    let phnum = read_u16(data.get(constants::ELF64_PHNUM_RANGE).unwrap_or(&[]));
 
     let mut dyn_vaddr: Option<u64> = None;
     let mut dyn_size: Option<u64> = None;
 
     for i in 0..phnum as u64 {
-        let offset = phoff + i * phentsize as u64;
-        let end = offset as usize + phentsize as usize;
-        if end > data.len() { break; }
+        let offset = phoff.saturating_add(i.saturating_mul(phentsize as u64));
+        let off = offset as usize;
+        if off.saturating_add(phentsize as usize) > data.len() { break; }
 
-        let p_type = read_u32(&data[offset as usize..offset as usize + 4]);
-        let p_vaddr = read_u64(&data[offset as usize + 16..offset as usize + 24]);
-        let p_filesz = read_u64(&data[offset as usize + 32..offset as usize + 40]);
+        let p_type = read_u32(data.get(off..off.saturating_add(4)).unwrap_or(&[]));
+        let p_vaddr = read_u64(data.get(off.saturating_add(16)..off.saturating_add(24)).unwrap_or(&[]));
+        let p_filesz = read_u64(data.get(off.saturating_add(32)..off.saturating_add(40)).unwrap_or(&[]));
 
         if p_type == constants::ELF_PT_DYNAMIC {
             dyn_vaddr = Some(p_vaddr);
@@ -609,7 +605,7 @@ fn read_elf_needed(path: &Path) -> Result<Vec<String>> {
 
     let dyn_file_off = find_file_offset(data, phoff, phentsize, phnum, dyn_vaddr)?;
     let dyn_start = dyn_file_off as usize;
-    let dyn_end = dyn_start + dyn_size as usize;
+    let dyn_end = dyn_start.saturating_add(dyn_size as usize);
     if dyn_end > data.len() { return Ok(Vec::new()); }
 
     let mut strtab_vaddr: Option<u64> = None;
@@ -617,7 +613,7 @@ fn read_elf_needed(path: &Path) -> Result<Vec<String>> {
     let mut str_offsets: Vec<u64> = Vec::new();
 
     for off in (dyn_start..dyn_end).step_by(constants::ELF_DYN_ENTRY_SIZE) {
-        if off + constants::ELF_DYN_ENTRY_SIZE > data.len() { break; }
+        if off.saturating_add(constants::ELF_DYN_ENTRY_SIZE) > data.len() { break; }
         let d_tag = read_u64(&data[off..off + 8]);
         let d_val = read_u64(&data[off + 8..off + 16]);
 
@@ -638,7 +634,7 @@ fn read_elf_needed(path: &Path) -> Result<Vec<String>> {
     };
 
     let strtab_file_off = find_file_offset(data, phoff, phentsize, phnum, strtab_vaddr)? as usize;
-    if strtab_file_off + strtab_size as usize > data.len() {
+    if strtab_file_off.saturating_add(strtab_size as usize) > data.len() {
         return Ok(Vec::new());
     }
     let strtab = &data[strtab_file_off..strtab_file_off + strtab_size as usize];
@@ -648,11 +644,10 @@ fn read_elf_needed(path: &Path) -> Result<Vec<String>> {
         let s = str_off as usize;
         if s < strtab.len() {
             let end = strtab[s..].iter().position(|&b| b == 0).unwrap_or(strtab.len() - s);
-            if end >= 4 {
-                if let Ok(name) = std::str::from_utf8(&strtab[s..s + end]) {
+            if end >= 4
+                && let Ok(name) = std::str::from_utf8(&strtab[s..s + end]) {
                     result.push(name.to_string());
                 }
-            }
         }
     }
 
@@ -660,21 +655,20 @@ fn read_elf_needed(path: &Path) -> Result<Vec<String>> {
 }
 fn find_file_offset(data: &[u8], phoff: u64, phentsize: u16, phnum: u16, vaddr: u64) -> Result<u64> {
     for i in 0..phnum as u64 {
-        let offset = phoff + i * phentsize as u64;
-        let end = offset as usize + phentsize as usize;
-        if end > data.len() { break; }
+        let offset = phoff.saturating_add(i.saturating_mul(phentsize as u64));
+        let off = offset as usize;
+        if off.saturating_add(phentsize as usize) > data.len() { break; }
 
-        let p_type = read_u32(&data[offset as usize..offset as usize + 4]);
-        let p_vaddr = read_u64(&data[offset as usize + 16..offset as usize + 24]);
-        let _p_filesz = read_u64(&data[offset as usize + 32..offset as usize + 40]);
-        let p_offset = read_u64(&data[offset as usize + 8..offset as usize + 16]);
-        let p_memsz = read_u64(&data[offset as usize + 40..offset as usize + 48]);
+        let p_type = read_u32(data.get(off..off.saturating_add(4)).unwrap_or(&[]));
+        let p_vaddr = read_u64(data.get(off.saturating_add(16)..off.saturating_add(24)).unwrap_or(&[]));
+        let _p_filesz = read_u64(data.get(off.saturating_add(32)..off.saturating_add(40)).unwrap_or(&[]));
+        let p_offset = read_u64(data.get(off.saturating_add(8)..off.saturating_add(16)).unwrap_or(&[]));
+        let p_memsz = read_u64(data.get(off.saturating_add(40)..off.saturating_add(48)).unwrap_or(&[]));
 
-        if p_type == constants::ELF_PT_LOAD || p_type == constants::ELF_PT_DYNAMIC {
-            if vaddr >= p_vaddr && vaddr < p_vaddr + p_memsz {
-                return Ok(p_offset + (vaddr - p_vaddr));
+        if (p_type == constants::ELF_PT_LOAD || p_type == constants::ELF_PT_DYNAMIC)
+            && vaddr >= p_vaddr && vaddr < p_vaddr.saturating_add(p_memsz) {
+                return Ok(p_offset.saturating_add(vaddr - p_vaddr));
             }
-        }
     }
     Err(anyhow!("Cannot resolve virtual address {:#x} to file offset", vaddr))
 }
@@ -693,30 +687,26 @@ fn scan_elf_strings(path: &Path) -> Result<Vec<String>> {
         if byte.is_ascii_graphic() || byte == b'/' || byte == b'.' || byte == b'-' || byte == b'_' || byte == b' ' {
             current.push(byte);
         } else {
-            if current.len() >= 4 {
-                if let Ok(s) = String::from_utf8(current.clone()) {
+            if current.len() >= 4
+                && let Ok(s) = String::from_utf8(current.clone()) {
                     let trimmed = s.trim();
-                    if !trimmed.is_empty() && !trimmed.chars().all(|c| c.is_ascii_digit() || c == '.') {
-                        if trimmed.contains(".so") || trimmed.contains("lib") {
+                    if !trimmed.is_empty() && !trimmed.chars().all(|c| c.is_ascii_digit() || c == '.')
+                        && (trimmed.contains(".so") || trimmed.contains("lib")) {
                             strings.push(trimmed.to_string());
                         }
-                    }
                 }
-            }
             current.clear();
         }
     }
 
-    if current.len() >= 4 {
-        if let Ok(s) = String::from_utf8(current) {
+    if current.len() >= 4
+        && let Ok(s) = String::from_utf8(current) {
             let trimmed = s.trim();
-            if !trimmed.is_empty() && !trimmed.chars().all(|c| c.is_ascii_digit() || c == '.') {
-                if trimmed.contains(".so") || trimmed.contains("lib") {
+            if !trimmed.is_empty() && !trimmed.chars().all(|c| c.is_ascii_digit() || c == '.')
+                && (trimmed.contains(".so") || trimmed.contains("lib")) {
                     strings.push(trimmed.to_string());
                 }
-            }
         }
-    }
 
     strings.sort();
     strings.dedup();
@@ -825,11 +815,10 @@ pub fn scan_package_directory(path: &Path) -> Result<Vec<String>> {
                     continue;
                 }
 
-                if let Some(name) = entry_path.file_name().and_then(|n| n.to_str()) {
-                    if name.ends_with(".so") || name.contains(".so.") || name.ends_with(".dll") || name.ends_with(".dylib") || name.ends_with(".a") {
+                if let Some(name) = entry_path.file_name().and_then(|n| n.to_str())
+                    && (name.ends_with(".so") || name.contains(".so.") || name.ends_with(".dll") || name.ends_with(".dylib") || name.ends_with(".a")) {
                         libs.insert(name.to_string());
                     }
-                }
 
                 if is_elf_file(&entry_path) {
                     if let Ok(needed) = read_elf_needed(&entry_path) {

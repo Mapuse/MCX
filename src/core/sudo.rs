@@ -4,10 +4,9 @@ use crate::utils::ui::UserInterface;
 
 fn is_read_only_command() -> bool {
     let args: Vec<String> = env::args().collect();
-    if args.len() < 3 {
+    let Some(cmd) = args.get(1).map(|s| s.trim_start_matches('-')) else {
         return true;
-    }
-    let cmd = args[2].trim_start_matches('-');
+    };
     matches!(cmd,
         "search" | "find" | "look" |
         "query" | "info" | "show" |
@@ -24,6 +23,8 @@ pub fn root_access() {
         return;
     }
 
+    // SAFETY: libc::getuid() takes no arguments, does not dereference any
+    // pointers, and has no side effects; it is always safe to call.
     let uid = unsafe { libc::getuid() };
 
     if uid != 0 {

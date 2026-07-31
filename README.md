@@ -13,60 +13,67 @@
 
 `▐▀` `-` `▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▌`
 
-**`MCX`** is a Package Manager of **`Cudane`** by **`Mapuse`** written in **`Rust`**, built for a full lifecycle and heavy workflows, no one needs a full-featured Package Manager in the same much of needing a Package Manager that just *`Works`*, but also no one want to be restricted, so it has a full **`Python`** Plugins and Theming with **`No Limits`**, you can design a full system inside **`MCX`** as a plugin, or design a full TUI with literally **`any`** library, the only limit is the **`Python`** Language itself.
+**`[MCX]`** is a Package Manager of **`[Cudane]`** by **`[Mapuse]`** written in **`[Rust]`**, built for a full lifecycle and heavy workflows, no one needs a full-featured Package Manager in the same much of needing a Package Manager that just *`Works`*, but also no one want to be restricted, so it has a full **`[Python]`** Plugins and Theming with **`[No Limits]`**, you can design a full system inside **`[MCX]`** as a plugin, or design a full **`[TUI]`** with literally **`[any]`** library, the only limit is the **`[Python]`** Language itself.
 
-- **`Version`:** **`7.0.0`**.
+- **`[Version]`**: **`[7.0.0]`**
 
 `▐▄` `-` `▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▌`
 
 
 <details><summary id="contents">Contents</summary>
 
-- [Commands]
-- [Architecture]
-  - [Module dependency graph]
-  - [Module inventory]
-  - [Trait contracts]
-  - [Execution flow]
-  - [Auto-calibration]
-- [Code structure]
-  - [Modules]
-  - [Entry points]
-  - [commands/ — CLI-level behaviour]
-  - [core/ — Domain logic]
-  - [network/ — Remote operations]
-  - [archive/ — Artifact primitives]
-  - [utils/ — Shared utilities]
-- [Data & persistence]
-  - [Ledger state — JSON schema]
-  - [On-disk layout]
-  - [INI-based configuration]
-  - [Package format]
-  - [Staging and commit model]
-  - [Transaction log format]
-- [Feature subsystems]
-  - [Atomic package rollback]
-  - [Content-addressable library store]
-  - [Resource control via cgroups]
-  - [Self-update]
-  - [Workspace management]
-  - [Vendor (offline mirror)]
-  - [Completion engine]
-  - [Network downloader (concurrent, retry, streaming, ETag)]
-  - [Network sync engine (ETag conditional sync)]
-  - [Integrity scanner (async verify & repair)]
-- [Development]
-  - [Building]
-  - [Testing]
-  - [Linting]
-  - [Auditing]
-  - [Debugging]
-  - [Profiling]
-  - [Continuous integration]
-- [Plugin authoring & linking]
-- [Configuration guide]
-- [License]
-- [Credits]
+- [**`[Commands]`**](#commands)
+- [**`[Architecture]`**](#architecture)
+  - [**`[Module dependency graph]`**](#module-dependency-graph)
+  - [**`[Module inventory]`**](#module-inventory)
+  - [**`[Trait contracts]`**](#trait-contracts)
+  - [**`[Execution flow]`**](#execution-flow)
+  - [**`[Auto-calibration]`**](#auto-calibration)
+- [**`[Code structure]`**](#code-structure)
+  - [**`[Modules]`**](#modules)
+  - [**`[Entry points]`**](#entry-points)
+  - [**`[commands/ — CLI]`**](#commands--cli)
+  - [**`[core/ — Domain logic]`**](#core--domain-logic)
+  - [**`[core/config.rs — merged config.ini]`**](#coreconfigrs--merged-configini)
+  - [**`[python/ — In-process Python subsystem (pyo3)]`**](#python--in-process-python-subsystem-pyo3)
+  - [**`[event.rs — Event bus]`**](#eventrs--event-bus)
+  - [**`[network/ — Remote operations]`**](#network--remote-operations)
+  - [**`[archive/ — Artifact primitives]`**](#archive--artifact-primitives)
+  - [**`[utils/ — Shared utilities]`**](#utils--shared-utilities)
+- [**`[Data & persistence]`**](#data--persistence)
+  - [**`[Package metadata — LMDB schema]`**](#package-metadata--lmdb-schema)
+  - [**`[On-disk layout]`**](#on-disk-layout)
+  - [**`[INI-based configuration]`**](#ini-based-configuration)
+  - [**`[Package format]`**](#package-format)
+  - [**`[Staging and commit model]`**](#staging-and-commit-model)
+  - [**`[Transaction log format]`**](#transaction-log-format)
+- [**`[Feature subsystems]`**](#feature-subsystems)
+  - [**`[Atomic package rollback]`**](#atomic-package-rollback)
+  - [**`[Content-addressable library store]`**](#content-addressable-library-store)
+  - [**`[Resource control via cgroups]`**](#resource-control-via-cgroups)
+  - [**`[Self-update]`**](#self-update)
+  - [**`[Workspace management]`**](#workspace-management)
+  - [**`[Vendor (offline mirror)]`**](#vendor-offline-mirror)
+  - [**`[Completion engine]`**](#completion-engine)
+  - [**`[Network downloader (concurrent, retry, streaming, ETag)]`**](#network-downloader-concurrent-retry-streaming-etag)
+  - [**`[Network sync engine (ETag conditional sync)]`**](#network-sync-engine-etag-conditional-sync)
+  - [**`[Integrity scanner (async verify & repair)]`**](#integrity-scanner-async-verify--repair)
+  - [**`[Binary index (`--binindex`)]`**](#binary-index---binindex)
+  - [**`[Auto-remove (`--autoremove`)]`**](#auto-remove---autoremove)
+  - [**`[Security monitor]`**](#security-monitor)
+  - [**`[Component tiers]`**](#component-tiers)
+- [**`[Development]`**](#development)
+  - [**`[Building]`**](#building)
+  - [**`[Testing]`**](#testing)
+  - [**`[Linting]`**](#linting)
+  - [**`[Auditing]`**](#auditing)
+  - [**`[Debugging]`**](#debugging)
+  - [**`[Profiling]`**](#profiling)
+  - [**`[Continuous integration]`**](#continuous-integration)
+- [**`[Plugin authoring & linking]`**](#plugin-authoring--linking)
+- [**`[Configuration guide]`**](#configuration-guide)
+- [**`[License]`**](#license)
+- [**`[Credits]`**](#credits)
 
 </details>
 
@@ -83,6 +90,7 @@ CLI parsing is handled by `clap` derive macros in `src/main.rs`. The `Cli` struc
 | `-i` | `--install` | `in`, `add` | `InstallCommand` | `commands::install` |
 | `-a` | `--add` | `local`, `package`, `xcs` | `AddLocalCommand` | `commands::add` |
 | `-r` | `--remove` | `rm`, `uninstall`, `delete` | `RemoveCommand` | `commands::remove` |
+| — | `--purge` | `full-remove` | `RemoveCommand` | `commands::remove` |
 | `-s` | `--search` | `find`, `look` | `SearchCommand` | `commands::search` |
 | `-u` | `--update` | `refresh`, `sync` | `SyncCommand` / `InstallCommand` | `commands::sync` / `commands::install` |
 | `-U` | `--upgrade` | `up`, `dist-upgrade` | `InstallCommand` | `commands::install` |
@@ -93,6 +101,7 @@ CLI parsing is handled by `clap` derive macros in `src/main.rs`. The `Cli` struc
 | `-C` | `--config` | `cfg`, `settings` | `ConfigEditorCommand` + `--init` | `commands::configuration` / inline in `main.rs` |
 | `-H` | `--history` | `log`, `record` | inline in `main.rs` | — |
 | `-b` | `--build` | `make`, `create` | `SystemCommand` | `commands::system` |
+| — | `--autoremove` | `ar`, `autoclean` | `AutoRemoveAnalyzer` | `core::autoremove` |
 
 ### `-i` / `--install`
 
@@ -108,6 +117,16 @@ Resolves the dependency graph for the target packages via `DependencySolver`, do
 | ----- | ---- | -------- | ----------- |
 | `packages` | `Vec<String>` positional | yes | Package names to install |
 | `--root` | global `-PATH-` | no | MCX root (default `/`) |
+
+| Flag | Type | Default | Description |
+| ---- | ---- | ------- | ----------- |
+| `--minimal` | `bool` | `false` | Install only required components |
+| `--dev` | `bool` | `false` | Install all components including development |
+| `--components` | `Option<String>` | — | Install specific components (comma-separated) |
+| `--exclude` | `Option<String>` | — | Exclude specific components (comma-separated) |
+| `--only` | `Option<String>` | — | Install only the specific binary/tool from the package |
+
+Component selection flows through `resolve_and_commit()`: when `components`, `minimal`, or `dev` are set, `PackageEntity` filters the manifest's component tiers (`Required`/`Recommended`/`Optional`/`Development`) before extraction.
 
 ### `-a` / `--add`
 
@@ -136,6 +155,20 @@ Performs a self-healing deep-purge removal. Traces the reverse dependency graph 
 | Input | Type | Required | Description |
 | ----- | ---- | -------- | ----------- |
 | `packages` | `Vec<String>` positional | yes | Package names to remove |
+
+| Flag | Type | Default | Description |
+| ---- | ---- | ------- | ----------- |
+| `--components` | `Option<String>` | — | Remove specific components only (comma-separated) |
+| `--purge-broken` | `bool` | `false` | Purge broken files and caches |
+
+### `--purge` / `full-remove`
+
+```
+mcx --purge <package>...
+mcx full-remove <package>...
+```
+
+Unconditional removal of a package — skips the reverse-dependency/orphan analysis and purges the package, its manifest-listed files, and all associated residue without tracing dependents.
 
 ### `-s` / `--search`
 
@@ -176,6 +209,11 @@ mcx up <package>...
 Without arguments: collects all currently installed package names from LMDB, then runs `InstallCommand` over the full set.
 
 With arguments: runs `InstallCommand` on the specified subset.
+
+| Flag | Type | Default | Description |
+| ---- | ---- | ------- | ----------- |
+| `--components` | `Option<String>` | — | Upgrade only specific components (comma-separated) |
+| `--only` | `Option<String>` | — | Upgrade only the specific binary/tool |
 
 ### `-q` / `--query`
 
@@ -389,7 +427,14 @@ After every `install` and `remove` operation, if `etc/mcx/profile.ini` exists, M
 | `--repo-add` | `ra` | `RepositoryManager` | `core::repo` |
 | `--repo-remove` | `rr` | `RepositoryManager` | `core::repo` |
 | `--repo-list` | `rl` | `RepositoryManager` | `core::repo` |
-| `--plugin` (`-p`) | `plg` | `PluginManager` | `core::plugin` |
+| `--hook-plugin` | `hp` | `PluginManager` | `core::plugin` |
+| `plugin` | — | `PluginManager` (pyo3) | `python::plugin` |
+| `theme` | — | `ThemeEngine` (pyo3) | `python::theme` |
+| `tui` | — | `TuiEngine` (pyo3) | `python::tui` |
+| `--service` | `svc` | inline in `main.rs` | — |
+| `--command-not-found` | `cnf` | `BinaryIndex` | `core::binindex` |
+| `--binindex` | `bi` | `BinaryIndex` | `core::binindex` |
+| `--autoremove` | `ar`, `autoclean` | `AutoRemoveAnalyzer` | `core::autoremove` |
 
 ### `self-update`
 
@@ -429,29 +474,113 @@ mcx --cgroup status
 
 cgroup v2 resource enforcement. Writes memory and CPU quota limits to `/sys/fs/cgroup/mcx/<pkg>/memory.max` and `cpu.max`. Package names are sanitised for cgroup path safety. `status` checks whether cgroup v2 is available on the host.
 
-### `-p` / `--plugin`
+### `--hook-plugin` (legacy external plugins)
 
 ```
-mcx -p list
-mcx -p info <name>
-mcx -p run <name>
-mcx -p add <dir>
-mcx -p remove <name>
-mcx -p reload
-mcx -p reload-config
+mcx --hook-plugin list
+mcx --hook-plugin info <name>
+mcx --hook-plugin run <name> [hook]
+mcx --hook-plugin add <source>
+mcx --hook-plugin remove <name>
+mcx --hook-plugin reload
+mcx --hook-plugin reload-config
+mcx hp list
 ```
 
-Manages external Python plugins. Plugins are single `.py` files loaded via `PluginManager`.
+Manages the legacy external Python plugin system. Plugins are single `.py` files loaded via `PluginManager` (subprocess execution with the event JSON injected as the global `MCX_EVENT`).
 
 | Subcommand | Description |
 | ---------- | ----------- |
 | `list` | List all loaded plugins with name, path, and status |
 | `info <name>` | Show plugin details (name, path, language) |
-| `run <name>` | Execute a plugin once with an optional event JSON |
-| `add <dir>` | Copy a plugin file into `var/lib/mcx/plugins/` and reload |
+| `run <name> [hook]` | Execute a plugin once with an optional hook name |
+| `add <source>` | Copy a plugin file into `var/lib/mcx/plugins/` and reload |
 | `remove <name>` | Delete a plugin file and reload |
 | `reload` | Re-scan `var/lib/mcx/plugins/` for changes |
 | `reload-config` | Reload plugins from `etc/mcx/p.desc` (TOML config), skip already-loaded, create+wire new entries |
+
+> The newer in-process Python subsystem is split into the `plugin`, `theme`, and `tui` subcommands below.
+
+### `plugin` (Python aliases)
+
+```
+mcx plugin list
+mcx plugin info <name>
+mcx plugin run <alias> [args...]
+mcx plugin install <path> [-n NAME] [-a ALIAS] [-A k=v] [-f]
+mcx plugin remove <name> [-f]
+```
+
+The modern in-process Python plugin runner (`python::plugin::PluginManager`, via `pyo3`). Python modules are loaded in-process from the paths declared in the `[python]` section of `config.ini`; each module's hook functions are registered and invoked directly.
+
+| Subcommand | Description |
+| ---------- | ----------- |
+| `list` | List all loaded Python plugins |
+| `info <name>` | Show plugin details |
+| `run <alias> [args...]` | Run a plugin by alias with optional extra arguments |
+| `install <path> [-n NAME] [-a ALIAS] [-A k=v...] [-f]` | Install a plugin file and register aliases |
+| `remove <name> [-f]` | Remove a plugin |
+
+### `theme` (Python themes)
+
+```
+mcx theme list
+mcx theme info <name>
+mcx theme apply <name>
+mcx theme install <path> [-n NAME] [-f]
+mcx theme remove <name>
+```
+
+Theme management via `python::theme::ThemeEngine`. Themes are Python modules that render the prompt; they load from the configured theme path (`var/lib/mcx/themes` or the `[python] theme` setting) and apply via `ThemeEngine::apply`.
+
+### `tui` (Python TUIs)
+
+```
+mcx tui list
+mcx tui info <name>
+mcx tui run <name>
+mcx tui install <path> [-n NAME] [-f]
+mcx tui remove <name>
+```
+
+TUI management via `python::tui::TuiEngine`. TUIs are full-screen Python applications launched through `TuiEngine::run`.
+
+### `--service`
+
+```
+mcx --service <args...>
+mcx svc <args...>
+```
+
+Forwards a trailing list of arguments to the **`[Cesar]`** service manager (`/etc/cesar/services.d`). Useful for scripting service lifecycle alongside package operations.
+
+### `--command-not-found`
+
+```
+mcx --command-not-found <command>
+mcx cnf <command>
+```
+
+Consults the binary index (`core::binindex::command_not_found_handler`) to suggest which package provides the missing command. Wired into shell hooks via `assets/command-not-found.sh`.
+
+### `--binindex`
+
+```
+mcx --binindex
+mcx bi
+```
+
+Rebuilds the binary index (`var/lib/mcx/binindex.json`) mapping binaries to their owning package.
+
+### `--autoremove`
+
+```
+mcx --autoremove           # dry-run
+mcx --autoremove --apply   # actually remove
+mcx ar --apply
+```
+
+Analyzes the installed set via `AutoRemoveAnalyzer` and reports orphaned packages and unnecessary libraries. Default is a dry run; `--apply` performs the removal.
 
 ## Repository management
 
@@ -736,7 +865,7 @@ Each architecture is defined by a Rust target specification JSON file:
 
 These files define the LLVM target, data layout, linker, and CPU features for `rustc`. The `target-family` field is required for `-Zbuild-std` compilation — without it, `libc` and other core crates will fail to find their platform-specific modules.
 
-**`x86_64-unknown-linux-musl.json`** (amd64):
+**`[x86_64-unknown-linux-musl.json]`** (amd64):
 ```json
 {
   "arch": "x86_64",
@@ -758,7 +887,7 @@ These files define the LLVM target, data layout, linker, and CPU features for `r
 }
 ```
 
-**`aarch64-unknown-linux-musl.json`** (arm64):
+**`[aarch64-unknown-linux-musl.json]`** (arm64):
 ```json
 {
   "arch": "aarch64",
@@ -817,8 +946,11 @@ The `PackageEntity` struct (used for embedded `metadata.json` manifests) also ca
 
 | Module | Path | Responsibility | Public surface |
 | ------ | ---- | -------------- | -------------- |
-| `commands` | `src/commands/` | CLI command implementations — one file per command group. Each command struct implements `execute()` taking `EngineContext`. | `InstallCommand`, `RemoveCommand`, `SyncCommand`, `SearchCommand`, `AddLocalCommand`, `CleanCommand`, `ConfigEditorCommand`, `SystemCommand` |
-| `core` | `src/core/` | Domain logic — architecture detection, persistence, solver, lifecycle, plugins, profiling, configuration, repositories, history, changelog, completion, declarative validation, self-update, vendor mirroring, workspace management, content-addressable store, cgroup control, generation-based rollback, security monitor, runtime isolation. | `Architecture` enum, config types, `Database`, `DependencySolver`, `LifecycleEngine`, `PluginRegistry`, `SystemProfile`, `HistoryEngine`, `RepositoryManager`, `CacheManager`, `PackageEntity`, `SelfUpdateManager`, `VendorManager`, `WorkspaceManager`, `ProfileValidator`, `CompletionEngine`, `CgroupController`, `RollbackManager`, `CasManager`, `SecurityMonitor` |
+| `commands` | `src/commands/` | CLI command implementations — one file per command group. Each command struct implements `execute()` taking `EngineContext`. | `InstallCommand`, `RemoveCommand`, `SyncCommand`, `SearchCommand`, `AddLocalCommand`, `CleanCommand`, `ConfigEditorCommand`, `SystemCommand`, `BinIndexCommand`, `AutoremoveCommand`, `ServiceCommand`, `HookPluginCommand` |
+| `core` | `src/core/` | Domain logic — architecture detection, persistence, solver, lifecycle, plugins, profiling, configuration, repositories, history, changelog, completion, declarative validation, self-update, vendor mirroring, workspace management, content-addressable store, cgroup control, generation-based rollback, security monitor, runtime isolation. | `Architecture` enum, config types, `Database`, `DependencySolver`, `LifecycleEngine`, `PluginRegistry`, `SystemProfile`, `HistoryEngine`, `RepositoryManager`, `CacheManager`, `PackageEntity`, `SelfUpdateManager`, `VendorManager`, `WorkspaceManager`, `ProfileValidator`, `CompletionEngine`, `CgroupController`, `RollbackManager`, `CasManager`, `SecurityMonitor`, `BinaryIndex`, `AutoRemoveAnalyzer` |
+| `config` | `src/core/config.rs` | Merged `config.ini` configuration — mmap-based engine params plus `[general]` and `[python]` sections. | `ConfigManager`, `MappedConfig`, `CalibratedParams`, `PythonConfig` |
+| `python` | `src/python/` | In-process Python subsystem via pyo3. | `PluginManager`, `ThemeEngine`, `TuiEngine` |
+| `event` | `src/event.rs` | Event bus over Unix datagram socket. | `EventBus`, `start_listener()`, `emit_*` |
 | `network` | `src/network/` | Remote data operations — HTTP download via `reqwest` + `rustls-tls`, parallel index sync. | `Downloader`, `NetworkSyncEngine` |
 | `archive` | `src/archive/` | Artifact format handling — `.xcs` extraction, SHA-256 hashing, content verification. | `Extractor`, `HashVerifier`, `ContentValidator` |
 | `utils` | `src/utils/` | Shared infrastructure — terminal output. | `UserInterface` |
@@ -930,21 +1062,24 @@ The `PackageEntity` struct (used for embedded `metadata.json` manifests) also ca
   main.rs ➔ lib.rs ➔ commands ➔ core ➔ network
                                 │              ├ ➔ archive
                                 │              └ ➔ utils
+                                ├ ➔ config
+                                ├ ➔ python
+                                ├ ➔ event
                                 └ ➔ utils
 ```
 
-Every `commands::*` struct receives an `EngineContext` reference which gates access to all `core` subsystems. `core` depends on `network` (download during install/sync) and `archive` (extract/verify). `utils` is a leaf module used by both `commands` and `main`.
+Every `commands::*` struct receives an `EngineContext` reference which gates access to all `core` subsystems. `core` depends on `network` (download during install/sync) and `archive` (extract/verify). `utils` is a leaf module used by both `commands` and `main`. `core::config` holds the merged `config.ini` (including `[general]`/`[python]`) consumed by `python` (in-process pyo3 plugins/themes/TUIs), while `event` runs the socket-backed event bus.
 
 ## Entry points
 
-- **`src/main.rs`**
-  - `Cli` struct (clap `#[derive(Parser)]`) — defines `--root` global flag and 14 `Commands` enum variants.
+- **`[src/main.rs]`**
+  - `Cli` struct (clap `#[derive(Parser)]`) — defines `--root` global flag and the full `Commands` enum (package, repository, platform, and Python subcommands).
   - `EngineContext::new(root)` — constructs the shared environment holding `Database`, `ConfigManager` (mmap, lifetime-tracked), `PluginRegistry`, `SystemProfile`, `DecisionEngine`, `NetworkProber`.
   - Match on `Commands` variant → dispatch to `command.execute(&engine)`.
   - Output via `UserInterface` methods.
 
-- **`src/lib.rs`**
-  - Declares modules: `commands`, `core`, `network`, `archive`, `utils`.
+- **`[src/lib.rs]`**
+  - Declares modules: `commands`, `core`, `network`, `archive`, `utils`, `config`, `python`, `event`.
   - Re-exports all public types (`pub use commands::*`, `pub use core::*`, etc.) for integration tests and external consumers of the `mcx` crate.
 
 ## `commands/` — CLI-level behaviour
@@ -961,6 +1096,19 @@ Every command struct implements `pub fn execute(&self, engine: &EngineContext) -
 | `system.rs` | `SystemCommand` | Declarative rebuild from blueprint | `execute()`, `rebuild()` |
 | `clean.rs` | `CleanCommand` | Purge cache + staging | `execute()` |
 | `configuration.rs` | `ConfigEditorCommand` | TUI editor for config files | `execute()`, `open_editor()` |
+| `repo.rs` | `RepoAdd`/`RepoRemove`/etc. | Repository CRUD (`--repo-*`) | `execute()` |
+| `self_update.rs` | `SelfUpdateCommand` | Binary self-replacement | `execute()` |
+| `vendor.rs` | `VendorCommand` | Offline vendor mirror | `execute()` |
+| `completion.rs` | `CompletionCommand` | Shell completion generation | `execute()` |
+| `cgroup.rs` | `CgroupCommand` | cgroup v2 resource enforcement | `execute()` |
+| `hook_plugin.rs` | `HookPluginCommand` | Legacy external Python plugins | `execute()` |
+| `plugin.rs` | `PluginCommand` | In-process Python plugin runner | `execute()` |
+| `theme.rs` | `ThemeCommand` | Python theme management | `execute()` |
+| `tui.rs` | `TuiCommand` | Python TUI management | `execute()` |
+| `service.rs` | `ServiceCommand` | Forward args to Cesar service manager | `execute()` |
+| `command_not_found.rs` | `CommandNotFoundCommand` | Binary-index lookup for missing commands | `execute()` |
+| `binindex.rs` | `BinIndexCommand` | Rebuild binary index | `execute()` |
+| `autoremove.rs` | `AutoRemoveCommand` | Orphaned-package analysis + removal | `execute()` |
 
 ## `core/` — Domain logic
 
@@ -984,10 +1132,44 @@ Every command struct implements `pub fn execute(&self, engine: &EngineContext) -
 | `plugin.rs` | `PluginRegistry`, `PluginSlot<T>`, `Fetcher`, `Builder`, `Packer`, `CurlFetcher`, `DefaultBuilder`, `ZstdPacker`, `PythonPlugin`, `PluginManager`, `PluginHook`, `PluginEvent`, `PluginResult`, `PluginConfig` | Lock-free plugin hot-swap via `RwLock<Arc<T>>`. Python-based external plugin system with `PluginManager`, TOML config (`p.desc`), and subprocess execution. | — |
 | `constants.rs` | All centralized constants | Paths, URLs, thresholds, tool names, ELF format constants, UI widths, DB sizes, Python plugin template — every hardcoded value in one place. | `PATH_ACTIVE`, `PATH_CACHE`, `DEFAULT_NETWORK_TIMEOUT_SECS`, `PLUGIN_CONFIG_FILE`, and 100+ other constants |
 | `profiler.rs` | `SystemProfile`, `DecisionEngine`, `AutoHealer`, `NetworkProber` | Host profiling, heuristic decisions, network latency probing. | — |
-
 | `update.rs` | `SelfUpdateManager` | GitHub Releases check + binary self-replace. | `network::download` |
 | `vendor.rs` | `VendorManager` | Offline mirror: recursive download + caching. | `network::download` |
 | `workspace.rs` | `WorkspaceManager` | Multi-package workspace orchestration. | `solver.rs` |
+| `binindex.rs` | `BinaryIndex` | Maps binaries to owning package (`binindex.json`); `command_not_found_handler()`. | — |
+| `autoremove.rs` | `AutoRemoveAnalyzer`, `AutoRemoveReport`, `OrphanedPackage`, `OrphanReason` | Orphaned-package and unnecessary-library analysis (dry-run + `--apply`). | `database.rs` |
+| `component.rs` | `Component`, `ComponentTier` (`Required`/`Recommended`/`Optional`/`Development`) | Component tier selection and filtering for install/upgrade. | — |
+| `security.rs` | `SecurityMonitor` | Security scanning and audit. | — |
+| `cgroup.rs` | `CgroupController` | cgroup v2 memory/CPU enforcement. | — |
+| `integrity.rs` | `IntegrityScanner` | Async verify & repair of installed content. | `tokio` |
+| `rollback.rs` | `RollbackManager` | Generation-based rollback. | `database.rs` |
+| `cas.rs` | `CasStore` | Content-addressable library store. | — |
+| `service.rs` | `ServiceManager` | Service lifecycle forwarding to Cesar. | — |
+
+## `core/config.rs` — merged `config.ini` configuration
+
+`ConfigManager` now owns the whole config surface in one INI file (`etc/mcx/config.ini`):
+
+| Section | Exports | Role |
+| ------- | ------- | ---- |
+| `[general]` | `log_level`, `log_file`, `cache_dir`, `build_dir` | Global paths and logging (merged from the former `mcx.toml`). |
+| `[engine]` | `thread_pool_mode`, `max_concurrent_downloads`, `zstd_level`, `io_parallelism` | Engine tuning consumed by `CalibratedParams::calibrate()`. |
+| `[network]` | `fallback_repos`, `latency_threshold_ms`, `bandwidth_threshold_kbps`, `concurrent_downloads` | Network heuristics. |
+| `[security]` | `verify_checksums`, `allow_unverified`, `restricted_mode`, `allowed_paths` | Security surface (merged from the former TOML schema). |
+| `[cache]` | `enabled`, `limit_bytes`, `max_size_mb`, `prune_age_hours`, `ttl_hours` | Cache tuning (merged from the former TOML schema). |
+| `[python]` | `enabled`, `theme`, `tui`, `plugins`, `fallback_on_error`, `venv_path`, `tui_mode` | Python subsystem config; parsed into `PythonConfig` by `ConfigManager::python()`. |
+
+## `python/` — In-process Python subsystem (pyo3)
+
+| File | Exports | Role |
+| ---- | ------- | ---- |
+| `mod.rs` | `PythonEngine`, `expand_tilde()` helpers | Shared path/venv helpers for the Python subsystem. |
+| `plugin.rs` | `PluginManager` (pyo3) | In-process Python plugin loading (`load_all`) and hook dispatch from `PythonConfig::plugins`. |
+| `theme.rs` | `ThemeEngine` | Python theme load/render/prompt (`apply`, `register`, `unregister`, `list`). |
+| `tui.rs` | `TuiEngine` | Python TUI launch (`run`). |
+
+## `event.rs` — Event bus
+
+`EventBus` emits JSON lifecycle events to the UNIX datagram socket `/run/mcx/event.sock`. Events: `emit_service(name, state, pid)`, `emit_boot(total, failed)`, `emit_shutdown()`. `start_listener()` binds a `UnixListener` on the socket.
 
 ## `network/` — Remote operations
 
@@ -1066,9 +1248,22 @@ var/
 │   ├── cas/            # Content-addressable library store
 │   │   └── <hex2>/     # First two hex chars of SHA-256
 │   │       └── <sha256>  # Hard-linked unique .so file
+│   ├── plugins/        # Python plugin modules (`.py`) loaded in-process
+│   ├── binindex.json   # Binary→package index (built/queried by `--binindex`)
+│   ├── history.jsonl   # Append-only transaction history (`-H`, rollback)
+│   ├── vendor/         # Offline mirror cache (`--vendor`)
+│   └── sync/           # ETag sync state (`repo-sync`)
 ├── tmp/mcx/
 │   └── stage/          # Staging area for in-flight package extractions
 └── cache/mcx/          # Package cache (downloaded .xcs files)
+```
+
+Runtime sockets and generated state:
+
+```
+/run/mcx/event.sock    # Unix datagram socket — EventBus lifecycle events
+/etc/mcx/config.ini    # Engine + [general]/[python] merged INI config (also at ~/.config/mcx)
+/etc/mcx/p.desc        # Legacy subprocess plugin descriptors (--hook-plugin)
 ```
 
 ## INI-based configuration
@@ -1611,10 +1806,10 @@ json-tool = "python3 -c \"import json; print(json.dumps({'key': 'value'}))\""
 Run any alias via:
 
 ```shell
-mcx -p run <plugin-name> <alias-name>
+mcx --hook-plugin run <plugin-name> <alias-name>
 # Example:
-mcx -p run tools update-all
-mcx -p run tools deploy
+mcx --hook-plugin run tools update-all
+mcx --hook-plugin run tools deploy
 ```
 
 ### Creating a plugin from scratch
@@ -1650,7 +1845,7 @@ Or place the `.py` file in `var/lib/mcx/plugins/` and it will be auto-discovered
 #### Step 3 — Test it
 
 ```shell
-mcx -p run hello
+mcx --hook-plugin run hello
 ```
 
 ### Plugin event data
@@ -1716,13 +1911,13 @@ If your plugin prints JSON to stdout with `{"success": true, "message": "..."}`,
 ### Plugin aliases via CLI
 
 ```shell
-mcx -p list                     # list all loaded plugins with their aliases
-mcx -p info <name>              # show plugin details (name, path, aliases)
-mcx -p run <name> <alias>       # run a specific alias
-mcx -p add <path-to-plugin.py>  # copy a .py file into plugins dir
-mcx -p remove <name>            # delete a plugin
-mcx -p reload                   # re-scan plugins directory
-mcx -p reload-config            # reload from p.desc TOML config
+mcx --hook-plugin list                     # list all loaded plugins with their aliases
+mcx --hook-plugin info <name>              # show plugin details (name, path, aliases)
+mcx --hook-plugin run <name> <alias>       # run a specific alias
+mcx --hook-plugin add <path-to-plugin.py>  # copy a .py file into plugins dir
+mcx --hook-plugin remove <name>            # delete a plugin
+mcx --hook-plugin reload                   # re-scan plugins directory
+mcx --hook-plugin reload-config            # reload from p.desc TOML config
 ```
 
 ### Plugin lifecycle
@@ -1788,9 +1983,59 @@ MCX configuration is entirely file-based. Three INI files under `<root>/etc/mcx/
 
 | File | Purpose | Reading mechanism | Writing mechanism |
 | ---- | ------- | ----------------- | ----------------- |
-| `config.ini` | Engine tuning (threads, network, cache, security) | `MappedConfig` (mmap, zero-copy) | TUI editor `-C` or manual edit |
+| `config.ini` | Engine tuning (threads, network, cache, security) plus `[general]` and `[python]` | `MappedConfig` (mmap, zero-copy) | TUI editor `-C` or manual edit |
 | `repo.ini` | Package repository definitions | `RepositoryManager.load_repositories()` (text parse) | CLI `--repo-add`/`--repo-remove`/`--repo-list` or manual edit |
 | `profile.ini` | Declarative package manifest for drift detection | `ProfileValidator.load_profile()` (text parse) | Manual edit |
+
+---
+
+## Merged `config.ini`
+
+The former `mcx.toml` TOML config has been merged into `config.ini` — one INI file now carries every setting (schema in `src/core/config.rs`). `[general]` and `[python]` are new; `[engine]`, `[network]`, `[cache]`, `[security]` gained keys from the old TOML schema (`io_parallelism`, `concurrent_downloads`, `enabled`, `max_size_mb`, `ttl_hours`, `restricted_mode`, `allowed_paths`).
+
+```ini
+[general]
+log_level = info
+log_file = /var/log/mcx.md
+cache_dir = /var/cache/mcx
+build_dir = /tmp/mcx/build
+
+[engine]
+thread_pool_mode = auto
+max_concurrent_downloads = 8
+zstd_level = 3
+io_parallelism = 4
+
+[network]
+fallback_repos = enabled
+latency_threshold_ms = 200
+bandwidth_threshold_kbps = 5000
+concurrent_downloads = 8
+
+[security]
+verify_checksums = true
+allow_unverified = false
+restricted_mode = false
+allowed_paths = /system,/etc,/tmp,/var,/home
+
+[cache]
+enabled = true
+limit_bytes = 5368709120
+max_size_mb = 1024
+prune_age_hours = 168
+ttl_hours = 24
+
+[python]
+enabled = false
+theme =
+tui =
+plugins =
+fallback_on_error = true
+venv_path =
+tui_mode = false
+```
+
+The `[python]` section drives the in-process Python subsystem: `plugins` is a comma-separated list of `.py` module paths loaded by `python::plugin::PluginManager::load_all`, `theme`/`tui` select the active theme/TUI, and `enabled` gates the whole subsystem. It is parsed into `PythonConfig` via `ConfigManager::python()`.
 
 ---
 
@@ -1962,8 +2207,8 @@ After using MCX (installing packages, syncing repos), the full tree is:
 
 A package repository is any HTTP(S) server that serves two things:
 
-1. **`index.<arch>.json`** — an array of `PackageMetadata` objects describing every available package for a specific architecture (e.g., `index.x86_64.json`, `index.aarch64.json`).
-2. **`.xcs` archives** — the actual package files, addressed by path.
+1. **`[index.<arch>.json]`** — an array of `PackageMetadata` objects describing every available package for a specific architecture (e.g., `index.x86_64.json`, `index.aarch64.json`).
+2. **`[.xcs` archives**] — the actual package files, addressed by path.
 
 ### Repository directory structure (server-side)
 
@@ -2486,16 +2731,12 @@ strip = true            # Strip symbols
 
 </details>
 
-<details><summary id="license">License</summary>
+## Credits
+
+**`[MCX]`** is part of the **`[Cudane]`** ecosystem.
+
+- **`[Cudane]`** — The Distribution.
+- **`[Cesar]`** — Init System (PID 1).
 
 ## License
-**MIT License** ─ See [[**`LICENSE`**](https://github.com/Mapuse/.github/blob/profile/LICENSE)] for More Details.
-
-</details>
-
-<details><summary id="credits">Credits</summary>
-
-- **`Cudane`** — The Distribution.
-- **`Cesar`** — Init System (PID 1).
-
-</details>
+**MIT License** ─ See [**`[LICENSE]`**](https://github.com/Mapuse/.github/blob/profile/LICENSE) for More Details.

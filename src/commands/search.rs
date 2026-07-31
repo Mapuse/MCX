@@ -21,12 +21,16 @@ impl SearchCommand {
 
         for pkg_name in available_packages {
             if pkg_name.pkg_name.to_lowercase().contains(&normalized_query) {
-                if let Ok(meta) = self.db.get_package_manifest(&pkg_name.pkg_name) {
-                    let is_installed = self.db.is_package_installed(&meta.pkg_name).unwrap_or(false);
-                    let status_suffix = if is_installed { " [installed]" } else { "" };
-                    matches.push(format!("{} v{} - {}{}", meta.pkg_name, meta.version, meta.license, status_suffix));
-                } else {
-                    matches.push(pkg_name.pkg_name); 
+                match self.db.get_package_manifest(&pkg_name.pkg_name) {
+                    Ok(meta) => {
+                        let is_installed = self.db.is_package_installed(&meta.pkg_name).unwrap_or(false);
+                        let status_suffix = if is_installed { " [installed]" } else { "" };
+                        matches.push(format!("{} v{} - {}{}", meta.pkg_name, meta.version, meta.license, status_suffix));
+                    }
+                    Err(e) => {
+                        UserInterface::error(&format!("Failed to load metadata for {}: {}", pkg_name.pkg_name, e));
+                        matches.push(pkg_name.pkg_name);
+                    }
                 }
             }
         }

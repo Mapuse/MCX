@@ -233,7 +233,7 @@ impl InstallCommand {
         // sandbox setup for each installed package
         for (meta, _) in &pending {
             // cgroup: enforce resource limits (best-effort, may fail without root)
-            let _ = self.cgroup_mgr.enforce_resource_limits(&meta.pkg_name, constants::DEFAULT_CGROUP_MAX_MEMORY_MB, constants::DEFAULT_CGROUP_MAX_CPU_PERCENT.into());
+            let _ = self.cgroup_mgr.enforce_resource_limits(&meta.pkg_name, constants::DEFAULT_CGROUP_MAX_MEMORY_MB, constants::DEFAULT_CGROUP_MAX_CPU_PERCENT);
 
             // security monitor: register package
             if let Some(ref mon) = self.security_mon {
@@ -242,8 +242,8 @@ impl InstallCommand {
         }
 
         // profile validation: detect drift between declared and actual state
-        if let Some(ref profile_path) = self.profile_path {
-            if profile_path.exists() {
+        if let Some(ref profile_path) = self.profile_path
+            && profile_path.exists() {
                 match ProfileValidator::load_profile(profile_path) {
                     Ok(profile) => {
                         let current: Vec<String> = self.db.get_all_installed_packages()
@@ -262,7 +262,6 @@ impl InstallCommand {
                     }
                 }
             }
-        }
 
         let mut transaction = self.db.begin_transaction()?;
         for (meta, _) in &pending {

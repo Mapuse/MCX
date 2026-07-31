@@ -70,12 +70,16 @@ impl PackageTransaction {
     pub fn backup_file(&mut self, target: &Path) -> Result<()> {
         self.ensure_active()?;
         if target.exists() {
-            let backup_path = if target.extension().map_or(false, |e| e == "mcx_bak") {
+            let backup_path = if target.extension().is_some_and(|e| e == "mcx_bak") {
                 target.with_extension("mcx_bak2")
             } else {
                 target.with_extension("mcx_bak")
             };
-            fs::copy(target, &backup_path)?;
+            if target.is_dir() {
+                copy_dir_recursive(target, &backup_path)?;
+            } else {
+                fs::copy(target, &backup_path)?;
+            }
             self.backups.push((target.to_path_buf(), backup_path));
         }
         Ok(())
@@ -139,7 +143,11 @@ impl PackageTransaction {
         self.id = self.changelog.record_transaction(self.action_kind.clone(), self.affected_packages.clone())?;
 
         for (_, backup) in &self.backups {
-            let _ = fs::remove_file(backup);
+            if backup.is_dir() {
+                let _ = fs::remove_dir_all(backup);
+            } else {
+                let _ = fs::remove_file(backup);
+            }
         }
 
         self.state = TransactionState::Committed;
@@ -183,6 +191,25 @@ impl Drop for PackageTransaction {
             let _ = self.rollback();
         }
     }
+}
+
+fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
+    fs::create_dir_all(dst)?;
+    for entry in fs::read_dir(src)? {
+        let entry = entry?;
+        let path = entry.path();
+        let dest = dst.join(entry.file_name());
+        if path.is_symlink() {
+            let link_target = fs::read_link(&path)?;
+            #[cfg(unix)]
+            std::os::unix::fs::symlink(&link_target, &dest)?;
+        } else if path.is_dir() {
+            copy_dir_recursive(&path, &dest)?;
+        } else if path.is_file() {
+            fs::copy(&path, &dest)?;
+        }
+    }
+    Ok(())
 }
 
 fn atomic_copy(src: &Path, dst: &Path) -> Result<()> {

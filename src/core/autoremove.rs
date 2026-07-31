@@ -1,3 +1,4 @@
+use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs;
 use std::path::PathBuf;
@@ -46,13 +47,11 @@ fn is_library_file(path: &str) -> bool {
     if name.starts_with("lib") && name.ends_with(".so") {
         return true;
     }
-    if name.starts_with("lib") {
-        let rest = &name[3..];
-        if let Some(pos) = rest.find(".so") {
+    if let Some(rest) = name.strip_prefix("lib")
+        && let Some(pos) = rest.find(".so") {
             let suffix = &rest[pos..];
             return suffix == ".so" || suffix.starts_with(".so.");
         }
-    }
     false
 }
 
@@ -279,18 +278,17 @@ impl AutoRemoveAnalyzer {
             let mut file_paths: Vec<PathBuf> = manifest.files.iter()
                 .map(|f| root.join(f))
                 .collect();
-            file_paths.sort_by(|a, b| b.components().count().cmp(&a.components().count()));
+            file_paths.sort_by_key(|a| Reverse(a.components().count()));
 
             for abs in &file_paths {
                 if !abs.exists() || shared_files.contains(abs) {
                     continue;
                 }
                 if abs.is_dir() {
-                    if let Ok(mut entries) = fs::read_dir(abs) {
-                        if entries.next().is_none() {
+                    if let Ok(mut entries) = fs::read_dir(abs)
+                        && entries.next().is_none() {
                             let _ = fs::remove_dir(abs);
                         }
-                    }
                 } else {
                     let _ = fs::remove_file(abs);
                 }

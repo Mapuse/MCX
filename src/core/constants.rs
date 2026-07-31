@@ -141,6 +141,7 @@ pub const BUILD_SKIP_KEYWORDS: &[&str] = &["none", "skip", "nothing"];
 
 // ── ELF format constants (binary format, not configurable) ──────────────
 pub const ELF_MAGIC: [u8; 4] = [0x7f, 0x45, 0x4c, 0x46]; // \x7fELF
+pub const ELFCLASS64: u8 = 2;
 pub const ELF_MIN_HEADER_SIZE: usize = 64;
 pub const ELF_PT_DYNAMIC: u32 = 2;
 pub const ELF_PT_LOAD: u32 = 1;
@@ -160,23 +161,45 @@ pub const UI_BLOCK_WIDTH: usize = 60;
 
 // ── Default INI content ─────────────────────────────────────────────────
 pub const DEFAULT_CONFIG_INI: &str = "\
+[general]\n\
+log_level = info\n\
+log_file = /var/log/mcx.md\n\
+cache_dir = /var/cache/mcx\n\
+build_dir = /tmp/mcx/build\n\
+\n\
 [engine]\n\
 thread_pool_mode = auto\n\
 max_concurrent_downloads = 8\n\
 zstd_level = 3\n\
+io_parallelism = 4\n\
 \n\
 [network]\n\
 fallback_repos = enabled\n\
 latency_threshold_ms = 200\n\
 bandwidth_threshold_kbps = 5000\n\
+concurrent_downloads = 8\n\
 \n\
 [security]\n\
 verify_checksums = true\n\
 allow_unverified = false\n\
+restricted_mode = false\n\
+allowed_paths = /system,/etc,/tmp,/var,/home\n\
 \n\
 [cache]\n\
+enabled = true\n\
 limit_bytes = 5368709120\n\
-prune_age_hours = 168\n";
+max_size_mb = 1024\n\
+prune_age_hours = 168\n\
+ttl_hours = 24\n\
+\n\
+[python]\n\
+enabled = false\n\
+theme = \n\
+tui = \n\
+plugins = \n\
+fallback_on_error = true\n\
+venv_path = \n\
+tui_mode = false\n";
 
 pub const DEFAULT_REPO_INI: &str = "\
 [main]\n\

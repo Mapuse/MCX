@@ -54,11 +54,10 @@ impl AddLocalCommand {
             (name, "0.0.0".to_string(), "Unknown".to_string(), "sha256".to_string(), "none".to_string())
         };
 
-        if checksum_value != "none" && !checksum_value.is_empty() {
-            if let Err(e) = HashVerifier::verify_integrity(package_path, &checksum_kind, &checksum_value) {
+        if checksum_value != "none" && !checksum_value.is_empty()
+            && let Err(e) = HashVerifier::verify_integrity(package_path, &checksum_kind, &checksum_value) {
                 return Err(anyhow!("Package integrity check failed ({}): {}", checksum_kind, e));
             }
-        }
 
         let stage_dir = self.root.join(constants::PATH_STAGE);
         if stage_dir.exists() {

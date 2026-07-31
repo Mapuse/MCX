@@ -20,6 +20,12 @@ pub struct SecurityMonitor {
     isolation_slot: PluginSlot<dyn Fn(&str) -> bool + Send + Sync>,
 }
 
+impl Default for SecurityMonitor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SecurityMonitor {
     pub fn new() -> Self {
         Self {
@@ -44,11 +50,10 @@ impl SecurityMonitor {
     }
 
     pub fn isolate_package(&self, pkg_name: &str) -> Result<()> {
-        if let Ok(mut map) = self.active_packages.write() {
-            if let Some(guard) = map.get_mut(pkg_name) {
+        if let Ok(mut map) = self.active_packages.write()
+            && let Some(guard) = map.get_mut(pkg_name) {
                 guard.isolated = true;
             }
-        }
         Ok(())
     }
 

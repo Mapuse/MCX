@@ -1,10 +1,13 @@
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::{Result, anyhow};
 use crate::core::constants;
 use serde::{Serialize, Deserialize};
+
+static LAST_TRANSACTION_ID: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
 pub enum ActionKind {
@@ -44,7 +47,10 @@ impl ChangelogManager {
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)?
             .as_millis() as u64;
-        let transaction_id = timestamp;
+        let pid_bits = (std::process::id() as u64) & 0x3F_FFFF;
+        let base = (timestamp << 22) | pid_bits;
+        let transaction_id = base.max(LAST_TRANSACTION_ID.load(Ordering::Relaxed) + 1);
+        LAST_TRANSACTION_ID.store(transaction_id, Ordering::Relaxed);
         let record = RegistryTransactionRecord {
             transaction_id,
             timestamp,

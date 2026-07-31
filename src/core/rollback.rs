@@ -87,13 +87,11 @@ impl RollbackManager {
         for entry in fs::read_dir(&pkg_dir)? {
             let entry = entry?;
             let path = entry.path();
-            if path.is_dir() {
-                if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                    if let Ok(id) = name.parse::<u64>() {
+            if path.is_dir()
+                && let Some(name) = path.file_name().and_then(|n| n.to_str())
+                    && let Ok(id) = name.parse::<u64>() {
                         ids.push(GenerationId(id));
                     }
-                }
-            }
         }
         ids.sort();
         Ok(ids)
@@ -105,11 +103,10 @@ impl RollbackManager {
             return Ok(None);
         }
         let target = fs::read_link(&active_symlink)?;
-        if let Some(gen_str) = target.file_name().and_then(|n| n.to_str()) {
-            if let Ok(id) = gen_str.parse::<u64>() {
+        if let Some(gen_str) = target.file_name().and_then(|n| n.to_str())
+            && let Ok(id) = gen_str.parse::<u64>() {
                 return Ok(Some(GenerationId(id)));
             }
-        }
         Ok(None)
     }
 
@@ -148,13 +145,11 @@ impl RollbackManager {
         if let Ok(entries) = fs::read_dir(&pkg_dir) {
             for entry in entries.flatten() {
                 let path = entry.path();
-                if path.is_dir() {
-                    if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                        if let Ok(id) = name.parse::<u64>() {
+                if path.is_dir()
+                    && let Some(name) = path.file_name().and_then(|n| n.to_str())
+                        && let Ok(id) = name.parse::<u64>() {
                             max_id = max_id.max(id);
                         }
-                    }
-                }
             }
         }
         max_id + 1

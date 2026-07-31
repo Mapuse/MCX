@@ -51,10 +51,10 @@ impl VendorManager {
             
         let mut archive = tar::Archive::new(zstd_decoder);
 
-        let mut entries = archive.entries()
+        let entries = archive.entries()
             .with_context(|| format!("Decompression framework breakdown during vendor unpacking phase inside: {:?}", staging_extraction_area))?;
 
-        while let Some(entry) = entries.next() {
+        for entry in entries {
             let mut entry = entry
                 .with_context(|| format!("Failed to read tar entry during vendor unpacking: {:?}", staging_extraction_area))?;
             let path = entry.path()

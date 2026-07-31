@@ -72,8 +72,8 @@ impl CacheManager {
             let modified_time = metadata.modified()
                 .context("Filesystem timeline metadata not accessible on this block")?;
 
-            if let Ok(elapsed) = now.duration_since(modified_time) {
-                if elapsed > max_age {
+            if let Ok(elapsed) = now.duration_since(modified_time)
+                && elapsed > max_age {
                     if path.is_dir() {
                         fs::remove_dir_all(&path)
                             .with_context(|| format!("Failed to evict expired structural directory from cache: {:?}", path))?;
@@ -82,7 +82,6 @@ impl CacheManager {
                             .with_context(|| format!("Failed to evict expired leaf file from cache: {:?}", path))?;
                     }
                 }
-            }
         }
         Ok(())
     }

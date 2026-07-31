@@ -7,6 +7,12 @@ pub struct CgroupController {
     base_path: PathBuf,
 }
 
+impl Default for CgroupController {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl CgroupController {
     pub fn new() -> Self {
         Self {
@@ -68,7 +74,7 @@ impl CgroupController {
     }
 
     pub fn is_cgroup_v2_available(&self) -> bool {
-        self.base_path.parent().map_or(false, |p| p.exists())
+        self.base_path.parent().is_some_and(|p| p.exists())
     }
 }
 

@@ -100,13 +100,11 @@ impl BinaryIndex {
 
     pub fn load_cached(&self) -> HashMap<String, Vec<BinaryEntry>> {
         let index_path = Path::new(&self.root).join(constants::PATH_BININDEX);
-        if index_path.exists() {
-            if let Ok(content) = fs::read_to_string(&index_path) {
-                if let Ok(index) = serde_json::from_str(&content) {
+        if index_path.exists()
+            && let Ok(content) = fs::read_to_string(&index_path)
+                && let Ok(index) = serde_json::from_str(&content) {
                     return index;
                 }
-            }
-        }
         HashMap::new()
     }
 }
@@ -178,13 +176,11 @@ pub fn scan_system_binaries(root: &str) -> Vec<String> {
                     #[cfg(unix)]
                     {
                         use std::os::unix::fs::PermissionsExt;
-                        if let Ok(meta) = fs::metadata(&path) {
-                            if meta.permissions().mode() & 0o111 != 0 {
-                                if let Some(name) = path.file_name() {
+                        if let Ok(meta) = fs::metadata(&path)
+                            && meta.permissions().mode() & 0o111 != 0
+                                && let Some(name) = path.file_name() {
                                     binaries.push(name.to_string_lossy().to_string());
                                 }
-                            }
-                        }
                     }
                     #[cfg(not(unix))]
                     {

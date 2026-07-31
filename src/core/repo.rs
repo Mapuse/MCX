@@ -153,33 +153,29 @@ impl RepositoryManager {
                 let final_path = sync_dir.join(format!("{}.json", repo_name));
                 let index_url = format!("{}/{}", repo_url.trim_end_matches('/'), arch.index_filename());
 
-                let result = match downloader.package(&index_url, &temp_path).await {
+                
+                match downloader.package(&index_url, &temp_path).await {
                     Ok(_) => {
                         if let Some(ref expected_hash) = checksum {
                             if let Err(e) = HashVerifier::verify_integrity(&temp_path, "sha256", expected_hash) {
                                 let _ = fs::remove_file(&temp_path);
                                 Err(format!("{}: checksum mismatch: {}", repo_name, e))
-                            } else {
-                                if let Err(e) = fs::rename(&temp_path, &final_path) {
-                                    Err(format!("{}: rename failed: {}", repo_name, e))
-                                } else {
-                                    Ok(repo_name)
-                                }
-                            }
-                        } else {
-                            if let Err(e) = fs::rename(&temp_path, &final_path) {
+                            } else if let Err(e) = fs::rename(&temp_path, &final_path) {
                                 Err(format!("{}: rename failed: {}", repo_name, e))
                             } else {
                                 Ok(repo_name)
                             }
+                        } else if let Err(e) = fs::rename(&temp_path, &final_path) {
+                            Err(format!("{}: rename failed: {}", repo_name, e))
+                        } else {
+                            Ok(repo_name)
                         }
                     }
                     Err(e) => {
                         let _ = fs::remove_file(&temp_path);
                         Err(format!("{}: download failed: {}", repo_name, e))
                     }
-                };
-                result
+                }
             }));
         }
 
@@ -192,7 +188,7 @@ impl RepositoryManager {
                     synced += 1;
                     UserInterface::download(&format!("Repo synced: {}", name));
                 }
-                Ok(Err(e)) => errors.push(format!("{}", e)),
+                Ok(Err(e)) => errors.push(e.to_string()),
                 Err(e) => errors.push(format!("Join error: {}", e)),
             }
         }
@@ -210,9 +206,9 @@ impl RepositoryManager {
         for entry in fs::read_dir(&self.sync_dir)? {
             let entry = entry?;
             let path = entry.path();
-            if path.extension().map(|e| e == "json").unwrap_or(false) {
-                if let Ok(content) = fs::read_to_string(&path) {
-                    if let Ok(pkgs) = serde_json::from_str::<Vec<PackageMetadata>>(&content) {
+            if path.extension().map(|e| e == "json").unwrap_or(false)
+                && let Ok(content) = fs::read_to_string(&path)
+                    && let Ok(pkgs) = serde_json::from_str::<Vec<PackageMetadata>>(&content) {
                         let repo_name = path.file_stem().and_then(|s| s.to_str()).unwrap_or("unknown");
                         for pkg in pkgs {
                             if pkg.pkg_name.to_lowercase().contains(&q)
@@ -223,8 +219,6 @@ impl RepositoryManager {
                             }
                         }
                     }
-                }
-            }
         }
         Ok(results)
     }
@@ -238,17 +232,15 @@ impl RepositoryManager {
         for entry in fs::read_dir(&self.sync_dir)? {
             let entry = entry?;
             let path = entry.path();
-            if path.extension().map(|e| e == "json").unwrap_or(false) {
-                if let Ok(content) = fs::read_to_string(&path) {
-                    if let Ok(pkgs) = serde_json::from_str::<Vec<PackageMetadata>>(&content) {
+            if path.extension().map(|e| e == "json").unwrap_or(false)
+                && let Ok(content) = fs::read_to_string(&path)
+                    && let Ok(pkgs) = serde_json::from_str::<Vec<PackageMetadata>>(&content) {
                         for pkg in pkgs {
                             if pkg.pkg_name == pkg_name {
                                 results.push(pkg);
                             }
                         }
                     }
-                }
-            }
         }
         Ok(results)
     }
@@ -286,12 +278,11 @@ impl RepositoryManager {
         downloader.package(&index_url, &temp_path).await
             .map_err(|e| anyhow!("Download failed: {}", e))?;
 
-        if let Some(ref expected_hash) = repo.checksum {
-            if let Err(e) = HashVerifier::verify_integrity(&temp_path, "sha256", expected_hash) {
+        if let Some(ref expected_hash) = repo.checksum
+            && let Err(e) = HashVerifier::verify_integrity(&temp_path, "sha256", expected_hash) {
                 let _ = fs::remove_file(&temp_path);
                 return Err(anyhow!("Checksum mismatch: {}", e));
             }
-        }
 
         fs::rename(&temp_path, &final_path)?;
         UserInterface::download(&format!("Repo synced: {}", repo_name));

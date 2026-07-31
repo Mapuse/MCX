@@ -5,6 +5,12 @@ use crate::network::download::Downloader;
 
 pub struct SelfUpdateManager;
 
+impl Default for SelfUpdateManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SelfUpdateManager {
     pub fn new() -> Self {
         Self
@@ -16,7 +22,7 @@ impl SelfUpdateManager {
         }
 
         let downloader = Downloader::new();
-        let _ = downloader.package(binary_url, dest).await?;
+        downloader.package(binary_url, dest).await?;
 
         if !dest.exists() {
             return Err(anyhow!("Downloaded binary not found at {:?}", dest));

@@ -3,6 +3,11 @@ pub mod network;
 pub mod archive;
 pub mod utils;
 pub mod commands;
+pub mod python;
+pub mod event;
+
+use std::collections::HashMap;
+use std::path::Path;
 
 use clap::{Parser, Subcommand};
 use std::fs;
@@ -166,11 +171,20 @@ pub enum Commands {
         action: CgroupAction,
     },
 
-    #[command(short_flag = 'p', long_flag = "plugin", aliases = ["plg"])]
-    Plugin {
+    #[command(long_flag = "hook-plugin", aliases = ["hp"])]
+    HookPlugin {
         #[command(subcommand)]
-        action: PluginAction,
+        action: HookPluginAction,
     },
+
+    #[command(subcommand)]
+    Plugin(PluginCommand),
+
+    #[command(subcommand)]
+    Theme(ThemeCommand),
+
+    #[command(subcommand)]
+    Tui(TuiCommand),
 
     #[command(long_flag = "service", aliases = ["svc"])]
     Service {
@@ -201,7 +215,7 @@ pub enum VendorAction {
 }
 
 #[derive(Subcommand)]
-pub enum PluginAction {
+pub enum HookPluginAction {
     List,
     Info { name: String },
     Run { name: String, hook: Option<String> },
@@ -218,6 +232,118 @@ pub enum CgroupAction {
     EnforceCpu { package: String, max_cpu_percent: u8 },
     Remove { package: String },
     Status,
+}
+
+#[derive(Subcommand)]
+pub enum PluginCommand {
+    List,
+    Run(PluginRunArgs),
+    Install(PluginInstallArgs),
+    Remove(PluginRemoveArgs),
+    Info(PluginInfoArgs),
+}
+
+#[derive(clap::Args)]
+pub struct PluginRunArgs {
+    pub alias: String,
+    #[arg(allow_hyphen_values = true, trailing_var_arg = true)]
+    pub args: Vec<String>,
+}
+
+#[derive(clap::Args)]
+pub struct PluginInstallArgs {
+    pub path: String,
+    #[arg(short = 'n', long = "name")]
+    pub name: Option<String>,
+    #[arg(short = 'a', long = "alias")]
+    pub alias: Option<String>,
+    #[arg(short = 'A', long = "aliases", value_parser = parse_key_val)]
+    pub aliases: Vec<(String, String)>,
+    #[arg(short = 'f', long = "force")]
+    pub force: bool,
+}
+
+#[derive(clap::Args)]
+pub struct PluginRemoveArgs {
+    pub name: String,
+}
+
+#[derive(clap::Args)]
+pub struct PluginInfoArgs {
+    pub name: String,
+}
+
+#[derive(Subcommand)]
+pub enum ThemeCommand {
+    List,
+    Apply(ThemeApplyArgs),
+    Install(ThemeInstallArgs),
+    Remove(ThemeRemoveArgs),
+    Info(ThemeInfoArgs),
+}
+
+#[derive(clap::Args)]
+pub struct ThemeApplyArgs {
+    pub name: String,
+}
+
+#[derive(clap::Args)]
+pub struct ThemeInstallArgs {
+    pub path: String,
+    #[arg(short = 'n', long = "name")]
+    pub name: Option<String>,
+    #[arg(short = 'f', long = "force")]
+    pub force: bool,
+}
+
+#[derive(clap::Args)]
+pub struct ThemeRemoveArgs {
+    pub name: String,
+}
+
+#[derive(clap::Args)]
+pub struct ThemeInfoArgs {
+    pub name: String,
+}
+
+#[derive(Subcommand)]
+pub enum TuiCommand {
+    List,
+    Apply(TuiApplyArgs),
+    Install(TuiInstallArgs),
+    Remove(TuiRemoveArgs),
+    Info(TuiInfoArgs),
+}
+
+#[derive(clap::Args)]
+pub struct TuiApplyArgs {
+    pub name: String,
+}
+
+#[derive(clap::Args)]
+pub struct TuiInstallArgs {
+    pub path: String,
+    #[arg(short = 'n', long = "name")]
+    pub name: Option<String>,
+    #[arg(short = 'f', long = "force")]
+    pub force: bool,
+}
+
+#[derive(clap::Args)]
+pub struct TuiRemoveArgs {
+    pub name: String,
+}
+
+#[derive(clap::Args)]
+pub struct TuiInfoArgs {
+    pub name: String,
+}
+
+fn parse_key_val(s: &str) -> Result<(String, String), String> {
+    let mut parts = s.splitn(2, '=');
+    let key = parts.next().ok_or("missing key")?.to_string();
+    let val = parts.next().ok_or("missing value")?.to_string();
+    Ok((key, val))
 }
 
 struct EngineContext {
@@ -461,17 +587,15 @@ async fn main() {
                 Ok(_) => {
                     let staging = PathBuf::from(&args.root).join(constants::PATH_STAGE);
                     let installed_root = PathBuf::from(&args.root).join(constants::PATH_ACTIVE);
-                    if let Ok(pkgs) = ctx.db.get_all_installed_packages() {
-                        if let Some(last) = pkgs.last() {
+                    if let Ok(pkgs) = ctx.db.get_all_installed_packages()
+                        && let Some(last) = pkgs.last() {
                             let pkg_path = staging.join(&last.pkg_name);
-                            if pkg_path.exists() {
-                                if let Err(e) = std::fs::rename(&pkg_path, installed_root.join(&last.pkg_name)) {
+                            if pkg_path.exists()
+                                && let Err(e) = std::fs::rename(&pkg_path, installed_root.join(&last.pkg_name)) {
                                     UserInterface::error(&format!("Failed to move package from staging: {e}"));
                                     process::exit(1);
                                 }
-                            }
                         }
-                    }
                     let rollback_mgr = crate::core::rollback::RollbackManager::new(&root_path);
                     let gen_root = root_path.join(constants::PATH_ACTIVE);
                     if gen_root.exists() {
@@ -520,12 +644,11 @@ async fn main() {
             let filter = if let Some(ref binary_name) = only {
                 let mut resolved = ComponentFilter { minimal: false, include_dev: false, include: Vec::new(), exclude: Vec::new() };
                 for pkg_name in &pkgs_to_upgrade {
-                    if let Ok(meta) = ctx.db.get_package_manifest(pkg_name) {
-                        if let Some(comp) = meta.find_component_for_binary(binary_name) {
+                    if let Ok(meta) = ctx.db.get_package_manifest(pkg_name)
+                        && let Some(comp) = meta.find_component_for_binary(binary_name) {
                             UserInterface::info(&format!("'{}' is in component '{}' of {}", binary_name, comp.name, pkg_name));
                             resolved.include.push(comp.name.clone());
                         }
-                    }
                 }
                 resolved
             } else if let Some(ref comp_str) = components {
@@ -878,8 +1001,8 @@ async fn main() {
                     if let Some(repo) = repos.iter().find(|r| r.name == name) {
                         let index_path = mgr.get_local_index_path(&repo.name);
                         if index_path.exists() {
-                            let mut tx = ctx.db.begin_transaction().unwrap();
-                            let _ = tx.update_repository_index(&repo.name, index_path.to_str().unwrap());
+                            let mut tx = ctx.db.begin_transaction().expect("begin transaction");
+                            let _ = tx.update_repository_index(&repo.name, index_path.to_str().expect("index path utf8"));
                             let _ = tx.commit();
                         }
                     }
@@ -917,11 +1040,10 @@ async fn main() {
                     ]);
                     let index_path = mgr.get_local_index_path(&repo.name);
                     if index_path.exists() {
-                        if let Ok(content) = fs::read_to_string(&index_path) {
-                            if let Ok(pkgs) = serde_json::from_str::<Vec<crate::core::database::PackageMetadata>>(&content) {
+                        if let Ok(content) = fs::read_to_string(&index_path)
+                            && let Ok(pkgs) = serde_json::from_str::<Vec<crate::core::database::PackageMetadata>>(&content) {
                                 UserInterface::info(&format!("Cached index: {} packages", pkgs.len()));
                             }
-                        }
                     } else {
                         UserInterface::warning("No cached index (run mcx --repo-sync first)");
                     }
@@ -1101,9 +1223,9 @@ async fn main() {
             }
         }
 
-        Commands::Plugin { action } => {
+        Commands::HookPlugin { action } => {
             match action {
-                PluginAction::List => {
+                HookPluginAction::List => {
                     let plugins = ctx.plugin_mgr.list();
                     if plugins.is_empty() {
                         UserInterface::info("No external plugins installed.");
@@ -1115,19 +1237,19 @@ async fn main() {
                         UserInterface::render_list("External plugins", &summary);
                     }
                 }
-                PluginAction::Info { name } => {
+                HookPluginAction::Info { name } => {
                     match ctx.plugin_mgr.find(&name) {
                         Some(p) => {
                             UserInterface::block(&format!("Plugin: {}", p.name()), &[
                                 &format!("Name: {}", p.name()),
-                                &format!("Language: python"),
+                                "Language: python",
                                 &format!("File: {}", p.path().display()),
                             ]);
                         }
                         None => { UserInterface::error(&format!("Plugin '{}' not found", name)); process::exit(1); }
                     }
                 }
-                PluginAction::Run { name, hook } => {
+                HookPluginAction::Run { name, hook } => {
                     let hook_str = hook.as_deref().unwrap_or("post-install");
                     let hook_enum = PluginHook::from_str(hook_str).unwrap_or(PluginHook::PostInstall);
                     let event = PluginEvent {
@@ -1150,11 +1272,11 @@ async fn main() {
                         Err(e) => { UserInterface::error(&format!("{e}")); process::exit(1); }
                     }
                 }
-                PluginAction::Reload => {
+                HookPluginAction::Reload => {
                     ctx.plugin_mgr.reload(&root_path);
                     UserInterface::success(&format!("{} plugins loaded", ctx.plugin_mgr.list().len()));
                 }
-                PluginAction::ReloadConfig => {
+                HookPluginAction::ReloadConfig => {
                     match ctx.plugin_mgr.reload_from_config(&root_path) {
                         Ok(new_count) => {
                             UserInterface::success(&format!("{} new plugin(s) loaded, {} total", new_count, ctx.plugin_mgr.list().len()));
@@ -1162,7 +1284,7 @@ async fn main() {
                         Err(e) => { UserInterface::error(&format!("{e}")); process::exit(1); }
                     }
                 }
-                PluginAction::Add { source } => {
+                HookPluginAction::Add { source } => {
                     let plugins_dir = root_path.join(constants::PATH_PLUGINS);
                     let source_path = PathBuf::from(&source);
                     if source_path.is_dir() {
@@ -1186,7 +1308,7 @@ async fn main() {
                         process::exit(1);
                     }
                 }
-                PluginAction::Remove { name } => {
+                HookPluginAction::Remove { name } => {
                     let plugins_dir = root_path.join(constants::PATH_PLUGINS).join(&name);
                     if !plugins_dir.exists() {
                         UserInterface::error(&format!("Plugin '{}' not found at {:?}", name, plugins_dir));
@@ -1198,6 +1320,241 @@ async fn main() {
                             UserInterface::success(&format!("Plugin '{}' removed", name));
                         }
                         Err(e) => { UserInterface::error(&format!("Failed to remove plugin: {e}")); process::exit(1); }
+                    }
+                }
+            }
+        }
+        Commands::Plugin(cmd) => {
+            use crate::python::plugin::PluginManager;
+            match cmd {
+                PluginCommand::List => {
+                    let plugins = PluginManager::list();
+                    if plugins.is_empty() {
+                        UserInterface::info("No Python plugins installed.");
+                    } else {
+                        for p in &plugins {
+                            println!("\x1b[32m{}\x1b[0m", p.name);
+                            println!("  Path:    {}", p.path);
+                            if !p.aliases.is_empty() {
+                                println!("  Aliases:");
+                                for (alias, cmd_str) in &p.aliases {
+                                    println!("    {}  →  {}", alias, cmd_str);
+                                }
+                            }
+                            println!();
+                        }
+                    }
+                }
+                PluginCommand::Run(args) => {
+                    let (entry, func) = match PluginManager::by_alias(&args.alias) {
+                        Some(found) => found,
+                        None => {
+                            UserInterface::error(&format!("No plugin alias '{}' found", args.alias));
+                            process::exit(1);
+                        }
+                    };
+                    match PluginManager::run(&entry, &func, &args.args) {
+                        Ok(output) => println!("{}", output),
+                        Err(e) => UserInterface::error(&format!("Plugin '{}' failed: {}", entry.name, e)),
+                    }
+                }
+                PluginCommand::Install(args) => {
+                    let src = Path::new(&args.path);
+                    if !src.exists() {
+                        UserInterface::error(&format!("File not found: {}", args.path));
+                        process::exit(1);
+                    }
+                    if !src.is_file() {
+                        UserInterface::error(&format!("Not a file: {}", args.path));
+                        process::exit(1);
+                    }
+                    let name = args.name.unwrap_or_else(|| {
+                        src.file_stem().unwrap_or_default().to_string_lossy().to_string()
+                    });
+                    let plugins_dir = Path::new("/etc/mcx/plugins");
+                    let _ = fs::create_dir_all(plugins_dir);
+                    let dest = plugins_dir.join(src.file_name().unwrap_or_default());
+                    if dest.exists() && !args.force {
+                        UserInterface::error(&format!("Plugin '{}' already exists. Use --force", name));
+                        process::exit(1);
+                    }
+                    if let Err(e) = fs::copy(src, &dest) {
+                        UserInterface::error(&format!("Failed to copy plugin: {}", e));
+                        process::exit(1);
+                    }
+                    let mut aliases: HashMap<String, String> = args.aliases.clone().into_iter().collect();
+                    if let Some(alias) = args.alias {
+                        aliases.insert(alias.clone(), format!("{} {{}}", dest.display()));
+                    }
+                    PluginManager::register(&name, &dest, &aliases);
+                    UserInterface::success(&format!("Plugin '{}' installed", name));
+                }
+                PluginCommand::Remove(args) => {
+                    let entry = match PluginManager::by_name(&args.name) {
+                        Some(e) => e,
+                        None => { UserInterface::error(&format!("Plugin '{}' not found", args.name)); process::exit(1); }
+                    };
+                    let _ = fs::remove_file(&entry.path);
+                    PluginManager::unregister(&args.name);
+                    UserInterface::success(&format!("Plugin '{}' removed", args.name));
+                }
+                PluginCommand::Info(args) => {
+                    match PluginManager::by_name(&args.name) {
+                        Some(p) => {
+                            println!("\x1b[32m{}\x1b[0m", p.name);
+                            println!("  Path:    {}", p.path);
+                            if !p.aliases.is_empty() {
+                                println!("  Aliases:");
+                                for (alias, cmd) in &p.aliases {
+                                    println!("    {}  →  {}", alias, cmd);
+                                }
+                            }
+                        }
+                        None => UserInterface::error(&format!("Plugin '{}' not found", args.name)),
+                    }
+                }
+            }
+        }
+        Commands::Theme(cmd) => {
+            use crate::python::theme::ThemeEngine;
+            match cmd {
+                ThemeCommand::List => {
+                    let themes = ThemeEngine::list();
+                    if themes.is_empty() {
+                        UserInterface::info("No themes installed.");
+                    } else {
+                        for t in &themes {
+                            println!("\x1b[32m{}\x1b[0m", t.name);
+                            println!("  Path: {}", t.path);
+                            println!();
+                        }
+                    }
+                }
+                ThemeCommand::Apply(args) => {
+                    let theme = match ThemeEngine::by_name(&args.name) {
+                        Some(t) => t,
+                        None => { UserInterface::error(&format!("Theme '{}' not found", args.name)); process::exit(1); }
+                    };
+                    match ThemeEngine::apply(&theme) {
+                        Ok(output) => println!("{}", output),
+                        Err(e) => UserInterface::error(&format!("Theme '{}' failed: {}", theme.name, e)),
+                    }
+                }
+                ThemeCommand::Install(args) => {
+                    let src = Path::new(&args.path);
+                    if !src.exists() {
+                        UserInterface::error(&format!("File not found: {}", args.path));
+                        process::exit(1);
+                    }
+                    if !src.is_file() {
+                        UserInterface::error(&format!("Not a file: {}", args.path));
+                        process::exit(1);
+                    }
+                    let name = args.name.unwrap_or_else(|| {
+                        src.file_stem().unwrap_or_default().to_string_lossy().to_string()
+                    });
+                    let themes_dir = Path::new("/etc/mcx/themes");
+                    let _ = fs::create_dir_all(themes_dir);
+                    let dest = themes_dir.join(src.file_name().unwrap_or_default());
+                    if dest.exists() && !args.force {
+                        UserInterface::error(&format!("Theme '{}' already exists. Use --force", name));
+                        process::exit(1);
+                    }
+                    if let Err(e) = fs::copy(src, &dest) {
+                        UserInterface::error(&format!("Failed to copy theme: {}", e));
+                        process::exit(1);
+                    }
+                    ThemeEngine::register(&name, &dest);
+                    UserInterface::success(&format!("Theme '{}' installed", name));
+                }
+                ThemeCommand::Remove(args) => {
+                    let entry = match ThemeEngine::by_name(&args.name) {
+                        Some(e) => e,
+                        None => { UserInterface::error(&format!("Theme '{}' not found", args.name)); process::exit(1); }
+                    };
+                    let _ = fs::remove_file(&entry.path);
+                    ThemeEngine::unregister(&args.name);
+                    UserInterface::success(&format!("Theme '{}' removed", args.name));
+                }
+                ThemeCommand::Info(args) => {
+                    match ThemeEngine::by_name(&args.name) {
+                        Some(t) => {
+                            println!("\x1b[32m{}\x1b[0m", t.name);
+                            println!("  Path: {}", t.path);
+                        }
+                        None => UserInterface::error(&format!("Theme '{}' not found", args.name)),
+                    }
+                }
+            }
+        }
+        Commands::Tui(cmd) => {
+            use crate::python::tui::TuiEngine;
+            match cmd {
+                TuiCommand::List => {
+                    let tuis = TuiEngine::list();
+                    if tuis.is_empty() {
+                        UserInterface::info("No TUIs installed.");
+                    } else {
+                        for t in &tuis {
+                            println!("\x1b[32m{}\x1b[0m", t.name);
+                            println!("  Path: {}", t.path);
+                            println!();
+                        }
+                    }
+                }
+                TuiCommand::Apply(args) => {
+                    let tui = match TuiEngine::by_name(&args.name) {
+                        Some(t) => t,
+                        None => { UserInterface::error(&format!("TUI '{}' not found", args.name)); process::exit(1); }
+                    };
+                    match TuiEngine::apply(&tui) {
+                        Ok(output) => println!("{}", output),
+                        Err(e) => UserInterface::error(&format!("TUI '{}' failed: {}", tui.name, e)),
+                    }
+                }
+                TuiCommand::Install(args) => {
+                    let src = Path::new(&args.path);
+                    if !src.exists() {
+                        UserInterface::error(&format!("File not found: {}", args.path));
+                        process::exit(1);
+                    }
+                    if !src.is_file() {
+                        UserInterface::error(&format!("Not a file: {}", args.path));
+                        process::exit(1);
+                    }
+                    let name = args.name.unwrap_or_else(|| {
+                        src.file_stem().unwrap_or_default().to_string_lossy().to_string()
+                    });
+                    let tuis_dir = Path::new("/etc/mcx/tuis");
+                    let _ = fs::create_dir_all(tuis_dir);
+                    let dest = tuis_dir.join(src.file_name().unwrap_or_default());
+                    if dest.exists() && !args.force {
+                        UserInterface::error(&format!("TUI '{}' already exists. Use --force", name));
+                        process::exit(1);
+                    }
+                    if let Err(e) = fs::copy(src, &dest) {
+                        UserInterface::error(&format!("Failed to copy TUI: {}", e));
+                        process::exit(1);
+                    }
+                    TuiEngine::register(&name, &dest);
+                    UserInterface::success(&format!("TUI '{}' installed", name));
+                }
+                TuiCommand::Remove(args) => {
+                    let entry = match TuiEngine::by_name(&args.name) {
+                        Some(e) => e,
+                        None => { UserInterface::error(&format!("TUI '{}' not found", args.name)); process::exit(1); }
+                    };
+                    let _ = fs::remove_file(&entry.path);
+                    TuiEngine::unregister(&args.name);
+                    UserInterface::success(&format!("TUI '{}' removed", args.name));
+                }
+                TuiCommand::Info(args) => {
+                    match TuiEngine::by_name(&args.name) {
+                        Some(t) => {
+                            println!("\x1b[32m{}\x1b[0m", t.name);
+                            println!("  Path: {}", t.path);
+                        }
+                        None => UserInterface::error(&format!("TUI '{}' not found", args.name)),
                     }
                 }
             }
@@ -1261,7 +1618,7 @@ fn copy_dir_recursive(src: &PathBuf, dst: &PathBuf, base: &PathBuf) -> std::io::
     for entry in std::fs::read_dir(src)? {
         let entry = entry?;
         let path = entry.path();
-        let relative = path.strip_prefix(base).unwrap();
+        let relative = path.strip_prefix(base).expect("path under base");
         let target = dst.join(relative);
         if path.is_dir() {
             std::fs::create_dir_all(&target)?;

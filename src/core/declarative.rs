@@ -24,7 +24,7 @@ impl ProfileValidator {
 
     fn parse_ini_profile(content: &str) -> Result<SystemProfile> {
         let mut version = String::new();
-        let mut architecture = Architecture::Amd64;
+        let mut architecture = Architecture::host();
         let mut packages = Vec::new();
 
         for line in content.lines() {

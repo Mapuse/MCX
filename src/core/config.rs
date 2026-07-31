@@ -136,7 +136,7 @@ impl<'a> ConfigParser<'a> {
         loop {
             self.skip_whitespace_and_newlines();
             if self.pos >= self.input.len() { break; }
-            let c = self.peek().unwrap();
+            let c = self.peek().expect("peek char");
             if c == '[' { break; }
             if c == '#' || c == ';' { self.skip_line(); continue; }
             if let Some(entry) = self.parse_entry() {
@@ -199,9 +199,9 @@ impl ConfigManager {
         let local_path = root.join("etc/mcx/config.ini");
         let repo_path = root.join("etc/mcx/repo.ini");
 
-        fs::create_dir_all(local_path.parent().unwrap())
+        fs::create_dir_all(local_path.parent().expect("local config path has parent"))
             .context("Failed to create config directory")?;
-        fs::create_dir_all(repo_path.parent().unwrap())
+        fs::create_dir_all(repo_path.parent().expect("repo config path has parent"))
             .context("Failed to create repo config directory")?;
 
         if !local_path.exists() {
@@ -223,6 +223,10 @@ impl ConfigManager {
 
     pub fn repo(&self) -> &MappedConfig<'static> {
         &self.repo_config
+    }
+
+    pub fn python(&self) -> PythonConfig {
+        PythonConfig::from_config(&self.local_config)
     }
 
     pub fn calibrate(&self) -> CalibratedParams {
@@ -279,6 +283,51 @@ impl Default for CalibratedParams {
             network_latency_adaptive: true,
             latency_threshold_ms: constants::DEFAULT_LATENCY_THRESHOLD_MS,
             bandwidth_threshold_kbps: constants::DEFAULT_BANDWIDTH_THRESHOLD_KBPS,
+        }
+    }
+}
+
+/// Python subsystem configuration, merged into `config.ini` under `[python]`.
+#[derive(Clone, Debug)]
+pub struct PythonConfig {
+    pub enabled: bool,
+    pub theme: String,
+    pub tui: String,
+    pub plugins: Vec<String>,
+    pub fallback_on_error: bool,
+    pub venv_path: String,
+    pub tui_mode: bool,
+}
+
+impl PythonConfig {
+    pub fn from_config(cfg: &MappedConfig) -> Self {
+        let plugins = cfg.get("python", "plugins")
+            .map(|s| {
+                s.split(',').map(|p| p.trim().to_string()).filter(|p| !p.is_empty()).collect()
+            })
+            .unwrap_or_default();
+        Self {
+            enabled: cfg.get_bool("python", "enabled").unwrap_or(false),
+            theme: cfg.get("python", "theme").unwrap_or("").to_string(),
+            tui: cfg.get("python", "tui").unwrap_or("").to_string(),
+            plugins,
+            fallback_on_error: cfg.get_bool("python", "fallback_on_error").unwrap_or(true),
+            venv_path: cfg.get("python", "venv_path").unwrap_or("").to_string(),
+            tui_mode: cfg.get_bool("python", "tui_mode").unwrap_or(false),
+        }
+    }
+}
+
+impl Default for PythonConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            theme: String::new(),
+            tui: String::new(),
+            plugins: vec![],
+            fallback_on_error: true,
+            venv_path: String::new(),
+            tui_mode: false,
         }
     }
 }

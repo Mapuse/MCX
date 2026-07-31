@@ -23,8 +23,7 @@ impl Architecture {
         if let Ok(output) = std::process::Command::new("uname")
             .arg("-m")
             .output()
-        {
-            if let Ok(val) = String::from_utf8(output.stdout) {
+            && let Ok(val) = String::from_utf8(output.stdout) {
                 let val = val.trim();
                 if val == "x86_64" {
                     return Architecture::Amd64;
@@ -32,7 +31,6 @@ impl Architecture {
                     return Architecture::Arm64;
                 }
             }
-        }
         Architecture::Amd64
     }
 

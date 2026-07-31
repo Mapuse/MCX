@@ -5,6 +5,12 @@ pub struct DepGraph {
     nodes: HashMap<String, Vec<String>>,
 }
 
+impl Default for DepGraph {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl DepGraph {
     pub fn new() -> Self {
         Self {
@@ -33,11 +39,10 @@ impl DepGraph {
         let mut visited = HashSet::new();
         let mut rec_stack = HashSet::new();
         for node in self.nodes.keys() {
-            if !visited.contains(node) {
-                if self.dfs_sort(node, &mut visited, &mut rec_stack, &mut order) {
+            if !visited.contains(node)
+                && self.dfs_sort(node, &mut visited, &mut rec_stack, &mut order) {
                     return Err(anyhow!("Circular structural dependency loop detected"));
                 }
-            }
         }
         order.reverse();
         Ok(order)

@@ -78,11 +78,19 @@ pub struct LifecycleEntry {
     pub checksum: Option<String>,
 }
 
+type HookVec = Vec<Box<dyn Fn(&str, PackageState, PackageState) -> Result<()> + Send + Sync>>;
+
 pub struct LifecycleEngine {
     entries: HashMap<String, LifecycleEntry>,
     transitions: Vec<LifecycleTransition>,
-    pre_hooks: Vec<Box<dyn Fn(&str, PackageState, PackageState) -> Result<()> + Send + Sync>>,
-    post_hooks: Vec<Box<dyn Fn(&str, PackageState, PackageState) -> Result<()> + Send + Sync>>,
+    pre_hooks: HookVec,
+    post_hooks: HookVec,
+}
+
+impl Default for LifecycleEngine {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl LifecycleEngine {
@@ -189,6 +197,12 @@ pub struct DependencyGraph {
     reverse: HashMap<String, Vec<String>>,
 }
 
+impl Default for DependencyGraph {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl DependencyGraph {
     pub fn new() -> Self {
         Self { edges: HashMap::new(), reverse: HashMap::new() }
@@ -203,11 +217,10 @@ impl DependencyGraph {
         let mut visited = std::collections::HashSet::new();
         let mut stack = roots.to_vec();
         while let Some(node) = stack.pop() {
-            if visited.insert(node.clone()) {
-                if let Some(deps) = self.edges.get(&node) {
+            if visited.insert(node.clone())
+                && let Some(deps) = self.edges.get(&node) {
                     stack.extend(deps.iter().cloned());
                 }
-            }
         }
         let mut result: Vec<String> = visited.into_iter().collect();
         result.sort();
@@ -221,9 +234,7 @@ impl DependencyGraph {
         let purged = Vec::new();
 
         for pkg in all_packages {
-            if roots.contains(pkg) {
-                reachable_pkgs.push(pkg.clone());
-            } else if reachable.contains(pkg) {
+            if roots.contains(pkg) || reachable.contains(pkg) {
                 reachable_pkgs.push(pkg.clone());
             } else {
                 orphaned.push(pkg.clone());

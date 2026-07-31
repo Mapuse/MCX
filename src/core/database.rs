@@ -54,22 +54,12 @@ impl PackageMetadata {
     }
 
     pub fn find_component_for_file(&self, file: &str) -> Option<&Component> {
-        for comp in &self.components {
-            if comp.files.iter().any(|f| f.to_string_lossy() == file || f.to_string_lossy().contains(file)) {
-                return Some(comp);
-            }
-        }
-        None
+        self.components.iter().find(|&comp| comp.files.iter().any(|f| f.to_string_lossy() == file || f.to_string_lossy().contains(file))).map(|v| v as _)
     }
 
     pub fn find_component_for_binary(&self, binary: &str) -> Option<&Component> {
         let bin_path = format!("usr/bin/{}", binary);
-        for comp in &self.components {
-            if comp.files.iter().any(|f| f.to_string_lossy() == bin_path || f.file_name().map(|n| n == binary).unwrap_or(false)) {
-                return Some(comp);
-            }
-        }
-        None
+        self.components.iter().find(|&comp| comp.files.iter().any(|f| f.to_string_lossy() == bin_path || f.file_name().map(|n| n == binary).unwrap_or(false))).map(|v| v as _)
     }
 }
 
@@ -190,11 +180,10 @@ impl Database {
         let iter = self.installed_db.iter(&txn)?;
         for result in iter {
             let (_key, meta) = result?;
-            if meta.pkg_name != pkg_name {
-                if meta.dependencies.iter().any(|d| d.name == pkg_name) {
+            if meta.pkg_name != pkg_name
+                && meta.dependencies.iter().any(|d| d.name == pkg_name) {
                     return Ok(true);
                 }
-            }
         }
         Ok(false)
     }

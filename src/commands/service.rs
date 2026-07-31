@@ -134,10 +134,13 @@ impl ServiceCommand {
     fn start_service(&self, name: &str) -> Result<()> {
         let svc = self.find_service_by_name(name)?;
         let cesar_bin = self.find_cesar_binary()?;
-        std::process::Command::new(&cesar_bin)
+        let status = std::process::Command::new(&cesar_bin)
             .args(["start", &svc.name])
             .status()
             .map_err(|e| anyhow!("Failed to start service '{}': {}", svc.name, e))?;
+        if !status.success() {
+            return Err(anyhow!("Failed to start service '{}': cesar exited {}", svc.name, status));
+        }
         UserInterface::success(&format!("Service '{}' started", svc.name));
         Ok(())
     }
@@ -145,10 +148,13 @@ impl ServiceCommand {
     fn stop_service(&self, name: &str) -> Result<()> {
         let svc = self.find_service_by_name(name)?;
         let cesar_bin = self.find_cesar_binary()?;
-        std::process::Command::new(&cesar_bin)
+        let status = std::process::Command::new(&cesar_bin)
             .args(["stop", &svc.name])
             .status()
             .map_err(|e| anyhow!("Failed to stop service '{}': {}", svc.name, e))?;
+        if !status.success() {
+            return Err(anyhow!("Failed to stop service '{}': cesar exited {}", svc.name, status));
+        }
         UserInterface::success(&format!("Service '{}' stopped", svc.name));
         Ok(())
     }
@@ -156,10 +162,13 @@ impl ServiceCommand {
     fn restart_service(&self, name: &str) -> Result<()> {
         let svc = self.find_service_by_name(name)?;
         let cesar_bin = self.find_cesar_binary()?;
-        std::process::Command::new(&cesar_bin)
+        let status = std::process::Command::new(&cesar_bin)
             .args(["restart", &svc.name])
             .status()
             .map_err(|e| anyhow!("Failed to restart service '{}': {}", svc.name, e))?;
+        if !status.success() {
+            return Err(anyhow!("Failed to restart service '{}': cesar exited {}", svc.name, status));
+        }
         UserInterface::success(&format!("Service '{}' restarted", svc.name));
         Ok(())
     }

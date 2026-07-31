@@ -1,3 +1,4 @@
+use std::cmp::Reverse;
 use std::collections::{HashSet, VecDeque};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -33,17 +34,16 @@ impl RemoveCommand {
 
         self.fire_hooks(PluginHook::PreRemove, packages);
 
-        if let Some(ref filter) = self.component_filter {
-            if !filter.include.is_empty() {
+        if let Some(ref filter) = self.component_filter
+            && !filter.include.is_empty() {
                 let result = self.execute_partial_removal(packages, filter, cgroup_mgr, security_mon);
                 self.fire_hooks(PluginHook::PostRemove, packages);
                 return result;
             }
-        }
 
         let mut transaction = self.db.begin_transaction()?;
 
-        let (orphans, _purged) = self.analysis(packages)?;
+        let orphans = self.analysis(packages)?;
 
         let all_targets: Vec<String> = packages.iter()
             .chain(orphans.iter())
@@ -63,6 +63,7 @@ impl RemoveCommand {
 
             let pkg_active = active_dir.join(pkg);
             if pkg_active.exists() {
+                transaction.backup_file(&pkg_active)?;
                 residue_paths.extend(self.collect_files_recursive(&pkg_active));
                 fs::remove_dir_all(&pkg_active)
                     .with_context(|| format!("Failed to purge package root: {:?}", pkg_active))?;
@@ -78,7 +79,7 @@ impl RemoveCommand {
 
         let shared_files = self.compute_non_orphaned_files(&all_targets);
 
-        residue_paths.sort_by(|a, b| b.components().count().cmp(&a.components().count()));
+        residue_paths.sort_by_key(|a| Reverse(a.components().count()));
 
         for file_path in &residue_paths {
             let absolute_target = self.root.join(
@@ -88,18 +89,17 @@ impl RemoveCommand {
             if shared_files.contains(&absolute_target) { continue; }
 
             if absolute_target.is_dir() {
-                if let Ok(mut entries) = fs::read_dir(&absolute_target) {
-                    if entries.next().is_none() {
+                if let Ok(mut entries) = fs::read_dir(&absolute_target)
+                    && entries.next().is_none() {
                         let _ = fs::remove_dir(&absolute_target);
                     }
-                }
             } else {
                 let _ = fs::remove_file(&absolute_target);
             }
         }
 
         self.scour_system_residue(&all_targets)?;
-        self.cleanup_dangling_symlinks(&self.root)?;
+        self.cleanup_dangling_symlinks(&self.root, &all_targets)?;
 
         // sandbox cleanup for removed packages
         for pkg in &all_targets {
@@ -175,9 +175,13 @@ impl RemoveCommand {
 
             if remaining_files.is_empty() && !manifest.components.is_empty() {
                 UserInterface::info(&format!("All components removed from '{}'; performing full removal", pkg_name));
-                let pkg_active = active_dir.join(pkg_name);
-                if pkg_active.exists() { let _ = fs::remove_dir_all(&pkg_active); }
                 let mut tx = self.db.begin_transaction()?;
+                let pkg_active = active_dir.join(pkg_name);
+                if pkg_active.exists() {
+                    tx.backup_file(&pkg_active)?;
+                    fs::remove_dir_all(&pkg_active)
+                        .with_context(|| format!("Failed to purge package root: {:?}", pkg_active))?;
+                }
                 tx.stage_package_removal(pkg_name)?;
                 tx.commit()?;
             } else {
@@ -195,7 +199,7 @@ impl RemoveCommand {
             UserInterface::success(&format!("Removed {} file(s) from '{}'", removed_count, pkg_name));
         }
 
-        self.cleanup_dangling_symlinks(&self.root)?;
+        self.cleanup_dangling_symlinks(&self.root, packages)?;
 
         for pkg_name in packages {
             if let Ok(manifest) = self.db.get_package_manifest(pkg_name) {
@@ -214,7 +218,7 @@ impl RemoveCommand {
         Ok(())
     }
 
-    fn analysis(&self, targets: &[String]) -> Result<(Vec<String>, Vec<String>)> {
+    fn analysis(&self, targets: &[String]) -> Result<Vec<String>> {
         let all_installed = self.db.get_all_installed_packages()?;
         let target_set: HashSet<&str> = targets.iter().map(|s| s.as_str()).collect();
 
@@ -252,18 +256,12 @@ impl RemoveCommand {
             }
         }
 
-        let purged: Vec<String> = orphans.iter()
-            .filter(|p| {
-                let rd = reverse_deps.get(p.as_str()).map(|v| v.len()).unwrap_or(0);
-                rd == 0 || rd == targets.len()
-            })
-            .cloned()
-            .collect();
-
-        Ok((orphans, purged))
+        Ok(orphans)
     }
 
     fn scour_system_residue(&self, removed: &[String]) -> Result<()> {
+        const RESIDUE_SUFFIXES: &[&str] = &["log", "tmp", "pid", "cache"];
+
         let config_dirs = vec![
             self.root.join(constants::PATH_ETC_MCX),
             self.root.join(constants::PATH_LIB_MCX),
@@ -281,11 +279,23 @@ impl RemoveCommand {
                     if let Some(name) = path.file_name() {
                         let name_str = name.to_string_lossy();
                         for pkg in &removed_set {
-                            if name_str == *pkg || name_str.starts_with(&format!("{}.", pkg)) || name_str.starts_with(&format!("{}-", pkg)) {
-                                if path.is_dir() {
-                                    let _ = fs::remove_dir_all(&path);
+                            let is_target = name_str == *pkg
+                                || name_str
+                                    .strip_prefix(*pkg)
+                                    .and_then(|rest| rest.strip_prefix('.'))
+                                    .map(|suffix| RESIDUE_SUFFIXES.contains(&suffix))
+                                    .unwrap_or(false);
+                            if is_target {
+                                let result = if path.is_dir() {
+                                    fs::remove_dir_all(&path)
                                 } else {
-                                    let _ = fs::remove_file(&path);
+                                    fs::remove_file(&path)
+                                };
+                                if let Err(e) = result {
+                                    UserInterface::warning(&format!(
+                                        "Failed to remove system residue {:?}: {}",
+                                        path, e
+                                    ));
                                 }
                                 break;
                             }
@@ -328,22 +338,38 @@ impl RemoveCommand {
         files
     }
 
-    fn cleanup_dangling_symlinks(&self, root: &Path) -> Result<()> {
-        if !root.exists() { return Ok(()); }
-        let mut queue: Vec<PathBuf> = vec![root.to_path_buf()];
-        while let Some(dir) = queue.pop() {
-            if let Ok(entries) = fs::read_dir(&dir) {
-                for entry in entries.flatten() {
-                    let path = entry.path();
-                    if path.is_symlink() {
-                        if path.exists() { continue; }
-                        let _ = fs::remove_file(&path);
-                    } else if path.is_dir() {
-                        queue.push(path);
-                    }
+    fn cleanup_dangling_symlinks(&self, root: &Path, packages: &[String]) -> Result<()> {
+        for pkg in packages {
+            let pkg_active = root.join(constants::PATH_ACTIVE).join(pkg);
+            Self::remove_dangling_symlinks_recursive(&pkg_active);
+
+            if let Ok(manifest) = self.db.get_package_manifest(pkg) {
+                for file in &manifest.files {
+                    let full = root.join(file);
+                    if full.is_symlink()
+                        && !full.exists()
+                        && let Err(e) = fs::remove_file(&full) {
+                            UserInterface::warning(&format!("Failed to remove dangling symlink {:?}: {}", full, e));
+                        }
                 }
             }
         }
         Ok(())
+    }
+
+    fn remove_dangling_symlinks_recursive(dir: &Path) {
+        if !dir.exists() { return; }
+        if let Ok(entries) = fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_symlink() {
+                    if !path.exists() {
+                        let _ = fs::remove_file(&path);
+                    }
+                } else if path.is_dir() {
+                    Self::remove_dangling_symlinks_recursive(&path);
+                }
+            }
+        }
     }
 }

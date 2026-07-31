@@ -21,6 +21,12 @@ pub struct Downloader {
     base_delay_ms: u64,
 }
 
+impl Default for Downloader {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Downloader {
     pub fn new() -> Self {
         let client = Client::builder()
@@ -28,7 +34,7 @@ impl Downloader {
             .tcp_keepalive(Duration::from_secs(constants::TCP_KEEPALIVE_SECS))
             .pool_max_idle_per_host(constants::POOL_MAX_IDLE_PER_HOST)
             .build()
-            .unwrap();
+            .expect("build reqwest client");
         Self {
             client,
             max_concurrent_chunks: constants::DEFAULT_MAX_CONCURRENT_CHUNKS as u64,
@@ -97,8 +103,12 @@ impl Downloader {
         let content_length = head_resp.headers().get(CONTENT_LENGTH)
             .and_then(|v| v.to_str().unwrap_or("").parse::<u64>().ok());
 
-        if accept_ranges && content_length.is_some() && content_length.unwrap() > constants::CHUNKED_DOWNLOAD_THRESHOLD {
-            self.download_chunked(url, destination, content_length.unwrap()).await?;
+        if let Some(cl) = content_length {
+            if accept_ranges && cl > constants::CHUNKED_DOWNLOAD_THRESHOLD {
+                self.download_chunked(url, destination, cl).await?;
+            } else {
+                self.download_streaming(url, destination).await?;
+            }
         } else {
             self.download_streaming(url, destination).await?;
         }
@@ -121,7 +131,7 @@ impl Downloader {
     async fn download_chunked(&self, url: &str, destination: &Path, total_size: u64) -> Result<()> {
         let chunk_size = (total_size / self.max_concurrent_chunks).max(constants::MIN_CHUNK_SIZE);
         let file = Arc::new(Mutex::new(
-            OpenOptions::new().create(true).write(true).open(destination)
+            OpenOptions::new().create(true).write(true).truncate(true).open(destination)
                 .with_context(|| format!("Failed to create {:?}", destination))?
         ));
         file.lock().await.set_len(total_size)?;
@@ -170,7 +180,7 @@ impl Downloader {
             let sem = Arc::clone(&semaphore);
 
             tasks.push(tokio::spawn(async move {
-                let _permit = sem.acquire().await.unwrap();
+                let _permit = sem.acquire().await.expect("acquire semaphore");
                 let result = dl.package(&url, &dest).await;
                 (idx, result)
             }));
@@ -178,7 +188,7 @@ impl Downloader {
 
         let mut results = Vec::with_capacity(tasks.len());
         for task in join_all(tasks).await {
-            results.push(task.unwrap());
+            results.push(task.expect("join download task"));
         }
         results
     }

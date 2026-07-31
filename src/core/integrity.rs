@@ -126,7 +126,7 @@ impl IntegrityScanner {
         }
 
         result.total_issues = report.missing_files.len() + report.corrupted_files.len()
-            + report.broken_deps.len() + report.dangling_symlinks as usize;
+            + report.broken_deps.len() + report.dangling_symlinks;
         result
     }
 
@@ -281,10 +281,10 @@ mod tests {
     fn test_hash_file_known_content() {
         let dir = std::env::temp_dir().join(format!("mcx_test_hash_{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
+        fs::create_dir_all(&dir).expect("create temp dir");
         let f = dir.join("data.bin");
-        fs::write(&f, b"hello world").unwrap();
-        let hash = hash_file(&f, "sha256").unwrap();
+        fs::write(&f, b"hello world").expect("write temp file");
+        let hash = hash_file(&f, "sha256").expect("hash temp file");
         // SHA-256 of "hello world"
         assert_eq!(hash, "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9");
         let _ = fs::remove_dir_all(&dir);
@@ -294,10 +294,10 @@ mod tests {
     fn test_hash_file_sha1() {
         let dir = std::env::temp_dir().join(format!("mcx_test_hash_sha1_{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
+        fs::create_dir_all(&dir).expect("create temp dir");
         let f = dir.join("data.bin");
-        fs::write(&f, b"hello world").unwrap();
-        let hash = hash_file(&f, "sha1").unwrap();
+        fs::write(&f, b"hello world").expect("write temp file");
+        let hash = hash_file(&f, "sha1").expect("hash temp file");
         // SHA-1 of "hello world"
         assert_eq!(hash, "2aae6c35c94fcfb415dbe95f408b9ce91ee846ed");
         let _ = fs::remove_dir_all(&dir);
@@ -307,10 +307,10 @@ mod tests {
     fn test_hash_file_md5() {
         let dir = std::env::temp_dir().join(format!("mcx_test_hash_md5_{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
+        fs::create_dir_all(&dir).expect("create temp dir");
         let f = dir.join("data.bin");
-        fs::write(&f, b"hello world").unwrap();
-        let hash = hash_file(&f, "md5").unwrap();
+        fs::write(&f, b"hello world").expect("write temp file");
+        let hash = hash_file(&f, "md5").expect("hash temp file");
         // MD5 of "hello world"
         assert_eq!(hash, "5eb63bbbe01eeed093cb22bb8f5acdc3");
         let _ = fs::remove_dir_all(&dir);
@@ -320,10 +320,10 @@ mod tests {
     fn test_hash_file_empty() {
         let dir = std::env::temp_dir().join(format!("mcx_test_hash_empty_{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
+        fs::create_dir_all(&dir).expect("create temp dir");
         let f = dir.join("empty.bin");
-        fs::write(&f, b"").unwrap();
-        let hash = hash_file(&f, "sha256").unwrap();
+        fs::write(&f, b"").expect("write temp file");
+        let hash = hash_file(&f, "sha256").expect("hash temp file");
         assert_eq!(hash, "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
         let _ = fs::remove_dir_all(&dir);
     }
@@ -333,7 +333,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("mcx_test_hash_missing_{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         let f = dir.join("nope.bin");
-        let err = hash_file(&f, "sha256").unwrap_err();
+        let err = hash_file(&f, "sha256").expect_err("hash missing file");
         assert!(err.to_string().contains("Failed to open"));
         let _ = fs::remove_dir_all(&dir);
     }
@@ -342,10 +342,10 @@ mod tests {
     fn test_hash_file_unsupported_kind() {
         let dir = std::env::temp_dir().join(format!("mcx_test_hash_badkind_{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
+        fs::create_dir_all(&dir).expect("create temp dir");
         let f = dir.join("data.bin");
-        fs::write(&f, b"test").unwrap();
-        let err = hash_file(&f, "blake2").unwrap_err();
+        fs::write(&f, b"test").expect("write temp file");
+        let err = hash_file(&f, "blake2").expect_err("hash unsupported kind");
         assert!(err.to_string().contains("Unsupported checksum kind"));
         let _ = fs::remove_dir_all(&dir);
     }
@@ -354,11 +354,11 @@ mod tests {
     fn test_integrity_scanner_verify_clean_root() {
         let root = std::env::temp_dir().join(format!("mcx_test_int_clean_{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
-        fs::create_dir_all(&root.join("var/lib/mcx/active")).unwrap();
+        fs::create_dir_all(root.join("var/lib/mcx/active")).expect("create active dir");
 
         let db_path = root.join("var/lib/mcx/db");
-        fs::create_dir_all(&db_path).unwrap();
-        let db = crate::core::db::Database::open(&root).unwrap();
+        fs::create_dir_all(&db_path).expect("create db dir");
+        let db = crate::core::db::Database::open(&root).expect("open test database");
         let scanner = IntegrityScanner::new(&root, Arc::new(db));
 
         let report = scanner.verify_all();
@@ -375,10 +375,10 @@ mod tests {
     fn test_integrity_scanner_detect_missing_file() {
         let root = std::env::temp_dir().join(format!("mcx_test_int_missing_{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
-        fs::create_dir_all(&root.join("var/lib/mcx/active/test-pkg")).unwrap();
-        fs::create_dir_all(&root.join("usr/bin")).unwrap();
+        fs::create_dir_all(root.join("var/lib/mcx/active/test-pkg")).expect("create active dir");
+        fs::create_dir_all(root.join("usr/bin")).expect("create usr bin dir");
 
-        let db = crate::core::db::Database::open(&root).unwrap();
+        let db = crate::core::db::Database::open(&root).expect("open test database");
         let pkg = crate::core::db::PackageMetadata {
             pkg_name: "test-pkg".into(),
             version: "1.0".into(),
@@ -394,9 +394,9 @@ mod tests {
             services: Vec::new(),
             binaries: Vec::new(),
         };
-        let mut tx = db.begin_transaction().unwrap();
-        tx.register_package_placement(&pkg).unwrap();
-        tx.commit().unwrap();
+        let mut tx = db.begin_transaction().expect("begin transaction");
+        tx.register_package_placement(&pkg).expect("register package placement");
+        tx.commit().expect("commit transaction");
 
         let scanner = IntegrityScanner::new(&root, Arc::new(db));
         let report = scanner.verify_all();
@@ -412,12 +412,12 @@ mod tests {
     fn test_integrity_scanner_repair_missing_file() {
         let root = std::env::temp_dir().join(format!("mcx_test_int_repair_{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
-        fs::create_dir_all(&root.join("var/lib/mcx/active/test-pkg/usr/bin")).unwrap();
-        fs::create_dir_all(&root.join("usr/bin")).unwrap();
+        fs::create_dir_all(root.join("var/lib/mcx/active/test-pkg/usr/bin")).expect("create active dir");
+        fs::create_dir_all(root.join("usr/bin")).expect("create usr bin dir");
         // Create the file in the active dir (CAS source for repair)
-        fs::write(root.join("var/lib/mcx/active/test-pkg/usr/bin/test-binary"), b"content").unwrap();
+        fs::write(root.join("var/lib/mcx/active/test-pkg/usr/bin/test-binary"), b"content").expect("write temp file");
 
-        let db = crate::core::db::Database::open(&root).unwrap();
+        let db = crate::core::db::Database::open(&root).expect("open test database");
         let pkg = crate::core::db::PackageMetadata {
             pkg_name: "test-pkg".into(),
             version: "1.0".into(),
@@ -433,9 +433,9 @@ mod tests {
             services: Vec::new(),
             binaries: Vec::new(),
         };
-        let mut tx = db.begin_transaction().unwrap();
-        tx.register_package_placement(&pkg).unwrap();
-        tx.commit().unwrap();
+        let mut tx = db.begin_transaction().expect("begin transaction");
+        tx.register_package_placement(&pkg).expect("register package placement");
+        tx.commit().expect("commit transaction");
 
         let scanner = IntegrityScanner::new(&root, Arc::new(db));
         let repair = scanner.repair_all();
@@ -450,14 +450,14 @@ mod tests {
     fn test_integrity_scanner_dangling_symlinks() {
         let root = std::env::temp_dir().join(format!("mcx_test_int_dangle_{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
-        fs::create_dir_all(&root.join("usr/lib")).unwrap();
+        fs::create_dir_all(root.join("usr/lib")).expect("create usr lib dir");
         // Create a dangling symlink
         #[cfg(unix)]
         {
-            std::os::unix::fs::symlink("/nonexistent/target", root.join("usr/lib/broken.so")).unwrap();
+            std::os::unix::fs::symlink("/nonexistent/target", root.join("usr/lib/broken.so")).expect("create symlink");
         }
 
-        let db = crate::core::db::Database::open(&root).unwrap();
+        let db = crate::core::db::Database::open(&root).expect("open test database");
         let scanner = IntegrityScanner::new(&root, Arc::new(db));
         let report = scanner.verify_all();
         #[cfg(unix)]
