@@ -22,6 +22,8 @@
 
 <details><summary id="contents">Contents</summary>
 
+## Table of Contents
+
 - [**`[Commands]`**](#commands)
 - [**`[Architecture]`**](#architecture)
   - [**`[Module dependency graph]`**](#module-dependency-graph)
