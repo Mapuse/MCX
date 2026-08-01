@@ -26,7 +26,7 @@
 
 - [**`[Commands]`**](#commands)
 - [**`[Architecture]`**](#architecture)
-  - [**`[Module dependency graph]`**](#module-dependency-graph)
+  - [**`[Module graph]`**](#module-graph)
   - [**`[Module inventory]`**](#module-inventory)
   - [**`[Trait contracts]`**](#trait-contracts)
   - [**`[Execution flow]`**](#execution-flow)
@@ -43,7 +43,7 @@
   - [**`[archive/ — Artifact primitives]`**](#archive--artifact-primitives)
   - [**`[utils/ — Shared utilities]`**](#utils--shared-utilities)
 - [**`[Data & persistence]`**](#data--persistence)
-  - [**`[Package metadata — LMDB schema]`**](#package-metadata--lmdb-schema)
+  - [**`[Package metadata]`**](#package-metadata)
   - [**`[On-disk layout]`**](#on-disk-layout)
   - [**`[INI-based configuration]`**](#ini-based-configuration)
   - [**`[Package format]`**](#package-format)
@@ -57,7 +57,7 @@
   - [**`[Workspace management]`**](#workspace-management)
   - [**`[Vendor (offline mirror)]`**](#vendor-offline-mirror)
   - [**`[Completion engine]`**](#completion-engine)
-  - [**`[Network downloader (concurrent, retry, streaming, ETag)]`**](#network-downloader-concurrent-retry-streaming-etag)
+  - [**`[Network downloader]`**](#network-downloader)
   - [**`[Network sync engine (ETag conditional sync)]`**](#network-sync-engine-etag-conditional-sync)
   - [**`[Integrity scanner (async verify & repair)]`**](#integrity-scanner-async-verify--repair)
   - [**`[Binary index (`--binindex`)]`**](#binary-index---binindex)
@@ -74,8 +74,6 @@
   - [**`[Continuous integration]`**](#continuous-integration)
 - [**`[Plugin authoring & linking]`**](#plugin-authoring--linking)
 - [**`[Configuration guide]`**](#configuration-guide)
-- [**`[License]`**](#license)
-- [**`[Credits]`**](#credits)
 
 </details>
 
@@ -535,17 +533,19 @@ mcx theme remove <name>
 
 Theme management via `python::theme::ThemeEngine`. Themes are Python modules that render the prompt; they load from the configured theme path (`var/lib/mcx/themes` or the `[python] theme` setting) and apply via `ThemeEngine::apply`.
 
+Themes are also registered through a `t.desc` TOML descriptor file, loaded from the first existing, parseable file among `~/.config/mcx/t.desc`, `/etc/mcx/t.desc`, `./t.desc`, or `<cwd>/t.desc` (files are never merged; `path` values support `~` expansion). Each `[theme.<id>]` section has `name`, `path`, and optional `description`; `mcx theme list`, `mcx theme info`, and `mcx theme apply` read from this registry. `mcx theme apply` executes the file out-of-process via `python3 <path>`.
+
 ### `tui` (Python TUIs)
 
 ```
 mcx tui list
 mcx tui info <name>
-mcx tui run <name>
+mcx tui apply <name>
 mcx tui install <path> [-n NAME] [-f]
 mcx tui remove <name>
 ```
 
-TUI management via `python::tui::TuiEngine`. TUIs are full-screen Python applications launched through `TuiEngine::run`.
+TUI management via `python::tui::TuiEngine`. TUIs are full-screen Python applications launched out-of-process with `mcx tui apply` (executes the file via `python3 <path>`). TUIs can be registered in the same `t.desc` file under `[tui.<id>]` sections (`name`, `path`, optional `description`) and managed with `mcx tui list`, `mcx tui apply`, `mcx tui install`, and `mcx tui remove`. `mcx theme list` and `mcx tui list` print a `Desc:` line for entries that have a description.
 
 ### `--service`
 

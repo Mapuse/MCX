@@ -1,5 +1,6 @@
 use std::os::unix::net::{UnixDatagram, UnixListener};
 use std::path::Path;
+use crate::utils::ui::UserInterface;
 
 const EVENT_SOCKET: &str = "/run/mcx/event.sock";
 
@@ -10,7 +11,7 @@ impl EventBus {
         let msg = serde_json::json!({"event": event, "data": data});
         if let Ok(sock) = UnixDatagram::unbound()
             && let Err(e) = sock.send_to(msg.to_string().as_bytes(), EVENT_SOCKET) {
-                eprintln!("mcx: failed to emit event '{}': {}", event, e);
+                UserInterface::error(&format!("failed to emit event '{}': {}", event, e));
             }
     }
 

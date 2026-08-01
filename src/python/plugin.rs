@@ -1,6 +1,7 @@
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use crate::core::config::PythonConfig;
+use crate::utils::ui::UserInterface;
 use super::expand_tilde;
 
 pub struct PluginManager {
@@ -33,25 +34,25 @@ impl PluginManager {
                 let path = expand_tilde(plugin_path);
                 let std_path = std::path::PathBuf::from(&path);
                 if !std_path.exists() {
-                    eprintln!("mcx: plugin not found: {}", path);
+                    UserInterface::warning(&format!("plugin not found: {}", path));
                     continue;
                 }
                 let parent = match std_path.parent() {
                     Some(p) => p.to_str().unwrap_or(".").to_string(),
-                    None => { eprintln!("mcx: cannot determine parent of {}", path); continue; }
+                    None => { UserInterface::warning(&format!("cannot determine parent of {}", path)); continue; }
                 };
                 let file_stem = match std_path.file_stem().and_then(|s| s.to_str()) {
                     Some(s) => s.to_string(),
-                    None => { eprintln!("mcx: cannot determine name of {}", path); continue; }
+                    None => { UserInterface::warning(&format!("cannot determine name of {}", path)); continue; }
                 };
                 let _ = sys_path.call_method1("insert", (0, &parent));
                 match load_one_plugin(py, &file_stem) {
                     Some((module, hooks)) => {
-                        eprintln!("mcx: loaded plugin: {} (hooks: {})", file_stem, hooks.join(", "));
+                        UserInterface::info(&format!("loaded plugin: {} (hooks: {})", file_stem, hooks.join(", ")));
                         loaded.push((file_stem, module, hooks));
                     }
                     None => {
-                        eprintln!("mcx: plugin {} has no hooks, skipping", file_stem);
+                        UserInterface::info(&format!("plugin {} has no hooks, skipping", file_stem));
                     }
                 }
             }
@@ -139,7 +140,7 @@ impl PluginManager {
 
     pub fn run(entry: &PluginEntry, func: &str, args: &[String]) -> Result<String, String> {
         let _ = (entry, func, args);
-        eprintln!("mcx: plugin run not available in backward-compat mode");
+        UserInterface::warning("plugin run not available in backward-compat mode");
         Err("plugin run not available in backward-compat mode".to_string())
     }
 

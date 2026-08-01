@@ -110,7 +110,7 @@ pub enum Commands {
     #[command(short_flag = 'V', long_flag = "verify", aliases = ["check", "certify"])]
     Verify,
 
-    #[command(short_flag = 'f', long_flag = "fix", aliases = ["fix-deps", "repair"])]
+    #[command(short_flag = 'f', long_flag = "fix", aliases = ["repair"])]
     FixDeps,
 
     #[command(short_flag = 'C', long_flag = "config", aliases = ["cfg", "settings"])]
@@ -1426,6 +1426,9 @@ async fn main() {
                         for t in &themes {
                             println!("\x1b[32m{}\x1b[0m", t.name);
                             println!("  Path: {}", t.path);
+                            if !t.description.is_empty() {
+                                println!("  Desc: {}", t.description);
+                            }
                             println!();
                         }
                     }
@@ -1498,6 +1501,9 @@ async fn main() {
                         for t in &tuis {
                             println!("\x1b[32m{}\x1b[0m", t.name);
                             println!("  Path: {}", t.path);
+                            if !t.description.is_empty() {
+                                println!("  Desc: {}", t.description);
+                            }
                             println!();
                         }
                     }
