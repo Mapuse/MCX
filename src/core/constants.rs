@@ -67,6 +67,7 @@ pub const PATH_CAS: &str = "var/lib/mcx/cas";
 pub const PATH_BININDEX: &str = "var/lib/mcx/binindex.json";
 pub const PATH_GENERATIONS: &str = "var/lib/mcx/generations";
 pub const PATH_HISTORY: &str = "var/lib/mcx/history.jsonl";
+pub const PATH_LIFECYCLE: &str = "var/lib/mcx/lifecycle.jsonl";
 pub const PATH_VENDOR: &str = "var/lib/mcx/vendor";
 pub const PATH_SYNC: &str = "var/lib/mcx/sync";
 pub const PATH_BUILD: &str = "var/mcx/build";

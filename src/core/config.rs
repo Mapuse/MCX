@@ -225,8 +225,25 @@ impl ConfigManager {
         &self.repo_config
     }
 
-    pub fn python(&self) -> PythonConfig {
-        PythonConfig::from_config(&self.local_config)
+    pub fn python(&self) -> cps::PythonConfig {
+        let cfg = &self.local_config;
+        cps::PythonConfig {
+            enabled: cfg.get_bool("python", "enabled").unwrap_or(false),
+            theme: cfg.get("python", "theme").unwrap_or("").to_string(),
+            tui: cfg.get("python", "tui").unwrap_or("").to_string(),
+            plugins: cfg
+                .get("python", "plugins")
+                .map(|s| {
+                    s.split(',')
+                        .map(|p| p.trim().to_string())
+                        .filter(|p| !p.is_empty())
+                        .collect()
+                })
+                .unwrap_or_default(),
+            fallback_on_error: cfg.get_bool("python", "fallback_on_error").unwrap_or(true),
+            venv_path: cfg.get("python", "venv_path").unwrap_or("").to_string(),
+            tui_mode: cfg.get_bool("python", "tui_mode").unwrap_or(false),
+        }
     }
 
     pub fn calibrate(&self) -> CalibratedParams {
@@ -287,47 +304,4 @@ impl Default for CalibratedParams {
     }
 }
 
-/// Python subsystem configuration, merged into `config.ini` under `[python]`.
-#[derive(Clone, Debug)]
-pub struct PythonConfig {
-    pub enabled: bool,
-    pub theme: String,
-    pub tui: String,
-    pub plugins: Vec<String>,
-    pub fallback_on_error: bool,
-    pub venv_path: String,
-    pub tui_mode: bool,
-}
 
-impl PythonConfig {
-    pub fn from_config(cfg: &MappedConfig) -> Self {
-        let plugins = cfg.get("python", "plugins")
-            .map(|s| {
-                s.split(',').map(|p| p.trim().to_string()).filter(|p| !p.is_empty()).collect()
-            })
-            .unwrap_or_default();
-        Self {
-            enabled: cfg.get_bool("python", "enabled").unwrap_or(false),
-            theme: cfg.get("python", "theme").unwrap_or("").to_string(),
-            tui: cfg.get("python", "tui").unwrap_or("").to_string(),
-            plugins,
-            fallback_on_error: cfg.get_bool("python", "fallback_on_error").unwrap_or(true),
-            venv_path: cfg.get("python", "venv_path").unwrap_or("").to_string(),
-            tui_mode: cfg.get_bool("python", "tui_mode").unwrap_or(false),
-        }
-    }
-}
-
-impl Default for PythonConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            theme: String::new(),
-            tui: String::new(),
-            plugins: vec![],
-            fallback_on_error: true,
-            venv_path: String::new(),
-            tui_mode: false,
-        }
-    }
-}

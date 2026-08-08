@@ -13,7 +13,7 @@
 
 `▐▀` `-` `▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▌`
 
-**`[MCX]`** is a Package Manager of **`[Cudane]`** by **`[Mapuse]`** written in **`[Rust]`**, built for a full lifecycle and heavy workflows, no one needs a full-featured Package Manager in the same much of needing a Package Manager that just *`Works`*, but also no one want to be restricted, so it has a full **`[Python]`** Plugins and Theming with **`[No Limits]`**, you can design a full system inside **`[MCX]`** as a plugin, or design a full **`[TUI]`** with literally **`[any]`** library, the only limit is the **`[Python]`** Language itself.
+The Package Manager of **`[Cudane]`** by **`[Mapuse]`** written in **`[Rust]`**, built for a full lifecycle and heavy workflows, no one needs a full-featured Package Manager in the same much of needing a Package Manager that just *`Works`*, but also no one want to be restricted, so it has a full **`[Python]`** Plugins and Theming with **`[No Limits]`**, you can design a full system inside **`[MCX]`** as a plugin, or design a full **`[TUI]`** with literally **`[any]`** library, the only limit is the **`[Python]`** Language itself.
 
 - **`[Version]`**: **`[7.0.0]`**
 
@@ -37,7 +37,7 @@
   - [**`[commands/ — CLI]`**](#commands--cli)
   - [**`[core/ — Domain logic]`**](#core--domain-logic)
   - [**`[core/config.rs — merged config.ini]`**](#coreconfigrs--merged-configini)
-  - [**`[python/ — In-process Python subsystem (pyo3)]`**](#python--in-process-python-subsystem-pyo3)
+  - [**`[cps — Python subsystem (external crate)]`**](#cps--python-subsystem-external-crate)
   - [**`[event.rs — Event bus]`**](#eventrs--event-bus)
   - [**`[network/ — Remote operations]`**](#network--remote-operations)
   - [**`[archive/ — Artifact primitives]`**](#archive--artifact-primitives)
@@ -112,6 +112,8 @@ mcx in <package>...
 ```
 
 Resolves the dependency graph for the target packages via `DependencySolver`, downloads missing `.xcs` archives into `var/cache/mcx/`, verifies SHA-256 checksums, extracts each package in parallel (≥4 CPUs + ≥1 GB RAM triggers `spawn_blocking` per-package), copies artifacts into both the active root and `var/lib/mcx/active/<pkg>/`, and commits the transaction to LMDB.
+
+Installs proceed in topological dependency order. Downloads write to a sibling `<name>.xcs.part` file and are only promoted to the final archive once the full body has been received; a retried transfer sends a `Range: bytes=<resume_from>-` request so an interrupted download resumes from the last byte instead of restarting (the server responds with `206 Partial Content`, or `200`/`416` to fall back to a full re-download). If an older version of a package is already installed, `mcx install <pkg>` re-installs it to upgrade; an installed version that is already equal to or newer than the resolved target is a no-op. Every state transition is recorded in `var/lib/mcx/lifecycle.jsonl` by `LifecycleEngine`.
 
 | Input | Type | Required | Description |
 | ----- | ---- | -------- | ----------- |
@@ -428,9 +430,9 @@ After every `install` and `remove` operation, if `etc/mcx/profile.ini` exists, M
 | `--repo-remove` | `rr` | `RepositoryManager` | `core::repo` |
 | `--repo-list` | `rl` | `RepositoryManager` | `core::repo` |
 | `--hook-plugin` | `hp` | `PluginManager` | `core::plugin` |
-| `plugin` | — | `PluginManager` (pyo3) | `python::plugin` |
-| `theme` | — | `ThemeEngine` (pyo3) | `python::theme` |
-| `tui` | — | `TuiEngine` (pyo3) | `python::tui` |
+| `plugin` | — | `PluginManager` (pyo3 via `cps`) | `core::plugin` |
+| `theme` | — | `ThemeEngine` (pyo3 via `cps`) | `cps::theme` |
+| `tui` | — | `TuiEngine` (pyo3 via `cps`) | `cps::tui` |
 | `--service` | `svc` | inline in `main.rs` | — |
 | `--command-not-found` | `cnf` | `BinaryIndex` | `core::binindex` |
 | `--binindex` | `bi` | `BinaryIndex` | `core::binindex` |
@@ -511,7 +513,7 @@ mcx plugin install <path> [-n NAME] [-a ALIAS] [-A k=v] [-f]
 mcx plugin remove <name> [-f]
 ```
 
-The modern in-process Python plugin runner (`python::plugin::PluginManager`, via `pyo3`). Python modules are loaded in-process from the paths declared in the `[python]` section of `config.ini`; each module's hook functions are registered and invoked directly.
+The modern in-process Python plugin runner (`core::plugin::PluginManager`). The pyo3 runtime lives in the external `cps` crate (see below); Python modules are loaded in-process from the paths declared in the `[python]` section of `config.ini`; each module's hook functions are registered and invoked directly.
 
 | Subcommand | Description |
 | ---------- | ----------- |
@@ -531,7 +533,7 @@ mcx theme install <path> [-n NAME] [-f]
 mcx theme remove <name>
 ```
 
-Theme management via `python::theme::ThemeEngine`. Themes are Python modules that render the prompt; they load from the configured theme path (`var/lib/mcx/themes` or the `[python] theme` setting) and apply via `ThemeEngine::apply`.
+Theme management via `cps::theme::ThemeEngine`. Themes are Python modules that render the prompt; they load from the configured theme path (`var/lib/mcx/themes` or the `[python] theme` setting) and apply via `ThemeEngine::apply`.
 
 Themes are also registered through a `t.desc` TOML descriptor file, loaded from the first existing, parseable file among `~/.config/mcx/t.desc`, `/etc/mcx/t.desc`, `./t.desc`, or `<cwd>/t.desc` (files are never merged; `path` values support `~` expansion). Each `[theme.<id>]` section has `name`, `path`, and optional `description`; `mcx theme list`, `mcx theme info`, and `mcx theme apply` read from this registry. `mcx theme apply` executes the file out-of-process via `python3 <path>`.
 
@@ -545,7 +547,7 @@ mcx tui install <path> [-n NAME] [-f]
 mcx tui remove <name>
 ```
 
-TUI management via `python::tui::TuiEngine`. TUIs are full-screen Python applications launched out-of-process with `mcx tui apply` (executes the file via `python3 <path>`). TUIs can be registered in the same `t.desc` file under `[tui.<id>]` sections (`name`, `path`, optional `description`) and managed with `mcx tui list`, `mcx tui apply`, `mcx tui install`, and `mcx tui remove`. `mcx theme list` and `mcx tui list` print a `Desc:` line for entries that have a description.
+TUI management via `cps::tui::TuiEngine`. TUIs are full-screen Python applications launched out-of-process with `mcx tui apply` (executes the file via `python3 <path>`). TUIs can be registered in the same `t.desc` file under `[tui.<id>]` sections (`name`, `path`, optional `description`) and managed with `mcx tui list`, `mcx tui apply`, `mcx tui install`, and `mcx tui remove`. `mcx theme list` and `mcx tui list` print a `Desc:` line for entries that have a description.
 
 ### `--service`
 
@@ -951,7 +953,7 @@ The `PackageEntity` struct (used for embedded `metadata.json` manifests) also ca
 | `commands` | `src/commands/` | CLI command implementations — one file per command group. Each command struct implements `execute()` taking `EngineContext`. | `InstallCommand`, `RemoveCommand`, `SyncCommand`, `SearchCommand`, `AddLocalCommand`, `CleanCommand`, `ConfigEditorCommand`, `SystemCommand`, `BinIndexCommand`, `AutoremoveCommand`, `ServiceCommand`, `HookPluginCommand` |
 | `core` | `src/core/` | Domain logic — architecture detection, persistence, solver, lifecycle, plugins, profiling, configuration, repositories, history, changelog, completion, declarative validation, self-update, vendor mirroring, workspace management, content-addressable store, cgroup control, generation-based rollback, security monitor, runtime isolation. | `Architecture` enum, config types, `Database`, `DependencySolver`, `LifecycleEngine`, `PluginRegistry`, `SystemProfile`, `HistoryEngine`, `RepositoryManager`, `CacheManager`, `PackageEntity`, `SelfUpdateManager`, `VendorManager`, `WorkspaceManager`, `ProfileValidator`, `CompletionEngine`, `CgroupController`, `RollbackManager`, `CasManager`, `SecurityMonitor`, `BinaryIndex`, `AutoRemoveAnalyzer` |
 | `config` | `src/core/config.rs` | Merged `config.ini` configuration — mmap-based engine params plus `[general]` and `[python]` sections. | `ConfigManager`, `MappedConfig`, `CalibratedParams`, `PythonConfig` |
-| `python` | `src/python/` | In-process Python subsystem via pyo3. | `PluginManager`, `ThemeEngine`, `TuiEngine` |
+| `cps` | external crate (`github.com/Mapuse/CPS`, pinned in `Cargo.toml`) | In-process Python subsystem via pyo3 — plugin runtime, theme engine, TUI launcher. | `PythonConfig`, `ThemeEngine`, `TuiEngine` |
 | `event` | `src/event.rs` | Event bus over Unix datagram socket. | `EventBus`, `start_listener()`, `emit_*` |
 | `network` | `src/network/` | Remote data operations — HTTP download via `reqwest` + `rustls-tls`, parallel index sync. | `Downloader`, `NetworkSyncEngine` |
 | `archive` | `src/archive/` | Artifact format handling — `.xcs` extraction, SHA-256 hashing, content verification. | `Extractor`, `HashVerifier`, `ContentValidator` |
@@ -1070,7 +1072,7 @@ The `PackageEntity` struct (used for embedded `metadata.json` manifests) also ca
                                 └ ➔ utils
 ```
 
-Every `commands::*` struct receives an `EngineContext` reference which gates access to all `core` subsystems. `core` depends on `network` (download during install/sync) and `archive` (extract/verify). `utils` is a leaf module used by both `commands` and `main`. `core::config` holds the merged `config.ini` (including `[general]`/`[python]`) consumed by `python` (in-process pyo3 plugins/themes/TUIs), while `event` runs the socket-backed event bus.
+Every `commands::*` struct receives an `EngineContext` reference which gates access to all `core` subsystems. `core` depends on `network` (download during install/sync) and `archive` (extract/verify). `utils` is a leaf module used by both `commands` and `main`. `core::config` holds the merged `config.ini` (including `[general]`/`[python]`) consumed by `cps` (the external in-process pyo3 plugins/themes/TUIs crate), while `event` runs the socket-backed event bus.
 
 ## Entry points
 
@@ -1160,14 +1162,17 @@ Every command struct implements `pub fn execute(&self, engine: &EngineContext) -
 | `[cache]` | `enabled`, `limit_bytes`, `max_size_mb`, `prune_age_hours`, `ttl_hours` | Cache tuning (merged from the former TOML schema). |
 | `[python]` | `enabled`, `theme`, `tui`, `plugins`, `fallback_on_error`, `venv_path`, `tui_mode` | Python subsystem config; parsed into `PythonConfig` by `ConfigManager::python()`. |
 
-## `python/` — In-process Python subsystem (pyo3)
+## `cps/` — Python subsystem (external crate)
 
-| File | Exports | Role |
-| ---- | ------- | ---- |
-| `mod.rs` | `PythonEngine`, `expand_tilde()` helpers | Shared path/venv helpers for the Python subsystem. |
-| `plugin.rs` | `PluginManager` (pyo3) | In-process Python plugin loading (`load_all`) and hook dispatch from `PythonConfig::plugins`. |
-| `theme.rs` | `ThemeEngine` | Python theme load/render/prompt (`apply`, `register`, `unregister`, `list`). |
-| `tui.rs` | `TuiEngine` | Python TUI launch (`run`). |
+The pyo3 runtime is no longer compiled into `mcx`; it lives in the external `cps` crate (`Cargo.toml` → `cps = { git = "https://github.com/Mapuse/CPS", rev = "<pinned>" }`). `mcx` re-exports `cps::PythonConfig` from `core::config` and drives the subsystem through it:
+
+| Source | Exports | Role |
+| ------ | ------- | ---- |
+| `cps` crate | `PythonConfig` | `[python]` section parsing (plugins, theme, tui, enabled, fallback_on_error, venv_path, tui_mode). |
+| `cps::plugin` | `PluginManager` (pyo3) | In-process Python plugin loading (`load_all`) and hook dispatch from `PythonConfig::plugins`. |
+| `cps::theme` | `ThemeEngine` | Python theme load/render/prompt (`apply`, `register`, `unregister`, `list`). |
+| `cps::tui` | `TuiEngine` | Python TUI launch (`run`). |
+| `core::plugin` | `PluginRegistry`, `PluginSlot`, `PluginManifest`, `PluginHook`, `PluginEvent` | Builtin trait-based plugins (`Fetcher`/`Builder`/`Packer`) and the subprocess `--hook-plugin` runner, kept local to `mcx`. |
 
 ## `event.rs` — Event bus
 
@@ -1253,6 +1258,7 @@ var/
 │   ├── plugins/        # Python plugin modules (`.py`) loaded in-process
 │   ├── binindex.json   # Binary→package index (built/queried by `--binindex`)
 │   ├── history.jsonl   # Append-only transaction history (`-H`, rollback)
+│   ├── lifecycle.jsonl # LifecycleEngine state machine journal (`transition` audit log)
 │   ├── vendor/         # Offline mirror cache (`--vendor`)
 │   └── sync/           # ETag sync state (`repo-sync`)
 ├── tmp/mcx/
@@ -2037,7 +2043,7 @@ venv_path =
 tui_mode = false
 ```
 
-The `[python]` section drives the in-process Python subsystem: `plugins` is a comma-separated list of `.py` module paths loaded by `python::plugin::PluginManager::load_all`, `theme`/`tui` select the active theme/TUI, and `enabled` gates the whole subsystem. It is parsed into `PythonConfig` via `ConfigManager::python()`.
+The `[python]` section drives the in-process Python subsystem (provided by the external `cps` crate): `plugins` is a comma-separated list of `.py` module paths loaded by `PluginManager::load_all`, `theme`/`tui` select the active theme/TUI, and `enabled` gates the whole subsystem. It is parsed into `PythonConfig` via `ConfigManager::python()`.
 
 ---
 
@@ -2193,6 +2199,7 @@ After using MCX (installing packages, syncing repos), the full tree is:
 │   │   │   └── <repo>.json # Downloaded index (JSON array of PackageMetadata)
 │   │   ├── vendor/         # Offline package mirror
 │   │   └── history.jsonl   # Append-only transaction changelog
+│   ├── lifecycle.jsonl     # LifecycleEngine state-machine audit log
 │   ├── cache/mcx/          # Downloaded .xcs package archives
 │   │   └── <pkg>-<ver>.xcs
 │   └── tmp/mcx/
@@ -2597,6 +2604,7 @@ make install DESTDIR=/mnt     # staged install
 ### Meson
 
 ```shell
+./gen-cross.sh                              # generate cross file for host arch
 meson setup builddir --cross-file /path/to/cross.txt --prefix=/system
 meson compile -C builddir
 meson install -C builddir
@@ -2606,7 +2614,7 @@ meson install -C builddir
 
 ```shell
 ninja -f build.ninja                       # build
-ninja -f build.ninja install DESTDIR=/mnt  # staged install
+DESTDIR=/mnt ninja -f build.ninja install  # staged install
 ```
 
 ### CMake

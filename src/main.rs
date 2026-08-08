@@ -3,7 +3,6 @@ pub mod network;
 pub mod archive;
 pub mod utils;
 pub mod commands;
-pub mod python;
 pub mod event;
 
 use std::collections::HashMap;
@@ -31,6 +30,20 @@ use crate::commands::search::SearchCommand;
 use crate::commands::service::ServiceCommand;
 use crate::commands::sync::SyncCommand;
 use crate::commands::system::SystemCommand;
+
+struct UiReporter;
+
+impl cps::Reporter for UiReporter {
+    fn info(&self, msg: &str) {
+        UserInterface::info(msg);
+    }
+    fn warning(&self, msg: &str) {
+        UserInterface::warning(msg);
+    }
+    fn error(&self, msg: &str) {
+        UserInterface::error(msg);
+    }
+}
 
 fn default_root() -> String {
     if is_root_process() {
@@ -352,6 +365,7 @@ struct EngineContext {
     plugin_registry: PluginRegistry,
     plugin_mgr: Arc<PluginManager>,
     sys_profile: SystemProfile,
+    lifecycle: crate::core::lifecycle::LifecycleEngine,
 }
 
 impl EngineContext {
@@ -373,14 +387,49 @@ impl EngineContext {
             Err(e) => { UserInterface::error(&format!("{}", e)); process::exit(1); }
         };
 
-        let _ = crate::core::lifecycle::LifecycleEngine::new();
+        let lifecycle = crate::core::lifecycle::LifecycleEngine::new_with_root(root);
 
-        Self { db, config_mgr, plugin_registry, plugin_mgr, sys_profile }
+        Self { db, config_mgr, plugin_registry, plugin_mgr, sys_profile, lifecycle }
+    }
+}
+
+fn record_lifecycle_install(ctx: &mut EngineContext, packages: &[String]) {
+    for pkg in packages {
+        if let Ok(meta) = ctx.db.get_package_manifest(pkg) {
+            if ctx.lifecycle.state(pkg).is_none() {
+                ctx.lifecycle.register_package(pkg, &meta.version);
+            }
+            for target in [
+                crate::core::lifecycle::PackageState::Resolved,
+                crate::core::lifecycle::PackageState::Staged,
+                crate::core::lifecycle::PackageState::Installed,
+                crate::core::lifecycle::PackageState::Active,
+            ] {
+                let _ = ctx.lifecycle.transition(pkg, target);
+            }
+        }
+    }
+}
+
+fn record_lifecycle_remove(ctx: &mut EngineContext, packages: &[String]) {
+    for pkg in packages {
+        if ctx.lifecycle.state(pkg).is_none() {
+            ctx.lifecycle.register_package(pkg, "");
+        }
+        for target in [
+            crate::core::lifecycle::PackageState::MarkedForRemoval,
+            crate::core::lifecycle::PackageState::Removed,
+            crate::core::lifecycle::PackageState::Purged,
+        ] {
+            let _ = ctx.lifecycle.transition(pkg, target);
+        }
     }
 }
 
 #[tokio::main]
 async fn main() {
+    cps::configure(cps::Options::new("mcx").with_reporter(Arc::new(UiReporter)));
+
     let args = Cli::parse();
     if args.version {
         UserInterface::version(&format!("{} {}", constants::APP_NAME, constants::APP_VERSION));
@@ -390,7 +439,7 @@ async fn main() {
 
     let root_path = PathBuf::from(&args.root);
 
-    let ctx = EngineContext::new(&root_path);
+    let mut ctx = EngineContext::new(&root_path);
 
     let _ = &ctx.config_mgr;
     let _ = &ctx.plugin_registry;
@@ -444,12 +493,33 @@ async fn main() {
                 .with_component_filter(filter);
             match cmd.execute(&packages).await {
                 Ok(_) => {
+                    record_lifecycle_install(&mut ctx, &packages);
+
+                    // CAS dedup must never touch host system directories. When
+                    // operating on the real root ("/"), dedup only the shared
+                    // libraries inside each package's active mirror instead.
                     let cas = crate::core::cas::CasStore::new(&root_path);
-                    if let Ok(stats) = cas.deduplicate_libraries(&root_path.join(constants::LIB_DIRS[0])) {
-                    UserInterface::cas(&format!(
-                        "CAS dedup: {} unique files, {} bytes saved",
-                        stats.unique_files, stats.bytes_saved
-                    ));
+                    let is_host_root = args.root == "/" || args.root.is_empty() || args.root == "/.";
+                    if is_host_root {
+                        let active_root = root_path.join(constants::PATH_ACTIVE);
+                        if let Ok(entries) = std::fs::read_dir(&active_root) {
+                            for entry in entries.flatten() {
+                                let pkg_dir = entry.path();
+                                if pkg_dir.is_dir()
+                                    && let Ok(stats) = cas.deduplicate_libraries(&pkg_dir) {
+                                        UserInterface::cas(&format!(
+                                            "CAS dedup {}: {} unique files, {} bytes saved",
+                                            entry.file_name().to_string_lossy(),
+                                            stats.unique_files, stats.bytes_saved
+                                        ));
+                                    }
+                            }
+                        }
+                    } else if let Ok(stats) = cas.deduplicate_libraries(&root_path.join(constants::LIB_DIRS[0])) {
+                        UserInterface::cas(&format!(
+                            "CAS dedup: {} unique files, {} bytes saved",
+                            stats.unique_files, stats.bytes_saved
+                        ));
                     }
                     UserInterface::separator();
 
@@ -528,6 +598,7 @@ async fn main() {
                 }));
             match cmd.execute(&packages, &cgroup_mgr, &security_mon) {
                 Ok(_) => {
+                    record_lifecycle_remove(&mut ctx, &packages);
                     let binindex = crate::core::binindex::BinaryIndex::new(args.root.clone(), Arc::clone(&ctx.db));
                     let _ = binindex.rebuild();
                     UserInterface::separator();
@@ -544,6 +615,7 @@ async fn main() {
                 .with_plugin_mgr(Arc::clone(&ctx.plugin_mgr));
             match cmd.execute(&packages, &cgroup_mgr, &security_mon) {
                 Ok(_) => {
+                    record_lifecycle_remove(&mut ctx, &packages);
                     let purge_dirs = vec![
                         root_path.join(constants::PATH_ACTIVE),
                         root_path.join(constants::PATH_CACHE),
@@ -617,6 +689,7 @@ async fn main() {
                     .with_plugin_mgr(Arc::clone(&ctx.plugin_mgr));
                 match cmd.execute(&pkgs).await {
                     Ok(_) => {
+                        record_lifecycle_install(&mut ctx, &pkgs);
                         UserInterface::success("Packages updated.");
                         run_autoremove_scan(&ctx.db, &args.root);
                     }
@@ -663,6 +736,7 @@ async fn main() {
                 .with_component_filter(filter);
             match cmd.execute(&pkgs_to_upgrade).await {
                 Ok(_) => {
+                    record_lifecycle_install(&mut ctx, &pkgs_to_upgrade);
                     let binindex = crate::core::binindex::BinaryIndex::new(args.root.clone(), Arc::clone(&ctx.db));
                     let _ = binindex.rebuild();
                     UserInterface::success("Upgrade complete.");
@@ -1325,7 +1399,7 @@ async fn main() {
             }
         }
         Commands::Plugin(cmd) => {
-            use crate::python::plugin::PluginManager;
+            use cps::plugin::PluginManager;
             match cmd {
                 PluginCommand::List => {
                     let plugins = PluginManager::list();
@@ -1416,7 +1490,7 @@ async fn main() {
             }
         }
         Commands::Theme(cmd) => {
-            use crate::python::theme::ThemeEngine;
+            use cps::theme::ThemeEngine;
             match cmd {
                 ThemeCommand::List => {
                     let themes = ThemeEngine::list();
@@ -1491,7 +1565,7 @@ async fn main() {
             }
         }
         Commands::Tui(cmd) => {
-            use crate::python::tui::TuiEngine;
+            use cps::tui::TuiEngine;
             match cmd {
                 TuiCommand::List => {
                     let tuis = TuiEngine::list();

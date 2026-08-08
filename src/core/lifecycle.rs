@@ -1,11 +1,17 @@
 use std::collections::HashMap;
+use std::fs::OpenOptions;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::{Result, anyhow};
+use serde::{Serialize, Deserialize};
+
+use crate::core::constants;
 
 static LIFECYCLE_GENERATION: AtomicU64 = AtomicU64::new(1);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum PackageState {
     Unknown,
     Resolved,
@@ -80,11 +86,22 @@ pub struct LifecycleEntry {
 
 type HookVec = Vec<Box<dyn Fn(&str, PackageState, PackageState) -> Result<()> + Send + Sync>>;
 
+#[derive(Serialize, Deserialize, Clone)]
+struct LifecycleJournalRecord {
+    package: String,
+    version: String,
+    state: PackageState,
+    checksum: Option<String>,
+    generation: u64,
+    timestamp: u64,
+}
+
 pub struct LifecycleEngine {
     entries: HashMap<String, LifecycleEntry>,
     transitions: Vec<LifecycleTransition>,
     pre_hooks: HookVec,
     post_hooks: HookVec,
+    journal: Option<PathBuf>,
 }
 
 impl Default for LifecycleEngine {
@@ -95,7 +112,60 @@ impl Default for LifecycleEngine {
 
 impl LifecycleEngine {
     pub fn new() -> Self {
-        Self { entries: HashMap::new(), transitions: Vec::new(), pre_hooks: Vec::new(), post_hooks: Vec::new() }
+        Self { entries: HashMap::new(), transitions: Vec::new(), pre_hooks: Vec::new(), post_hooks: Vec::new(), journal: None }
+    }
+
+    pub fn new_with_root(root: &Path) -> Self {
+        let mut engine = Self::new();
+        engine.journal = Some(root.join(constants::PATH_LIFECYCLE));
+        engine.load_journal();
+        engine
+    }
+
+    fn now_ts(&self) -> u64 {
+        SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs()
+    }
+
+    fn load_journal(&mut self) {
+        let Some(path) = self.journal.clone() else { return };
+        let Ok(content) = std::fs::read_to_string(&path) else { return };
+        for line in content.lines() {
+            if line.trim().is_empty() {
+                continue;
+            }
+            let Ok(record): Result<LifecycleJournalRecord, _> = serde_json::from_str(line) else { continue };
+            if record.generation >= LIFECYCLE_GENERATION.load(Ordering::Relaxed) {
+                LIFECYCLE_GENERATION.store(record.generation + 1, Ordering::Relaxed);
+            }
+            self.entries.insert(record.package.clone(), LifecycleEntry {
+                package: record.package,
+                version: record.version,
+                state: record.state,
+                generation: record.generation,
+                checksum: record.checksum,
+            });
+        }
+    }
+
+    fn append_journal(&self, package: &str, version: &str, state: PackageState, checksum: Option<String>, generation: u64) {
+        let Some(path) = &self.journal else { return };
+        let record = LifecycleJournalRecord {
+            package: package.to_string(),
+            version: version.to_string(),
+            state,
+            checksum,
+            generation,
+            timestamp: self.now_ts(),
+        };
+        if let Ok(payload) = serde_json::to_string(&record) {
+            if let Some(parent) = path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
+                let _ = writeln!(file, "{}", payload);
+                let _ = file.sync_all();
+            }
+        }
     }
 
     pub fn register_package(&mut self, name: &str, version: &str) -> u64 {
@@ -107,6 +177,7 @@ impl LifecycleEngine {
             generation: gen_id,
             checksum: None,
         });
+        self.append_journal(name, version, PackageState::Unknown, None, gen_id);
         gen_id
     }
 
@@ -150,6 +221,12 @@ impl LifecycleEngine {
             timestamp: ts,
             metadata: HashMap::new(),
         });
+
+        let version = entry.version.clone();
+        let checksum = entry.checksum.clone();
+        let generation = entry.generation;
+
+        self.append_journal(package, &version, target, checksum, generation);
 
         for hook in &self.post_hooks {
             hook(package, current, target)?;

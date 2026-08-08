@@ -48,7 +48,7 @@ memmap2 = "0.9.5"
 num_cpus = "1.16.0"
 rand = "0.9"
 toml = "1.1.3"
-pyo3 = "0.25"
+cps = { git = "https://github.com/Mapuse/CPS", rev = "d8d5f7da49917ea7636147b8a65f3541311c45ab" }
 
 [profile.release]
 opt-level = "z"

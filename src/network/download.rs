@@ -103,36 +103,87 @@ impl Downloader {
         let content_length = head_resp.headers().get(CONTENT_LENGTH)
             .and_then(|v| v.to_str().unwrap_or("").parse::<u64>().ok());
 
+        // Always download into a sibling `.part` file and only promote it to the
+        // final destination once the full body has been received, so an
+        // interrupted download never leaves a truncated file at `destination`.
+        let part_path = part_path_for(destination);
+
         if let Some(cl) = content_length {
             if accept_ranges && cl > constants::CHUNKED_DOWNLOAD_THRESHOLD {
-                self.download_chunked(url, destination, cl).await?;
+                self.download_chunked(url, &part_path, cl).await?;
             } else {
-                self.download_streaming(url, destination).await?;
+                let resume_from = self.partial_size(&part_path, accept_ranges).await;
+                self.download_streaming(url, &part_path, resume_from).await?;
             }
         } else {
-            self.download_streaming(url, destination).await?;
+            // Without a known length we cannot resume reliably.
+            self.download_streaming(url, &part_path, 0).await?;
         }
 
+        tokio::fs::rename(&part_path, destination).await?;
         Ok(new_etag)
     }
 
-    async fn download_streaming(&self, url: &str, destination: &Path) -> Result<()> {
-        let resp = self.client.get(url).send().await?;
-        let mut file = tokio::fs::File::create(destination).await?;
-        let mut stream = resp.bytes_stream();
-        use futures::TryStreamExt;
-        while let Some(chunk) = stream.try_next().await? {
-            file.write_all(&chunk).await?;
+    async fn partial_size(&self, part: &Path, accept_ranges: bool) -> u64 {
+        if !accept_ranges {
+            return 0;
         }
-        file.flush().await?;
-        Ok(())
+        match tokio::fs::metadata(part).await {
+            Ok(meta) => meta.len(),
+            Err(_) => 0,
+        }
     }
 
-    async fn download_chunked(&self, url: &str, destination: &Path, total_size: u64) -> Result<()> {
+    async fn download_streaming(&self, url: &str, part: &Path, mut resume_from: u64) -> Result<()> {
+        loop {
+            if resume_from == 0 {
+                let resp = self.client.get(url).send().await?;
+                let status = resp.status();
+                if !status.is_success() {
+                    return Err(anyhow!("HTTP {}", status));
+                }
+                let mut file = tokio::fs::File::create(part).await?;
+                write_stream(&mut file, resp).await?;
+                return Ok(());
+            }
+
+            let resp = self.client
+                .get(url)
+                .header(RANGE, format!("bytes={}-", resume_from))
+                .send()
+                .await?;
+
+            match resp.status() {
+                reqwest::StatusCode::PARTIAL_CONTENT => {
+                    let mut file = tokio::fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(part)
+                        .await?;
+                    write_stream(&mut file, resp).await?;
+                    return Ok(());
+                }
+                reqwest::StatusCode::RANGE_NOT_SATISFIABLE => {
+                    // Server no longer has the byte range (stale partial file);
+                    // restart the transfer from scratch.
+                    resume_from = 0;
+                }
+                status if status.is_success() => {
+                    // Server ignored the Range header; re-download completely.
+                    let mut file = tokio::fs::File::create(part).await?;
+                    write_stream(&mut file, resp).await?;
+                    return Ok(());
+                }
+                status => return Err(anyhow!("HTTP {}", status)),
+            }
+        }
+    }
+
+    async fn download_chunked(&self, url: &str, part: &Path, total_size: u64) -> Result<()> {
         let chunk_size = (total_size / self.max_concurrent_chunks).max(constants::MIN_CHUNK_SIZE);
         let file = Arc::new(Mutex::new(
-            OpenOptions::new().create(true).write(true).truncate(true).open(destination)
-                .with_context(|| format!("Failed to create {:?}", destination))?
+            OpenOptions::new().create(true).truncate(true).write(true).open(part)
+                .with_context(|| format!("Failed to create {:?}", part))?
         ));
         file.lock().await.set_len(total_size)?;
 
@@ -203,6 +254,22 @@ impl Downloader {
             .unwrap_or(false)
     }
 
+}
+
+fn part_path_for(destination: &Path) -> PathBuf {
+    let mut os_string = destination.as_os_str().to_os_string();
+    os_string.push(".part");
+    PathBuf::from(os_string)
+}
+
+async fn write_stream(file: &mut tokio::fs::File, resp: reqwest::Response) -> Result<()> {
+    use futures::TryStreamExt;
+    let mut stream = resp.bytes_stream();
+    while let Some(chunk) = stream.try_next().await? {
+        file.write_all(&chunk).await?;
+    }
+    file.flush().await?;
+    Ok(())
 }
 
 #[cfg(test)]

@@ -147,7 +147,7 @@ impl DependencySolver {
             }
         }
 
-        for (_lib, pkgs) in lib_to_pkgs.iter_mut() {
+        for pkgs in lib_to_pkgs.values_mut() {
             pkgs.sort();
             pkgs.dedup();
         }
@@ -391,7 +391,7 @@ impl DependencySolver {
             .filter(|meta| meta.pkg_name == package && semver_parse(&meta.version) > current_ver)
             .collect();
 
-        candidates.sort_by(|a, b| semver_parse(&b.version).cmp(&semver_parse(&a.version)));
+        candidates.sort_by_key(|b| std::cmp::Reverse(semver_parse(&b.version)));
 
         let best = candidates.into_iter().next()
             .ok_or_else(|| anyhow!("No upgrade available for '{}'", package))?;

@@ -16,6 +16,7 @@ use crate::archive::extract::Extractor;
 use crate::archive::hash::HashVerifier;
 use crate::core::constants;
 use crate::utils::ui::UserInterface;
+use rand::Rng;
 
 pub struct InstallCommand {
     root: String,
@@ -78,8 +79,12 @@ impl InstallCommand {
 
         for meta in &plan {
             if self.db.is_package_installed(&meta.pkg_name)? {
-                let active_dir = root_path.join(constants::PATH_ACTIVE).join(&meta.pkg_name);
-                if active_dir.exists() {
+                // Skip only when the installed version already satisfies the
+                // resolved target. An older installed version must be
+                // re-installed so `mcx install <pkg>` doubles as an upgrade.
+                if let Ok(installed) = self.db.get_package_manifest(&meta.pkg_name)
+                    && version_cmp(&installed.version, &meta.version) != std::cmp::Ordering::Less
+                {
                     continue;
                 }
             }
@@ -103,6 +108,8 @@ impl InstallCommand {
 
         let use_parallel = sys_profile.cpu_count >= constants::CPU_THRESHOLD_LOW && sys_profile.available_ram_mb >= constants::RAM_THRESHOLD_MEDIUM_MB;
 
+        let mut installed_files: std::collections::HashMap<String, Vec<PathBuf>> = std::collections::HashMap::new();
+
         if use_parallel {
             let mut handles = Vec::new();
             let filter_clone = self.component_filter.clone();
@@ -113,8 +120,12 @@ impl InstallCommand {
                 let ext = Extractor::new(&self.root);
                 let filter = filter_clone.clone();
 
-                handles.push(tokio::task::spawn_blocking(move || -> Result<()> {
-                    HashVerifier::verify_integrity(&path_clone, &meta_clone.checksum.kind, &meta_clone.checksum.value)?;
+                handles.push(tokio::task::spawn_blocking(move || -> Result<(String, Vec<PathBuf>)> {
+                    if let Err(e) = HashVerifier::verify_integrity(&path_clone, &meta_clone.checksum.kind, &meta_clone.checksum.value) {
+                        // Never keep a corrupt archive in the cache.
+                        let _ = fs::remove_file(&path_clone);
+                        return Err(e);
+                    }
                     let root_path = Path::new(&root);
                     let stage_base = root_path.join(constants::PATH_STAGE);
                     let installed_root = root_path.join(constants::PATH_ACTIVE);
@@ -123,24 +134,27 @@ impl InstallCommand {
                     if pkg_stage.exists() { fs::remove_dir_all(&pkg_stage)?; }
                     fs::create_dir_all(&pkg_stage)?;
 
+                    // Extract directly into the per-package stage directory.
+                    // Cross-package collisions are still rejected later by the
+                    // database transaction, so upgrade/reinstall overwrites of
+                    // this package's own files are allowed.
                     let extracted = ext.extract_zstd_archive(&path_clone, &pkg_stage)?;
-                    ext.verify_no_collisions(&extracted)?;
+                    let total_extracted = extracted.len();
 
-                    let files_to_install = if let Some(ref f) = filter {
+                    let files_to_install: Vec<PathBuf> = if let Some(ref f) = filter {
                         crate::core::component::filter_files_by_components(
                             &extracted,
                             &meta_clone.components,
                             f,
-                        ).into_iter().map(|p| p.to_string_lossy().to_string()).collect::<Vec<_>>()
+                        )
                     } else {
-                        extracted.iter().map(|p| p.to_string_lossy().to_string()).collect::<Vec<_>>()
+                        extracted
                     };
 
-                    for file in &extracted {
-                        let src = pkg_stage.join(file);
-                        let dest = pkg_stage.join(file);
-                        if let Some(parent) = dest.parent() { fs::create_dir_all(parent)?; }
-                        if src.is_file() { fs::copy(&src, &dest)?; }
+                    let skipped = total_extracted.saturating_sub(files_to_install.len());
+                    if skipped > 0 {
+                        UserInterface::info(&format!("{}: {} files skipped by component filter",
+                            meta_clone.pkg_name, skipped));
                     }
 
                     let pkg_active = installed_root.join(&meta_clone.pkg_name);
@@ -150,24 +164,23 @@ impl InstallCommand {
                     for file in &files_to_install {
                         let src = pkg_stage.join(file);
                         let dst = root_path.join(file);
-                        if let Some(parent) = dst.parent() { fs::create_dir_all(parent)?; }
                         if src.is_file() {
-                            std::io::copy(&mut fs::File::open(&src)?, &mut fs::File::create(&dst)?)?;
+                            atomic_copy(&src, &dst)?;
                         }
                         let dst_active = pkg_active.join(file);
-                        if let Some(parent) = dst_active.parent() { fs::create_dir_all(parent)?; }
                         if src.is_file() {
-                            std::io::copy(&mut fs::File::open(&src)?, &mut fs::File::create(&dst_active)?)?;
+                            atomic_copy(&src, &dst_active)?;
                         }
                     }
 
                     if stage_base.exists() { let _ = fs::remove_dir_all(&stage_base); }
-                    Ok(())
+                    Ok((meta_clone.pkg_name, files_to_install))
                 }));
             }
 
             for handle in handles {
-                handle.await.map_err(|e| anyhow!("Task failed: {}", e))??;
+                let (name, files) = handle.await.map_err(|e| anyhow!("Task failed: {}", e))??;
+                installed_files.insert(name, files);
             }
         } else {
             let ext = Extractor::new(&self.root);
@@ -175,37 +188,32 @@ impl InstallCommand {
             let installed_root = root_path.join(constants::PATH_ACTIVE);
 
             for (meta, path) in &pending {
-                HashVerifier::verify_integrity(path, &meta.checksum.kind, &meta.checksum.value)?;
+                if let Err(e) = HashVerifier::verify_integrity(path, &meta.checksum.kind, &meta.checksum.value) {
+                    let _ = fs::remove_file(path);
+                    return Err(e);
+                }
 
                 let pkg_stage = stage_dir.join(&meta.pkg_name);
                 if pkg_stage.exists() { fs::remove_dir_all(&pkg_stage)?; }
                 fs::create_dir_all(&pkg_stage)?;
 
-                let extracted = ext.extract_zstd_archive(path, &stage_dir)?;
-                ext.verify_no_collisions(&extracted)?;
+                let extracted = ext.extract_zstd_archive(path, &pkg_stage)?;
+                let total_extracted = extracted.len();
 
-                let files_to_install = if let Some(ref filter) = self.component_filter {
+                let files_to_install: Vec<PathBuf> = if let Some(ref filter) = self.component_filter {
                     crate::core::component::filter_files_by_components(
                         &extracted,
                         &meta.components,
                         filter,
-                    ).into_iter().map(|p| p.to_string_lossy().to_string()).collect::<Vec<_>>()
+                    )
                 } else {
-                    extracted.iter().map(|p| p.to_string_lossy().to_string()).collect::<Vec<_>>()
+                    extracted
                 };
 
-                let installed_count = files_to_install.len();
-                let skipped = extracted.len() - installed_count;
+                let skipped = total_extracted.saturating_sub(files_to_install.len());
                 if skipped > 0 {
                     UserInterface::info(&format!("{}: {} files skipped by component filter",
                         meta.pkg_name, skipped));
-                }
-
-                for file in &extracted {
-                    let src = stage_dir.join(file);
-                    let dest = pkg_stage.join(file);
-                    if let Some(parent) = dest.parent() { fs::create_dir_all(parent)?; }
-                    if src.is_file() { fs::copy(&src, &dest)?; }
                 }
 
                 let pkg_active = installed_root.join(&meta.pkg_name);
@@ -215,18 +223,17 @@ impl InstallCommand {
                 for file in &files_to_install {
                     let src = pkg_stage.join(file);
                     let dst = root_path.join(file);
-                    if let Some(parent) = dst.parent() { fs::create_dir_all(parent)?; }
                     if src.is_file() {
-                        std::io::copy(&mut fs::File::open(&src)?, &mut fs::File::create(&dst)?)?;
+                        atomic_copy(&src, &dst)?;
                     }
                     let dst_active = pkg_active.join(file);
-                    if let Some(parent) = dst_active.parent() { fs::create_dir_all(parent)?; }
                     if src.is_file() {
-                        std::io::copy(&mut fs::File::open(&src)?, &mut fs::File::create(&dst_active)?)?;
+                        atomic_copy(&src, &dst_active)?;
                     }
                 }
 
                 if stage_dir.exists() { let _ = fs::remove_dir_all(&stage_dir); }
+                installed_files.insert(meta.pkg_name.clone(), files_to_install);
             }
         }
 
@@ -265,7 +272,14 @@ impl InstallCommand {
 
         let mut transaction = self.db.begin_transaction()?;
         for (meta, _) in &pending {
-            transaction.register_package_placement(meta)?;
+            let mut meta_reg = meta.clone();
+            // Record only the files that were actually placed on the system so
+            // a component-filtered install never has remove/upgrade clean up
+            // files that were deliberately skipped.
+            if let Some(files) = installed_files.get(&meta.pkg_name) {
+                meta_reg.files = files.clone();
+            }
+            transaction.register_package_placement(&meta_reg)?;
         }
         transaction.commit()?;
 
@@ -300,5 +314,26 @@ impl InstallCommand {
             }
         }
     }
+}
+
+fn version_cmp(a: &str, b: &str) -> std::cmp::Ordering {
+    fn parse(s: &str) -> Vec<u64> {
+        s.trim_start_matches('v')
+            .split(|c: char| !c.is_ascii_digit())
+            .filter_map(|p| p.parse::<u64>().ok())
+            .collect()
+    }
+    parse(a).cmp(&parse(b))
+}
+
+fn atomic_copy(src: &Path, dst: &Path) -> Result<()> {
+    let parent = dst.parent()
+        .ok_or_else(|| anyhow!("No parent directory for {:?}", dst))?;
+    fs::create_dir_all(parent)?;
+    let name = dst.file_name().map(|n| n.to_string_lossy()).unwrap_or_default();
+    let tmp = parent.join(format!(".{}.mcx.{}.tmp", name, rand::rng().random_range(1_000_000_000u64..10_000_000_000)));
+    fs::copy(src, &tmp)?;
+    fs::rename(&tmp, dst)?;
+    Ok(())
 }
 
