@@ -13,7 +13,7 @@
 
 `▐▀` `-` `▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▌`
 
-The Package Manager of **`[Cudane]`** by **`[Mapuse]`** written in **`[Rust]`**, built for a full lifecycle and heavy workflows, no one needs a full-featured Package Manager in the same much of needing a Package Manager that just *`Works`*, but also no one want to be restricted, so it has a full **`[Python]`** Plugins and Theming with **`[No Limits]`**, you can design a full system inside **`[MCX]`** as a plugin, or design a full **`[TUI]`** with literally **`[any]`** library, the only limit is the **`[Python]`** Language itself.
+The Package Manager of **`[Cudane]`**, built for a full lifecycle and heavy workflows, no one needs a full-featured Package Manager in the same much of needing a Package Manager that just *`Works`*, but also no one want to be restricted, so it has a full **`[Python]`** Plugins and Theming with **`[No Limits]`**, you can design a full system inside **`[MCX]`** as a plugin, or design a full **`[TUI]`** with literally **`[any]`** library, the only limit is the **`[Python]`** Language itself.
 
 - **`[Version]`**: **`[7.0.0]`**
 
@@ -2582,7 +2582,7 @@ cargo +nightly -Zjson-target-spec -Zbuild-std build --release --target x86_64-un
 
 ## Installation
 
-All build systems auto-detect `x86_64`/`aarch64` and select the correct musl target. Cross-compilation files are in `env.mk`, `toolchain.cmake`, and `cross.txt` (generated via `gen-cross.sh`).
+All build systems auto-detect `x86_64`/`aarch64` and select the correct musl target. Cross-compilation files are in `env.mk`, `toolchain.cmake`, and `cross.txt` (generated via `scripts/crossgen.sh`).
 
 ### Cargo (direct)
 
@@ -2604,7 +2604,7 @@ make install DESTDIR=/mnt     # staged install
 ### Meson
 
 ```shell
-./gen-cross.sh                              # generate cross file for host arch
+./scripts/crossgen.sh                              # generate cross file for host arch
 meson setup builddir --cross-file /path/to/cross.txt --prefix=/system
 meson compile -C builddir
 meson install -C builddir
