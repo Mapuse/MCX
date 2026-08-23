@@ -1,6 +1,15 @@
 use anyhow::Result;
 use crate::core::db::Database;
 
+/// Canonical mcx subcommands (mirrors the Cli enum in main.rs).
+const SUBCOMMANDS: &[&str] = &[
+    "install", "add", "remove", "purge", "search", "update", "upgrade",
+    "query", "clean", "verify", "fix", "config", "history", "build",
+    "repo-add", "repo-remove", "repo-list", "repo-sync", "repo-enable",
+    "repo-disable", "repo-info", "self-update", "vendor", "completion",
+    "cgroup",
+];
+
 pub struct CompletionEngine {
     db: std::sync::Arc<Database>,
 }
@@ -11,14 +20,8 @@ impl CompletionEngine {
     }
 
     pub fn complete_subcommand(&self, current_token: &str) -> Vec<String> {
-        let subcommands = vec![
-            "install", "add", "remove", "search", "update",
-            "upgrade", "query", "clean", "verify", "fix-deps",
-            "config", "generate", "history", "rebuild", "audit"
-        ];
-
-        subcommands
-            .into_iter()
+        SUBCOMMANDS
+            .iter()
             .filter(|cmd| cmd.starts_with(current_token))
             .map(|cmd| cmd.to_string())
             .collect()
@@ -26,7 +29,7 @@ impl CompletionEngine {
 
     pub fn complete_installed_package(&self, current_token: &str) -> Result<Vec<String>> {
         let installed = self.db.get_all_installed_packages()?;
-        
+
         Ok(installed
             .into_iter()
             .filter(|pkg| pkg.pkg_name.starts_with(current_token))
@@ -36,7 +39,7 @@ impl CompletionEngine {
 
     pub fn complete_remote_package(&self, current_token: &str) -> Result<Vec<String>> {
         let available = self.db.get_all_available_packages()?;
-        
+
         Ok(available
             .into_iter()
             .filter(|pkg| pkg.pkg_name.starts_with(current_token))
@@ -49,83 +52,86 @@ impl CompletionEngine {
             "bash" => Ok(self.bash_template()),
             "zsh" => Ok(self.zsh_template()),
             "fish" => Ok(self.fish_template()),
-            _ => Err(anyhow::anyhow!("Unsupported target infrastructure shell type")),
+            _ => Err(anyhow::anyhow!("Unsupported shell type '{}' (expected bash, zsh, or fish)", shell_type)),
         }
     }
 
     fn bash_template(&self) -> String {
-        r#"_mcx_completions() {
-    local cur prev opts
+        let opts = SUBCOMMANDS.join(" ");
+        format!(
+            r#"_mcx_completions() {{
+    local cur
     COMPREPLY=()
-    cur="${COMP_WORDS[COMP_CWORD]}"
-    prev="${COMP_WORDS[COMP_CWORD-1]}"
-    opts="install add remove search update upgrade query clean verify fix-deps config generate history rebuild audit"
-
-    if [[ ${COMP_CWORD} -eq 1 ]] ; then
-        COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+    cur="${{COMP_WORDS[COMP_CWORD]}}"
+    if [[ ${{COMP_CWORD}} -eq 1 ]] ; then
+        COMPREPLY=( $(compgen -W "{opts}" -- "${{cur}}") )
         return 0
     fi
-}
-complete -F _mcx_completions mcx"# .to_string()
+}}
+complete -F _mcx_completions mcx"#
+        )
     }
 
     fn zsh_template(&self) -> String {
-        r#"#compdef mcx
-_mcx() {
-    local line
-    _arguments -C \
-        "1: :_mcx_commands" \
-        "*::arg:->args"
-
-    case $line[1] in
-        *)
-            _message "compiler completion dynamic engine active"
-            ;;
-    esac
-}
-_mcx_commands() {
-    local -a commands
-    commands=(
-        'install:Deploy assets into target node'
-        'add:Inject immediate structural block file'
-        'remove:Purge entity branch and link dependencies'
-        'search:Query index registry maps'
-        'update:Pull remote manifest mutations'
-        'upgrade:Execute global system alignment pipeline'
-        'query:Inspect specific ledger status node'
-        'clean:Evict transient caching files'
-        'verify:Audit file matrix allocations'
-        'fix-deps:Resolve dead link structures'
-        'config:Mutate baseline engine preferences'
-        'generate:Build structural template profiles'
-        'history:Roll back tracking timeline chains'
-        'rebuild:Synchronize system node to schema profile'
-        'audit:Evaluate neutrality metric baselines'
-    )
+        let mut out = String::from("#compdef mcx\n_mcx_commands() {\n    local -a commands\n    commands=(\n");
+        for cmd in SUBCOMMANDS {
+            out.push_str(&format!("        '{cmd}'\n"));
+        }
+        out.push_str(
+            r#"    )
     _describe "mcx commands" commands
 }
-_mcx"# .to_string()
+_mcx"#,
+        );
+        out
     }
 
     fn fish_template(&self) -> String {
-        r#"complete -c mcx -f
-complete -c mcx -n "__fish_use_subcommand" -a install -d 'Deploy assets into target node'
-complete -c mcx -n "__fish_use_subcommand" -a add -d 'Inject immediate structural block file'
-complete -c mcx -n "__fish_use_subcommand" -a remove -d 'Purge entity branch and link dependencies'
-complete -c mcx -n "__fish_use_subcommand" -a search -d 'Query index registry maps'
-complete -c mcx -n "__fish_use_subcommand" -a update -d 'Pull remote manifest mutations'
-complete -c mcx -n "__fish_use_subcommand" -a upgrade -d 'Execute global system alignment pipeline'
-complete -c mcx -n "__fish_use_subcommand" -a query -d 'Inspect specific ledger status node'
-complete -c mcx -n "__fish_use_subcommand" -a clean -d 'Evict transient caching files'
-complete -c mcx -n "__fish_use_subcommand" -a verify -d 'Audit file matrix allocations'
-complete -c mcx -n "__fish_use_subcommand" -a fix-deps -d 'Resolve dead link structures'
-complete -c mcx -n "__fish_use_subcommand" -a repo-add -d 'Add a repository'
-complete -c mcx -n "__fish_use_subcommand" -a repo-remove -d 'Remove a repository'
-complete -c mcx -n "__fish_use_subcommand" -a repo-list -d 'List configured repositories'
-complete -c mcx -n "__fish_use_subcommand" -a config -d 'Mutate baseline engine preferences'
-complete -c mcx -n "__fish_use_subcommand" -a generate -d 'Build structural template profiles'
-complete -c mcx -n "__fish_use_subcommand" -a history -d 'Roll back tracking timeline chains'
-complete -c mcx -n "__fish_use_subcommand" -a rebuild -d 'Synchronize system node to schema profile'
-complete -c mcx -n "__fish_use_subcommand" -a audit -d 'Evaluate neutrality metric baselines'"# .to_string()
+        let mut out = String::from("complete -c mcx -f\n");
+        for cmd in SUBCOMMANDS {
+            out.push_str(&format!("complete -c mcx -n \"__fish_use_subcommand\" -a {cmd}\n"));
+        }
+        out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    fn test_db(root: &std::path::Path) -> std::sync::Arc<Database> {
+        let _ = fs::remove_dir_all(root);
+        std::fs::create_dir_all(root).unwrap();
+        std::sync::Arc::new(Database::open(root).expect("open test database"))
+    }
+
+    #[test]
+    fn test_completions_list_real_subcommands() {
+        let root = std::env::temp_dir().join(format!("mcx_test_completion_{}", std::process::id()));
+        let engine = CompletionEngine::new(test_db(&root));
+        let all = engine.complete_subcommand("");
+        for expected in ["install", "remove", "repo-add", "self-update", "cgroup"] {
+            assert!(all.iter().any(|c| c == expected), "missing subcommand {}", expected);
+        }
+        // Phantom commands from the old templates must be gone.
+        for phantom in ["generate", "rebuild", "audit", "fix-deps"] {
+            assert!(!all.iter().any(|c| c == phantom), "phantom subcommand {}", phantom);
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn test_shell_templates_contain_real_subcommands() {
+        let root = std::env::temp_dir().join(format!("mcx_test_completion_tpl_{}", std::process::id()));
+        let engine = CompletionEngine::new(test_db(&root));
+        for shell in ["bash", "zsh", "fish"] {
+            let script = engine.generate_shell_blueprint(shell).expect(shell);
+            assert!(script.contains("repo-sync"), "{} template missing repo-sync", shell);
+            assert!(script.contains("self-update"), "{} template missing self-update", shell);
+            assert!(!script.contains("fix-deps"), "{} template contains phantom fix-deps", shell);
+        }
+        assert!(engine.generate_shell_blueprint("tcsh").is_err());
+        let _ = fs::remove_dir_all(&root);
     }
 }

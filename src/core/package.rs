@@ -101,7 +101,9 @@ fn parse_version(version: &str) -> Vec<VersionSegment> {
         .collect()
 }
 
-fn compare_versions(a: &str, b: &str) -> std::cmp::Ordering {
+/// Canonical version comparison used across the codebase (install checks,
+/// solver candidate ordering, constraint evaluation).
+pub fn compare_versions(a: &str, b: &str) -> std::cmp::Ordering {
     let a_parts = parse_version(a);
     let b_parts = parse_version(b);
     let len = a_parts.len().max(b_parts.len());
@@ -155,5 +157,42 @@ mod tests {
         assert!(pkg("1.2.0-alpha").matches_constraint("<", "1.2.0-beta").expect("constraint eval"));
         assert!(pkg("1.2.0-beta").matches_constraint("<", "1.2.0-rc1").expect("constraint eval"));
         assert!(pkg("1.rc1").matches_constraint("<", "1.0").expect("constraint eval"));
+    }
+
+    /// Equivalence test for the consolidated implementation: the old
+    /// numeric-tuple comparisons used by install/solver must behave like
+    /// compare_versions for plain release versions.
+    #[test]
+    fn test_compare_versions_matches_legacy_semantics() {
+        use std::cmp::Ordering;
+
+        // Old solver/install semantics: split on non-digits, compare tuples,
+        // shorter tuple that is a prefix compares as Less (no zero padding).
+        fn legacy_parse(version: &str) -> Vec<u64> {
+            version.trim_start_matches('v')
+                .split(|c: char| !c.is_ascii_digit())
+                .filter_map(|s| s.parse::<u64>().ok())
+                .collect()
+        }
+
+        // Numeric ordering must match the old solver/install tuple compare
+        // (prefix-equality cases like 1.0 vs 1.0.0 are intentionally improved
+        // below via zero padding).
+        let cases = [
+            ("1.0", "1.0"), ("1.2", "1.10"),
+            ("2.1", "1.9"), ("v3.4", "3.4"), ("1.2.3", "1.2.4"),
+        ];
+        for (a, b) in cases {
+            assert_eq!(
+                compare_versions(a, b),
+                legacy_parse(a).cmp(&legacy_parse(b)),
+                "compare_versions({a}, {b}) diverged from legacy semantics"
+            );
+        }
+
+        // Zero-padding behaviour for equal versions.
+        assert_eq!(compare_versions("1.0", "1.0.0"), Ordering::Equal);
+        assert_eq!(compare_versions("1.2", "1.10"), Ordering::Less);
+        assert_eq!(compare_versions("2.1", "1.9"), Ordering::Greater);
     }
 }

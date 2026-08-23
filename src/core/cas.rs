@@ -45,12 +45,26 @@ impl CasStore {
             if cas_path.exists() {
                 let original_len = lib_path.metadata().map(|m| m.len()).unwrap_or(0);
                 fs::remove_file(lib_path)?;
-                fs::hard_link(&cas_path, lib_path)
-                    .with_context(|| format!("Failed to hard-link CAS copy to {:?}", lib_path))?;
+                if let Err(e) = fs::hard_link(&cas_path, lib_path) {
+                    // Cross-device or unsupported: fall back to a plain copy
+                    // instead of failing the whole dedup pass.
+                    fs::copy(&cas_path, lib_path).with_context(|| {
+                        format!("Failed to restore {:?} from CAS (hard-link error: {})", lib_path, e)
+                    })?;
+                }
                 stats.bytes_saved += original_len;
             } else {
                 fs::create_dir_all(&cas_subdir)?;
-                fs::copy(lib_path, &cas_path)?;
+                // Stage through a unique temp file + rename: a crash mid-copy
+                // must never leave truncated bytes under a content-addressed
+                // name that later runs would trust blindly.
+                let tmp = cas_subdir.join(format!(".{}.tmp-{}", hash, std::process::id()));
+                fs::copy(lib_path, &tmp)
+                    .with_context(|| format!("Failed to stage CAS entry for {:?}", lib_path))?;
+                if let Err(e) = fs::rename(&tmp, &cas_path) {
+                    let _ = fs::remove_file(&tmp);
+                    return Err(e).context("Failed to promote staged CAS entry");
+                }
                 seen_hashes.insert(hash, lib_path.clone());
             }
         }
@@ -131,5 +145,41 @@ impl CasStore {
             hasher.update(&buffer[..n]);
         }
         Ok(format!("{:x}", hasher.finalize()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_cas_dedup_roundtrip_is_content_safe() {
+        let root = std::env::temp_dir().join(format!("mcx_test_cas_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let pkg_root = root.join("pkg");
+        fs::create_dir_all(pkg_root.join("usr/lib")).unwrap();
+        let payload: Vec<u8> = (0..64_000u32).map(|i| (i % 251) as u8).collect();
+        for name in ["libone.so", "libtwo.so"] {
+            fs::write(pkg_root.join("usr/lib").join(name), &payload).unwrap();
+        }
+
+        let cas = CasStore::new(&root);
+        cas.initialize().unwrap();
+
+        // First pass stores the blob; second pass links from the store.
+        let first = cas.deduplicate_libraries(&pkg_root).expect("first dedup");
+        assert_eq!(first.total_files, 2);
+        assert_eq!(first.unique_files, 1, "identical blobs stored once");
+        let second = cas.deduplicate_libraries(&pkg_root).expect("second dedup");
+        assert!(second.bytes_saved > 0, "second pass must reclaim space via links");
+
+        // Content must survive both passes byte-for-byte.
+        for name in ["libone.so", "libtwo.so"] {
+            let back = fs::read(pkg_root.join("usr/lib").join(name)).unwrap();
+            assert_eq!(back, payload, "{} corrupted by dedup", name);
+        }
+        let stats = cas.cas_stats().unwrap();
+        assert_eq!(stats.unique_files, 1, "store holds exactly one blob");
+        let _ = fs::remove_dir_all(&root);
     }
 }

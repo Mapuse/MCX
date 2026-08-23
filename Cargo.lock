@@ -244,8 +244,8 @@ checksum = "773648b94d0e5d620f64f280777445740e61fe701025087ec8b57f45c791888b"
 
 [[package]]
 name = "cps"
-version = "0.7.0"
-source = "git+https://github.com/Mapuse/CPS?rev=d8d5f7da49917ea7636147b8a65f3541311c45ab#d8d5f7da49917ea7636147b8a65f3541311c45ab"
+version = "0.0.70"
+source = "git+https://github.com/Mapuse/CPS?rev=c4ba21e185398558052acec3f0b4619b4e8c0678#c4ba21e185398558052acec3f0b4619b4e8c0678"
 dependencies = [
  "clap",
  "pyo3",
@@ -340,7 +340,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -382,7 +382,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -1574,7 +1574,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -1881,7 +1881,7 @@ dependencies = [
  "getrandom 0.4.2",
  "once_cell",
  "rustix 1.1.4",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]

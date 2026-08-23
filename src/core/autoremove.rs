@@ -252,12 +252,15 @@ impl AutoRemoveAnalyzer {
         let root = std::path::Path::new(&self.root);
         let active_dir = root.join(constants::PATH_ACTIVE);
         let services_dir = root.join(constants::CESAR_SERVICES_DIR);
-        let mut tx = self.db.begin_transaction()?;
-
-        let mut removed = 0usize;
 
         let removed_set: HashSet<&str> = report.orphaned_packages.iter().map(|o| o.name.as_str()).collect();
         let shared_files = self.compute_shared_files(&removed_set)?;
+
+        // Phase 1 — inside the transaction: clear ACTIVE mirrors, collect
+        // residue paths and drop registry entries. Live files are untouched.
+        let mut tx = self.db.begin_transaction()?;
+        let mut removed = 0usize;
+        let mut pending_deletions: Vec<Vec<PathBuf>> = Vec::new();
 
         for orphan in &report.orphaned_packages {
             if !self.db.is_package_installed(&orphan.name)? {
@@ -272,26 +275,9 @@ impl AutoRemoveAnalyzer {
 
             let pkg_active = active_dir.join(&orphan.name);
             if pkg_active.exists() {
-                let _ = fs::remove_dir_all(&pkg_active);
-            }
-
-            let mut file_paths: Vec<PathBuf> = manifest.files.iter()
-                .map(|f| root.join(f))
-                .collect();
-            file_paths.sort_by_key(|a| Reverse(a.components().count()));
-
-            for abs in &file_paths {
-                if !abs.exists() || shared_files.contains(abs) {
-                    continue;
-                }
-                if abs.is_dir() {
-                    if let Ok(mut entries) = fs::read_dir(abs)
-                        && entries.next().is_none() {
-                            let _ = fs::remove_dir(abs);
-                        }
-                } else {
-                    let _ = fs::remove_file(abs);
-                }
+                tx.backup_file(&pkg_active)?;
+                fs::remove_dir_all(&pkg_active)
+                    .with_context(|| format!("Failed to purge package root: {:?}", pkg_active))?;
             }
 
             for svc in manifest.all_services() {
@@ -301,13 +287,39 @@ impl AutoRemoveAnalyzer {
                 }
             }
 
+            let mut file_paths: Vec<PathBuf> = manifest.files.iter()
+                .map(|f| root.join(f))
+                .collect();
+            file_paths.sort_by_key(|a| Reverse(a.components().count()));
+            pending_deletions.push(file_paths);
+
             tx.stage_package_removal(&orphan.name)?;
             removed += 1;
 
             UserInterface::success(&format!("Removed '{}' {}", orphan.name, orphan.version));
         }
 
+        // Commit the registry change first so a mid-deletion failure can
+        // never leave the database owning already-deleted files.
         tx.commit()?;
+
+        // Phase 2 — post-commit: delete live residue from disk.
+        for file_paths in &pending_deletions {
+            for abs in file_paths {
+                if !abs.exists() || shared_files.contains(abs) {
+                    continue;
+                }
+                if abs.is_dir() {
+                    if let Ok(mut entries) = fs::read_dir(abs)
+                        && entries.next().is_none() {
+                            let _ = fs::remove_dir(abs);
+                        }
+                } else if let Err(e) = fs::remove_file(abs) {
+                    UserInterface::warning(&format!("Failed to remove {:?}: {}", abs, e));
+                }
+            }
+        }
+
         Ok(removed)
     }
 

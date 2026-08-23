@@ -102,7 +102,7 @@ impl FromStr for Architecture {
         match s.trim().to_lowercase().as_str() {
             "x86_64" | "amd64" | "x64" | "x86" => Ok(Architecture::Amd64),
             "aarch64" | "arm64" | "armv8" | "armv8l" => Ok(Architecture::Arm64),
-            "native" | "" => Ok(Architecture::Native),
+            "native" => Ok(Architecture::Native),
             _ => Err(anyhow!("Unsupported architecture: '{}'. Expected amd64/x86_64, arm64/aarch64, or native", s)),
         }
     }

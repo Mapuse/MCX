@@ -6,40 +6,8 @@ use std::sync::Arc;
 use std::sync::RwLock;
 use anyhow::{Result, Context, anyhow};
 use serde::{Serialize, Deserialize};
-use crate::core::arch::Architecture;
 use super::constants;
 
-// ── Builtin plugin traits ─────────────────────────────────────────────────
-
-fn shell_escape(s: &str) -> String {
-    let mut escaped = String::with_capacity(s.len() + 2);
-    escaped.push('\'');
-    for c in s.chars() {
-        if c == '\'' {
-            escaped.push_str("'\\''");
-        } else {
-            escaped.push(c);
-        }
-    }
-    escaped.push('\'');
-    escaped
-}
-
-pub trait Fetcher: Send + Sync {
-    fn fetch(&self, source: &str, destination: &str) -> Result<()>;
-    fn name(&self) -> &'static str;
-}
-
-pub trait Builder: Send + Sync {
-    fn build(&self, build_cmd: &str, source_dir: &str, dest_dir: &str, build_type: &str) -> Result<String>;
-    fn name(&self) -> &'static str;
-}
-
-pub trait Packer: Send + Sync {
-    fn pack(&self, source_dir: &str, output_path: &str, compression_level: i32) -> Result<()>;
-    fn unpack(&self, archive_path: &str, dest_dir: &str) -> Result<Vec<String>>;
-    fn name(&self) -> &'static str;
-}
 
 // ── PluginSlot: hot-swappable wrapper ──────────────────────────────────────
 
@@ -62,190 +30,6 @@ impl<T: ?Sized + Send + Sync> PluginSlot<T> {
         *guard = new_plugin;
         old
     }
-}
-
-// ── Builtin registry ───────────────────────────────────────────────────────
-
-pub struct PluginRegistry {
-    fetchers: Vec<PluginSlot<dyn Fetcher>>,
-    builders: Vec<PluginSlot<dyn Builder>>,
-    packers: Vec<PluginSlot<dyn Packer>>,
-}
-
-impl Default for PluginRegistry {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl PluginRegistry {
-    pub fn new() -> Self {
-        Self { fetchers: Vec::new(), builders: Vec::new(), packers: Vec::new() }
-    }
-
-    pub fn register_fetcher(&mut self, f: Arc<dyn Fetcher>) {
-        self.fetchers.push(PluginSlot::new(f));
-    }
-
-    pub fn register_builder(&mut self, b: Arc<dyn Builder>) {
-        self.builders.push(PluginSlot::new(b));
-    }
-
-    pub fn register_packer(&mut self, p: Arc<dyn Packer>) {
-        self.packers.push(PluginSlot::new(p));
-    }
-
-    pub fn resolve_fetcher(&self, name: &str) -> Option<Arc<dyn Fetcher>> {
-        self.fetchers.iter().find(|s| s.load().name() == name).map(|s| s.load())
-    }
-
-    pub fn resolve_builder(&self, name: &str) -> Option<Arc<dyn Builder>> {
-        self.builders.iter().find(|s| s.load().name() == name).map(|s| s.load())
-    }
-
-    pub fn resolve_packer(&self, name: &str) -> Option<Arc<dyn Packer>> {
-        self.packers.iter().find(|s| s.load().name() == name).map(|s| s.load())
-    }
-
-    pub fn swap_fetcher(&self, name: &str, new: Arc<dyn Fetcher>) -> bool {
-        for slot in &self.fetchers {
-            if slot.load().name() == name { slot.swap(new); return true; }
-        }
-        false
-    }
-
-    pub fn swap_builder(&self, name: &str, new: Arc<dyn Builder>) -> bool {
-        for slot in &self.builders {
-            if slot.load().name() == name { slot.swap(new); return true; }
-        }
-        false
-    }
-
-    pub fn swap_packer(&self, name: &str, new: Arc<dyn Packer>) -> bool {
-        for slot in &self.packers {
-            if slot.load().name() == name { slot.swap(new); return true; }
-        }
-        false
-    }
-
-    pub fn default_fetcher(&self) -> Option<Arc<dyn Fetcher>> { self.fetchers.first().map(|s| s.load()) }
-    pub fn default_builder(&self) -> Option<Arc<dyn Builder>> { self.builders.first().map(|s| s.load()) }
-    pub fn default_packer(&self) -> Option<Arc<dyn Packer>> { self.packers.first().map(|s| s.load()) }
-
-    pub fn fetcher_count(&self) -> usize { self.fetchers.len() }
-    pub fn builder_count(&self) -> usize { self.builders.len() }
-    pub fn packer_count(&self) -> usize { self.packers.len() }
-}
-
-// Builtin implementations
-
-pub struct CurlFetcher;
-impl Fetcher for CurlFetcher {
-    fn fetch(&self, source: &str, destination: &str) -> Result<()> {
-        fs::create_dir_all(destination)?;
-        let status = Command::new(constants::TOOL_CURL)
-            .arg("-fSL")
-            .arg("-o")
-            .arg("/dev/stdout")
-            .arg(source)
-            .stdout(Stdio::piped())
-            .status()
-            .or_else(|_| {
-                Command::new(constants::TOOL_SH)
-                    .arg("-c")
-                    .arg(format!("curl -fSL -o /dev/stdout -- {}", shell_escape(source)))
-                    .status()
-            })?;
-        if !status.success() {
-            let status2 = Command::new(constants::TOOL_GIT).arg("clone").arg("--depth").arg("1").arg(source).arg(destination).status()?;
-            if !status2.success() { anyhow::bail!("Failed to fetch source: {}", source); }
-        }
-        Ok(())
-    }
-    fn name(&self) -> &'static str { "curl" }
-}
-
-pub struct DefaultBuilder;
-impl Builder for DefaultBuilder {
-    fn build(&self, build_cmd: &str, source_dir: &str, _dest_dir: &str, build_type: &str) -> Result<String> {
-        if constants::BUILD_SKIP_KEYWORDS.contains(&build_cmd.trim()) {
-            return Ok(String::new());
-        }
-        if build_cmd.is_empty() && build_type == "rust" {
-            let target = std::env::var(constants::CARGO_BUILD_TARGET_ENV)
-                .unwrap_or_else(|_| Architecture::host().target_triple().to_string());
-            let rust_target = std::env::var(constants::CARGO_RUST_TARGET_ENV)
-                .unwrap_or_else(|_| target.clone());
-            let output = Command::new(constants::TOOL_SH)
-                .arg("-c")
-                .arg(format!(
-                    "RUSTFLAGS=\"-C linker=clang -C link-arg=-target -C link-arg={} \
-                     -C link-arg=--sysroot={} -C target-feature=+crt-static\" \
-                     cargo build --target {} --release 2>&1",
-                    shell_escape(&target), constants::CARGO_SYSROOT, shell_escape(&rust_target)
-                ))
-                .current_dir(source_dir).output()?;
-            let log = String::from_utf8_lossy(&output.stdout).to_string();
-            if !output.status.success() { anyhow::bail!("Build failed:\n{}", log); }
-            return Ok(log);
-        }
-        if !build_cmd.is_empty() {
-            let env_target = std::env::var(constants::CARGO_BUILD_TARGET_ENV).unwrap_or_default();
-            let cmd = if env_target.is_empty() {
-                format!("({}) 2>&1", build_cmd)
-            } else {
-                format!("CUDANE_TARGET={} ({}) 2>&1", shell_escape(&env_target), build_cmd)
-            };
-            let output = Command::new(constants::TOOL_SH).arg("-c").arg(&cmd).current_dir(source_dir).output()?;
-            let log = String::from_utf8_lossy(&output.stdout).to_string();
-            if !output.status.success() { anyhow::bail!("Build failed:\n{}", log); }
-            return Ok(log);
-        }
-        Ok(String::new())
-    }
-    fn name(&self) -> &'static str { "default" }
-}
-
-pub struct ZstdPacker;
-impl Packer for ZstdPacker {
-    fn pack(&self, source_dir: &str, output_path: &str, compression_level: i32) -> Result<()> {
-        let _ = fs::remove_file(output_path);
-        let status = Command::new(constants::TOOL_TAR)
-            .arg("-c")
-            .arg("-C").arg(source_dir)
-            .arg(".")
-            .stdout(Stdio::piped())
-            .spawn()
-            .and_then(|child| {
-                Command::new(constants::TOOL_ZSTD)
-                    .arg(format!("-{}", compression_level))
-                    .arg("-o").arg(output_path)
-                    .stdin(child.stdout.expect("child stdout"))
-                    .status()
-            })?;
-        if !status.success() { anyhow::bail!("Failed to pack archive: {}", output_path); }
-        Ok(())
-    }
-    fn unpack(&self, archive_path: &str, dest_dir: &str) -> Result<Vec<String>> {
-        fs::create_dir_all(dest_dir)?;
-        let file = fs::File::open(archive_path)?;
-        let decoder = zstd::stream::Decoder::new(file)?;
-        let mut archive = tar::Archive::new(decoder);
-        let mut files = Vec::new();
-        for entry in archive.entries()? {
-            let mut entry = entry?;
-            let path = entry.path()?.to_path_buf();
-            if path.is_absolute() || path.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
-                anyhow::bail!("Path traversal detected: {:?}", path);
-            }
-            let dest = std::path::Path::new(dest_dir).join(&path);
-            if let Some(parent) = dest.parent() { fs::create_dir_all(parent)?; }
-            entry.unpack(&dest)?;
-            files.push(path.to_string_lossy().to_string());
-        }
-        Ok(files)
-    }
-    fn name(&self) -> &'static str { "zstd" }
 }
 
 // ── External plugin system (Python) ────────────────────────────────────────
@@ -351,11 +135,67 @@ pub struct PluginEntry {
 
 // ── PythonPlugin ───────────────────────────────────────────────────────────
 
+/// Runs a command to completion with a hard timeout. Input is written to the
+/// child's stdin; stdout/stderr are drained concurrently so large outputs
+/// cannot deadlock the pipe buffers. On expiry the child is killed.
+fn run_with_timeout(cmd: &mut Command, input: &[u8], timeout: std::time::Duration) -> Result<std::process::Output> {
+    use std::io::{Read, Write};
+    use std::time::Instant;
+
+    let mut child = cmd
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .with_context(|| format!("Failed to spawn {:?}", cmd.get_program()))?;
+    let mut stdin = child.stdin.take().context("child has no stdin")?;
+    let mut stdout = child.stdout.take().context("child has no stdout")?;
+    let mut stderr = child.stderr.take().context("child has no stderr")?;
+
+    std::thread::scope(|scope| -> Result<std::process::Output> {
+        scope.spawn(move || {
+            let _ = stdin.write_all(input);
+            // stdin dropped here, closing the pipe
+        });
+        let out_thread = scope.spawn(move || {
+            let mut buf = Vec::new();
+            let _ = stdout.read_to_end(&mut buf);
+            buf
+        });
+        let err_thread = scope.spawn(move || {
+            let mut buf = Vec::new();
+            let _ = stderr.read_to_end(&mut buf);
+            buf
+        });
+
+        let deadline = Instant::now() + timeout;
+        let status = loop {
+            match child.try_wait()? {
+                Some(status) => break status,
+                None => {
+                    if Instant::now() >= deadline {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        anyhow::bail!("Plugin execution timed out after {}s", timeout.as_secs());
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(25));
+                }
+            }
+        };
+
+        let stdout_buf = out_thread.join().unwrap_or_default();
+        let stderr_buf = err_thread.join().unwrap_or_default();
+        Ok(std::process::Output { status, stdout: stdout_buf, stderr: stderr_buf })
+    })
+}
+
 #[derive(Debug, Clone)]
 pub struct PythonPlugin {
     name: String,
     pub path: PathBuf,
     pub aliases: HashMap<String, String>,
+    /// Hooks this plugin actually implements (probed via AST at load time).
+    hooks: std::collections::HashSet<PluginHook>,
 }
 
 impl PythonPlugin {
@@ -363,23 +203,41 @@ impl PythonPlugin {
         if !path.exists() {
             return Err(anyhow!("Plugin file not found: {:?}", path));
         }
-        let path_str = path.to_string_lossy();
-        let check_script = format!(
-            "compile(open('{}').read(), '{}', 'exec')",
-            path_str.replace('\'', "\\'"),
-            path_str.replace('\'', "\\'"),
+
+        // Syntax check + hook discovery in one interpreter run: parse the
+        // file's AST (no code execution) and list defined function names.
+        // Paths are passed as argv — never interpolated into script text.
+        let probe_script = concat!(
+            "import ast, sys\n",
+            "src = open(sys.argv[1], encoding='utf-8').read()\n",
+            "tree = ast.parse(src)\n",
+            "names = sorted({n.name for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))})\n",
+            "print('\\n'.join(names))\n",
         );
-        let output = Command::new(constants::TOOL_PYTHON3)
-            .arg("-c")
-            .arg(&check_script)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .output()
-            .with_context(|| format!("Failed to run python3 for syntax check of {:?}", path))?;
+        let mut probe_cmd = Command::new(constants::TOOL_PYTHON3);
+        probe_cmd.arg("-c").arg(probe_script).arg(path);
+        let output = run_with_timeout(
+            &mut probe_cmd,
+            b"",
+            std::time::Duration::from_secs(constants::DEFAULT_PLUGIN_TIMEOUT_SECS),
+        )
+        .with_context(|| format!("Failed to run python3 for syntax check of {:?}", path))?;
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             anyhow::bail!("Python syntax error in {:?}: {}", path, stderr.trim());
         }
+        let defined: std::collections::HashSet<String> = String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .map(|l| l.trim().to_string())
+            .filter(|l| !l.is_empty())
+            .collect();
+
+        let hooks = ALL_HOOKS
+            .iter()
+            .filter(|h| defined.contains(h.function_name()))
+            .copied()
+            .collect();
+
         let file_stem = path.file_stem()
             .unwrap_or_default()
             .to_string_lossy()
@@ -388,6 +246,7 @@ impl PythonPlugin {
             name: file_stem,
             path: path.to_path_buf(),
             aliases: HashMap::new(),
+            hooks,
         })
     }
 
@@ -399,21 +258,37 @@ impl PythonPlugin {
     pub fn name(&self) -> &str { &self.name }
     pub fn path(&self) -> &Path { &self.path }
 
+    /// The set of hooks this plugin implements.
+    pub fn hooks(&self) -> &std::collections::HashSet<PluginHook> { &self.hooks }
+
+    /// True when the plugin defines the handler for `hook`.
+    pub fn supports_hook(&self, hook: PluginHook) -> bool {
+        self.hooks.contains(&hook)
+    }
+
     pub fn run(&self, event_json: &str) -> Result<PluginResult> {
-        let path_str = self.path.to_string_lossy();
-        let escaped_event = event_json.replace('\'', "\\'");
-        let script = format!(
-            r#"import json, sys; MCX_EVENT = json.loads('{}'); exec(open('{}').read())"#,
-            escaped_event,
-            path_str.replace('\'', "\\'"),
+        // The runner reads the event from stdin and takes all paths via argv;
+        // nothing user-controlled is ever interpolated into script text.
+        const RUNNER: &str = concat!(
+            "import json, sys\n",
+            "MCX_EVENT = json.load(sys.stdin)\n",
+            "sys.path.insert(0, sys.argv[1])\n",
+            "exec(compile(open(sys.argv[2], encoding='utf-8').read(), sys.argv[2], 'exec'))\n",
         );
-        let output = Command::new(constants::TOOL_PYTHON3)
-            .arg("-c")
-            .arg(&script)
-            .current_dir(self.path.parent().unwrap_or(Path::new(".")))
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .output()?;
+        let plugin_dir = self.path.parent().unwrap_or(Path::new(".")).to_string_lossy().to_string();
+
+        let mut cmd = Command::new(constants::TOOL_PYTHON3);
+        cmd.arg("-c")
+            .arg(RUNNER)
+            .arg(&*plugin_dir)
+            .arg(&self.path)
+            .current_dir(self.path.parent().unwrap_or(Path::new(".")));
+        let output = run_with_timeout(
+            &mut cmd,
+            event_json.as_bytes(),
+            std::time::Duration::from_secs(constants::DEFAULT_PLUGIN_TIMEOUT_SECS),
+        )?;
+
         let stdout = String::from_utf8_lossy(&output.stdout).to_string();
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
         if output.status.success() {
@@ -433,6 +308,16 @@ impl PythonPlugin {
     }
 
     pub fn run_hook(&self, event: &PluginEvent) -> Result<PluginResult> {
+        if let Some(hook) = PluginHook::from_str(&event.hook)
+            && !self.supports_hook(hook)
+        {
+            anyhow::bail!(
+                "Plugin '{}' does not implement {} (no on_{}_ function)",
+                self.name,
+                hook.as_str(),
+                hook.as_str().replace('-', "_")
+            );
+        }
         let event_dict = serde_json::to_string(&serde_json::json!({
             "hook": event.hook,
             "package": event.package,
@@ -494,10 +379,10 @@ impl PluginManager {
                     plugin.aliases = entry.aliases.clone();
                     let idx = loaded.len();
                     loaded_paths.insert(plugin.path.clone(), idx);
-                    loaded.push(plugin);
-                    for hook in ALL_HOOKS.iter() {
+                    for hook in plugin.hooks() {
                         hook_map.entry(*hook).or_default().push(idx);
                     }
+                    loaded.push(plugin);
                 }
                 Err(e) => {
                     eprintln!("Warning: failed to load plugin '{}' from {:?}: {}", entry.name, path, e);
@@ -537,10 +422,10 @@ impl PluginManager {
                     Ok(plugin) => {
                         let idx = loaded.len();
                         loaded_paths.insert(plugin.path.clone(), idx);
-                        loaded.push(plugin);
-                        for hook in ALL_HOOKS.iter() {
+                        for hook in plugin.hooks() {
                             hook_map.entry(*hook).or_default().push(idx);
                         }
+                        loaded.push(plugin);
                     }
                     Err(e) => {
                         eprintln!("Warning: failed to load plugin from {:?}: {}", path, e);
@@ -589,10 +474,10 @@ impl PluginManager {
                     plugin.aliases = entry.aliases.clone();
                     let idx = inner.plugins.len();
                     inner.loaded_paths.insert(plugin.path.clone(), idx);
-                    inner.plugins.push(plugin);
-                    for hook in ALL_HOOKS.iter() {
+                    for hook in plugin.hooks() {
                         inner.hook_map.entry(*hook).or_default().push(idx);
                     }
+                    inner.plugins.push(plugin);
                     new_count += 1;
                 }
                 Err(e) => {
@@ -657,6 +542,126 @@ const ALL_HOOKS: &[PluginHook] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn python3_available() -> bool {
+        Command::new(constants::TOOL_PYTHON3)
+            .arg("--version")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    }
+
+    // ── run_with_timeout ─────────────────────────────────────────────────────
+
+    #[test]
+    fn test_run_with_timeout_kills_hung_child() {
+        if !python3_available() {
+            eprintln!("skipping: python3 not available");
+            return;
+        }
+        let mut cmd = Command::new(constants::TOOL_PYTHON3);
+        cmd.arg("-c").arg("import time; time.sleep(60)");
+        let started = std::time::Instant::now();
+        let result = run_with_timeout(&mut cmd, b"", std::time::Duration::from_millis(300));
+        assert!(result.is_err(), "hung child must be killed and reported");
+        assert!(started.elapsed() < std::time::Duration::from_secs(10));
+    }
+
+    // ── PythonPlugin::load (AST probe) ──────────────────────────────────────
+
+    #[test]
+    fn test_plugin_load_probes_implemented_hooks_only() {
+        if !python3_available() {
+            eprintln!("skipping: python3 not available");
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("mcx_test_plugin_probe_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let py = dir.join("probe.py");
+        fs::write(
+            &py,
+            "def on_pre_install(event):\n    return None\n\ndef helper():\n    pass\n",
+        )
+        .unwrap();
+
+        let plugin = PythonPlugin::load(&py).expect("load plugin");
+        assert!(plugin.supports_hook(PluginHook::PreInstall));
+        assert!(!plugin.supports_hook(PluginHook::PostInstall), "unimplemented hooks must not be registered");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_plugin_load_rejects_syntax_errors() {
+        if !python3_available() {
+            eprintln!("skipping: python3 not available");
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("mcx_test_plugin_syntax_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let py = dir.join("broken.py");
+        fs::write(&py, "def broken(:\n    pass\n").unwrap();
+        assert!(PythonPlugin::load(&py).is_err());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    // ── PythonPlugin::run (stdin event) ─────────────────────────────────────
+
+    #[test]
+    fn test_plugin_run_receives_event_via_stdin() {
+        if !python3_available() {
+            eprintln!("skipping: python3 not available");
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("mcx_test_plugin_run_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let py = dir.join("echo.py");
+        fs::write(
+            &py,
+            concat!(
+                "import json\n",
+                "print(json.dumps({'success': True, 'message': MCX_EVENT['package']}))\n",
+            ),
+        )
+        .unwrap();
+        let plugin = PythonPlugin::load(&py).expect("load plugin");
+
+        let result = plugin
+            .run(r#"{"package": "pkg-with-'quote'", "hook": "post-install", "root": "/", "timestamp": "t"}"#)
+            .expect("run plugin");
+        assert!(result.success);
+        assert_eq!(result.message.as_deref(), Some("pkg-with-'quote'"));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_run_hook_refuses_unimplemented_hook() {
+        if !python3_available() {
+            eprintln!("skipping: python3 not available");
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("mcx_test_plugin_refuse_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let py = dir.join("noop.py");
+        fs::write(&py, "x = 1\n").unwrap();
+        let plugin = PythonPlugin::load(&py).expect("load plugin");
+        let event = PluginEvent {
+            hook: "pre-install".to_string(),
+            package: None,
+            root: "/".to_string(),
+            timestamp: "t".to_string(),
+        };
+        let err = plugin.run_hook(&event).expect_err("missing handler must be refused");
+        assert!(err.to_string().contains("does not implement"));
+        let _ = fs::remove_dir_all(&dir);
+    }
 
     // ── PluginHook ───────────────────────────────────────────────────────────
 

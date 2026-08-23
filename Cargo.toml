@@ -11,7 +11,7 @@ path = "src/main.rs"
 
 [features]
 default = []
-plugins = []
+python = ["cps/python"]
 
 [dependencies]
 tokio = { version = "1.44.0", features = ["full"] }
@@ -48,7 +48,7 @@ memmap2 = "0.9.5"
 num_cpus = "1.16.0"
 rand = "0.9"
 toml = "1.1.3"
-cps = { git = "https://github.com/Mapuse/CPS", rev = "d8d5f7da49917ea7636147b8a65f3541311c45ab" }
+cps = { git = "https://github.com/Mapuse/CPS", rev = "c4ba21e185398558052acec3f0b4619b4e8c0678", default-features = false }
 
 [profile.release]
 opt-level = "z"

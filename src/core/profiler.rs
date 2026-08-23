@@ -2,7 +2,6 @@ use std::fs;
 use std::path::Path;
 use std::time::{Instant, Duration};
 use crate::core::arch::Architecture;
-use crate::core::config::CalibratedParams;
 use crate::core::constants;
 
 #[derive(Debug, Clone)]
@@ -16,6 +15,32 @@ pub struct SystemProfile {
     pub is_musl: bool,
     pub has_sandbox: bool,
     pub architecture: Architecture,
+}
+
+#[derive(Debug, Clone)]
+pub struct CalibratedParams {
+    pub thread_pool_size: usize,
+    pub concurrent_downloads: usize,
+    pub zstd_level: i32,
+    pub io_parallelism: usize,
+    pub network_latency_adaptive: bool,
+    pub latency_threshold_ms: u64,
+    pub bandwidth_threshold_kbps: u64,
+}
+
+impl Default for CalibratedParams {
+    fn default() -> Self {
+        let cpus = num_cpus::get();
+        Self {
+            thread_pool_size: cpus,
+            concurrent_downloads: cpus.min(constants::DEFAULT_MAX_CONCURRENT_DOWNLOADS),
+            zstd_level: constants::DEFAULT_ZSTD_LEVEL,
+            io_parallelism: cpus.max(2),
+            network_latency_adaptive: true,
+            latency_threshold_ms: constants::DEFAULT_LATENCY_THRESHOLD_MS,
+            bandwidth_threshold_kbps: constants::DEFAULT_BANDWIDTH_THRESHOLD_KBPS,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -115,53 +140,32 @@ impl SystemProfile {
                 .unwrap_or(false)
     }
 
-    pub fn calibrate_params(&self) -> CalibratedParams {
-        let thread_pool_size = if self.cpu_count >= constants::CPU_THRESHOLD_HIGH {
-            self.cpu_count
-        } else if self.available_ram_mb < constants::RAM_THRESHOLD_MEDIUM_MB {
-            (self.cpu_count / 2).max(1)
-        } else {
-            self.cpu_count
-        };
-        CalibratedParams {
-            thread_pool_size,
-            concurrent_downloads: if self.available_ram_mb < constants::RAM_THRESHOLD_LOW_MB { 2 }
-                else if self.available_ram_mb < constants::RAM_THRESHOLD_HIGH_MB { 4 }
-                else { self.cpu_count.min(constants::DEFAULT_MAX_CONCURRENT_DOWNLOADS) },
-            zstd_level: if self.cpu_count >= constants::CPU_THRESHOLD_MEDIUM { constants::HIGH_ZSTD_LEVEL } else { constants::DEFAULT_ZSTD_LEVEL },
-            io_parallelism: thread_pool_size.max(constants::CONCURRENCY_SCALE_DOWN),
-            network_latency_adaptive: true,
-            latency_threshold_ms: constants::DEFAULT_LATENCY_THRESHOLD_MS,
-            bandwidth_threshold_kbps: constants::DEFAULT_BANDWIDTH_THRESHOLD_KBPS,
-        }
-    }
 }
 
 pub struct NetworkProber;
 
 impl NetworkProber {
     pub async fn probe(target: &str, timeout: Duration) -> NetworkProfile {
+        use futures_util::future::join_all;
+
         let client = reqwest::Client::builder()
             .timeout(timeout)
             .no_proxy()
             .build()
             .ok();
-        let mut samples: Vec<f64> = Vec::with_capacity(constants::PROBE_SAMPLES);
-        if let Some(ref c) = client {
-            for _ in 0..constants::PROBE_SAMPLES {
-                let t0 = Instant::now();
-                match c.head(target).send().await {
-                    Ok(r) => {
-                        let elapsed = t0.elapsed().as_secs_f64() * 1000.0;
-                        samples.push(elapsed);
-                        let _ = r.headers().get(reqwest::header::CONTENT_LENGTH)
-                            .and_then(|v| v.to_str().ok())
-                            .and_then(|s| s.parse::<u64>().ok());
-                    }
-                    Err(_) => { samples.push(timeout.as_secs_f64() * 1000.0); }
-                }
+        // All samples run concurrently: total wall time is one round trip
+        // instead of PROBE_SAMPLES serialized requests.
+        let futures = (0..constants::PROBE_SAMPLES).map(|_| async {
+            let Some(ref c) = client else {
+                return timeout.as_secs_f64() * 1000.0;
+            };
+            let t0 = Instant::now();
+            match c.head(target).send().await {
+                Ok(_) => t0.elapsed().as_secs_f64() * 1000.0,
+                Err(_) => timeout.as_secs_f64() * 1000.0,
             }
-        }
+        });
+        let samples: Vec<f64> = join_all(futures).await;
         let latency_ms = if samples.is_empty() { constants::DEFAULT_FALLBACK_LATENCY } else { samples.iter().sum::<f64>() / samples.len() as f64 };
         let rtt_jitter_ms = if samples.len() < 2 { 0.0 } else {
             let mean = latency_ms;
@@ -247,42 +251,8 @@ impl DecisionEngine {
         decisions
     }
 
-    pub fn compute_thread_pool_size(sys: &SystemProfile, decisions: &[DecisionMatrix]) -> usize {
-        for d in decisions {
-            match d.verdict {
-                HeuristicVerdict::ScaleUpThreadPool => {
-                    let scaled = (sys.cpu_count as f64 * constants::THREAD_SCALE_FACTOR).ceil() as usize;
-                    return scaled.min(sys.cpu_count * constants::THREAD_SCALE_MAX);
-                }
-                HeuristicVerdict::ScaleDownThreadPool => {
-                    return (sys.cpu_count / 2).max(1);
-                }
-                _ => {}
-            }
-        }
-        sys.cpu_count
-    }
-
     pub fn should_use_parallel(decisions: &[DecisionMatrix]) -> bool {
         decisions.iter().any(|d| d.verdict == HeuristicVerdict::UseParallel)
             && !decisions.iter().any(|d| d.verdict == HeuristicVerdict::UseSequential)
-    }
-}
-
-pub struct AutoHealer;
-
-impl AutoHealer {
-    pub fn detect_latency_spike(current_latency: f64, baseline: f64) -> f64 {
-        if baseline > 0.0 { current_latency / baseline } else { 1.0 }
-    }
-
-    pub fn hotswap_decision(spike_ratio: f64) -> HeuristicVerdict {
-        if spike_ratio > constants::LATENCY_SPIKE_CRITICAL {
-            HeuristicVerdict::UseFallbackRepo
-        } else if spike_ratio > constants::LATENCY_SPIKE_WARNING {
-            HeuristicVerdict::ScaleUpThreadPool
-        } else {
-            HeuristicVerdict::UsePrimaryRepo
-        }
     }
 }

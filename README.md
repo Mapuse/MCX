@@ -58,7 +58,6 @@ The Package Manager of **`[Cudane]`**, built for a full lifecycle and heavy work
   - [**`[Vendor (offline mirror)]`**](#vendor-offline-mirror)
   - [**`[Completion engine]`**](#completion-engine)
   - [**`[Network downloader]`**](#network-downloader)
-  - [**`[Network sync engine (ETag conditional sync)]`**](#network-sync-engine-etag-conditional-sync)
   - [**`[Integrity scanner (async verify & repair)]`**](#integrity-scanner-async-verify--repair)
   - [**`[Binary index (`--binindex`)]`**](#binary-index---binindex)
   - [**`[Auto-remove (`--autoremove`)]`**](#auto-remove---autoremove)
@@ -195,7 +194,7 @@ mcx --update <package>...
 mcx refresh <package>...
 ```
 
-Without package arguments: triggers `SyncCommand` which calls `NetworkSyncEngine` to download all configured repository indexes in parallel.
+Without package arguments: triggers `SyncCommand`, which syncs all enabled repository indexes in parallel via `RepositoryManager::sync_all_parallel` and rebuilds the available-package index in a single transaction.
 
 With package arguments: delegates to `InstallCommand`, resolving and installing the specified packages.
 
@@ -357,7 +356,7 @@ Calls `SystemCommand::rebuild(&config)` to rebuild or align the system from a de
 
 ### Blueprint file format
 
-The blueprint is a JSON file describing the target system state. `mcx -b <path>` reads it, computes the diff against the current installed packages, and runs install/remove to converge.
+The blueprint is a JSON file describing the target system state. `mcx -b <path>` reads it, computes the diff against the current installed packages, and runs install/remove to converge. INI-style profiles (`version =` / `architecture =` / `packages =` keys) are also accepted; the format is sniffed automatically.
 
 ```json
 {
@@ -444,7 +443,7 @@ After every `install` and `remove` operation, if `etc/mcx/profile.ini` exists, M
 mcx --self-update
 ```
 
-Iterates over every configured repository (`repo.ini`), constructs the URL `<repo-url>/system/bin/mcx`, downloads the pre-built binary, verifies it via `--version`, and performs an atomic rename over `/system/bin/mcx`. Falls through to the next repository on failure; exits with an error if no repo succeeds.
+Iterates over every configured repository (`repo.ini`), constructs the URL `<repo-url>/system/bin/mcx`, fetches the published `<url>.sha256` digest, and stages the payload inside a root-owned `var/tmp/mcx/` directory (mode 0700, unique file name). The staged bytes are SHA-256-verified against the published digest before the executable bit is set; repositories that publish no checksum are refused. After a `--version` probe, the verified binary is promoted through a same-filesystem atomic rename onto `/system/bin/mcx`. Falls through to the next repository on failure; exits with an error if no repo succeeds.
 
 ### `--vendor`
 
@@ -454,7 +453,7 @@ mcx --vendor remove <package>
 mcx --vendor list
 ```
 
-Manages an offline package mirror in `var/lib/mcx/vendor/`. When vendored packages are present, `mcx -i` can operate without network access by sourcing from the vendor store.
+Manages an offline package mirror in `var/lib/mcx/vendor/` (archives named `<package>-<version>.xcs` or bare `<package>.xcs`). When installing, `mcx -i` resolves each package from the download cache first, then the vendor mirror, and only hits the network as a last resort — so fully vendored sets install with no network access.
 
 ### `--completion`
 
@@ -752,7 +751,6 @@ Edit `etc/mcx/repo.ini` directly with any text editor. The file is managed throu
                        │  ├─ manifest.rs  │  ManifestParser
                        │  ├─ graph.rs     │  DepGraph
                        │  ├─ transaction  │  PackageTransaction
-                       │  ├─ cache.rs     │  CacheManager
                        │  ├─ cas.rs       │  Content-addressable library dedup
                        │  ├─ cgroup.rs    │  cgroup v2 resource control
                        │  ├─ security.rs  │  SecurityMonitor, PluginSlot runtime isolation
@@ -951,12 +949,11 @@ The `PackageEntity` struct (used for embedded `metadata.json` manifests) also ca
 | Module | Path | Responsibility | Public surface |
 | ------ | ---- | -------------- | -------------- |
 | `commands` | `src/commands/` | CLI command implementations — one file per command group. Each command struct implements `execute()` taking `EngineContext`. | `InstallCommand`, `RemoveCommand`, `SyncCommand`, `SearchCommand`, `AddLocalCommand`, `CleanCommand`, `ConfigEditorCommand`, `SystemCommand`, `BinIndexCommand`, `AutoremoveCommand`, `ServiceCommand`, `HookPluginCommand` |
-| `core` | `src/core/` | Domain logic — architecture detection, persistence, solver, lifecycle, plugins, profiling, configuration, repositories, history, changelog, completion, declarative validation, self-update, vendor mirroring, workspace management, content-addressable store, cgroup control, generation-based rollback, security monitor, runtime isolation. | `Architecture` enum, config types, `Database`, `DependencySolver`, `LifecycleEngine`, `PluginRegistry`, `SystemProfile`, `HistoryEngine`, `RepositoryManager`, `CacheManager`, `PackageEntity`, `SelfUpdateManager`, `VendorManager`, `WorkspaceManager`, `ProfileValidator`, `CompletionEngine`, `CgroupController`, `RollbackManager`, `CasManager`, `SecurityMonitor`, `BinaryIndex`, `AutoRemoveAnalyzer` |
-| `config` | `src/core/config.rs` | Merged `config.ini` configuration — mmap-based engine params plus `[general]` and `[python]` sections. | `ConfigManager`, `MappedConfig`, `CalibratedParams`, `PythonConfig` |
+| `core` | `src/core/` | Domain logic — architecture detection, persistence, solver, lifecycle, plugins, profiling, configuration, repositories, history, changelog, completion, declarative validation, self-update, vendor mirroring, workspace management, content-addressable store, cgroup control, generation-based rollback, security monitor, runtime isolation. | `Architecture` enum, config types, `Database`, `DependencySolver`, `LifecycleEngine`, `PluginManager`, `SystemProfile`, `HistoryEngine`, `RepositoryManager`, `PackageEntity`, `SelfUpdateManager`, `VendorManager`, `WorkspaceManager`, `ProfileValidator`, `CompletionEngine`, `CgroupController`, `RollbackManager`, `CasStore`, `SecurityMonitor`, `BinaryIndex`, `AutoRemoveAnalyzer` |
+| `config` | `src/core/config.rs` | Owned INI-style `config.ini` / `repo.ini` configuration plus `[python]` section mapping. | `ConfigManager`, `MappedConfig`, `PythonConfig` |
 | `cps` | external crate (`github.com/Mapuse/CPS`, pinned in `Cargo.toml`) | In-process Python subsystem via pyo3 — plugin runtime, theme engine, TUI launcher. | `PythonConfig`, `ThemeEngine`, `TuiEngine` |
-| `event` | `src/event.rs` | Event bus over Unix datagram socket. | `EventBus`, `start_listener()`, `emit_*` |
-| `network` | `src/network/` | Remote data operations — HTTP download via `reqwest` + `rustls-tls`, parallel index sync. | `Downloader`, `NetworkSyncEngine` |
-| `archive` | `src/archive/` | Artifact format handling — `.xcs` extraction, SHA-256 hashing, content verification. | `Extractor`, `HashVerifier`, `ContentValidator` |
+| `network` | `src/network/` | Remote data operations — HTTP(S) download via `reqwest` + `rustls-tls`. | `Downloader` |
+| `archive` | `src/archive/` | Artifact format handling — `.xcs` extraction with link-target validation, SHA-256 hashing. | `Extractor`, `HashVerifier` |
 | `utils` | `src/utils/` | Shared infrastructure — terminal output. | `UserInterface` |
 | `main` / `lib` | `src/main.rs`, `src/lib.rs` | Entry point, CLI parsing, public re-exports. | `Cli`, `Commands`, `EngineContext` |
 
@@ -990,10 +987,10 @@ The `PackageEntity` struct (used for embedded `metadata.json` manifests) also ca
   1. clap::Parser::parse() → Cli { root, Commands::Install(…) }
   2. EngineContext::new(root):
      a. SystemProfile::probe() — read /proc/cpuinfo, /proc/meminfo
-     b. ConfigManager::new(root) — mmap config.ini + repo.ini,
-        auto-generate defaults if absent, calibrate() → CalibratedParams
-     c. PluginRegistry::new() — register CurlFetcher, DefaultBuilder,
-        ZstdPacker as built-in plugins
+     b. ConfigManager::new(root) — read config.ini + repo.ini,
+        auto-generate defaults if absent
+     c. PluginManager::new(root) — load Python plugins from
+        var/lib/mcx/plugins or p.desc config
       d. Database::open(root) — open LMDB environment at
          var/lib/mcx/data/; create three named databases
      e. LifecycleEngine::new() — load transition rules, hook chains
@@ -1037,9 +1034,7 @@ The `PackageEntity` struct (used for embedded `metadata.json` manifests) also ca
   ╔════════════════════╗
   ║  VERIFY / CLEANUP  ║
   ╚════════════════════╝
-  - ContentValidator::validate(manifest, root) → Result
-  - CacheManager::prune() — evict old .xcs files
-  - AutoHealer::diagnose() — check for common misconfigurations
+  - IntegrityScanner::verify_all() — per-file integrity report
 ```
 
 ## Auto-calibration
@@ -1078,7 +1073,7 @@ Every `commands::*` struct receives an `EngineContext` reference which gates acc
 
 - **`[src/main.rs]`**
   - `Cli` struct (clap `#[derive(Parser)]`) — defines `--root` global flag and the full `Commands` enum (package, repository, platform, and Python subcommands).
-  - `EngineContext::new(root)` — constructs the shared environment holding `Database`, `ConfigManager` (mmap, lifetime-tracked), `PluginRegistry`, `SystemProfile`, `DecisionEngine`, `NetworkProber`.
+  - `EngineContext::new(root)` — constructs the shared environment holding `Database`, `ConfigManager`, `PluginManager`, `SystemProfile`, and lifecycle engine.
   - Match on `Commands` variant → dispatch to `command.execute(&engine)`.
   - Output via `UserInterface` methods.
 
@@ -1127,13 +1122,12 @@ Every command struct implements `pub fn execute(&self, engine: &EngineContext) -
 | `graph.rs` | `DepGraph` | DAG of package dependencies and conflicts. | — |
 | `transaction.rs` | `PackageTransaction` | Transaction log for install/remove operations. | — |
 | `history.rs` | `HistoryEngine` | Transaction history; rollback to ID. | `database.rs` |
-| `cache.rs` | `CacheManager` | On-disk `.xcs` cache; age/size pruning. | — |
 | `changelog.rs` | `ChangelogManager` | Append-only changelog writer. | — |
 | `completion.rs` | `CompletionEngine` | Shell-completion generation (bash/zsh/fish). | — |
 | `declarative.rs` | `ProfileValidator` | Validate declarative system blueprints. | — |
 | `lifecycle.rs` | `LifecycleEngine`, `PackageState`, `DependencyGraph`, `OrphanSet` | State machine: Unknown→Resolved→Staged→Installed→Active→MarkedForRemoval→Removed→Purged. Pre/post hooks, audit history. | `database.rs` |
 | `package.rs` | `PackageEntity` | Unified package representation across all stages. | — |
-| `plugin.rs` | `PluginRegistry`, `PluginSlot<T>`, `Fetcher`, `Builder`, `Packer`, `CurlFetcher`, `DefaultBuilder`, `ZstdPacker`, `PythonPlugin`, `PluginManager`, `PluginHook`, `PluginEvent`, `PluginResult`, `PluginConfig` | Lock-free plugin hot-swap via `RwLock<Arc<T>>`. Python-based external plugin system with `PluginManager`, TOML config (`p.desc`), and subprocess execution. | — |
+| `plugin.rs` | `PluginSlot<T>`, `PythonPlugin`, `PluginManager`, `PluginHook`, `PluginEvent`, `PluginResult`, `PluginConfig` | Lock-free policy hot-swap via `RwLock<Arc<T>>`. Python-based external plugin system with `PluginManager`, TOML config (`p.desc`), AST-probed hook registration, stdin event delivery, and a hard execution timeout. | — |
 | `constants.rs` | All centralized constants | Paths, URLs, thresholds, tool names, ELF format constants, UI widths, DB sizes, Python plugin template — every hardcoded value in one place. | `PATH_ACTIVE`, `PATH_CACHE`, `DEFAULT_NETWORK_TIMEOUT_SECS`, `PLUGIN_CONFIG_FILE`, and 100+ other constants |
 | `profiler.rs` | `SystemProfile`, `DecisionEngine`, `AutoHealer`, `NetworkProber` | Host profiling, heuristic decisions, network latency probing. | — |
 | `update.rs` | `SelfUpdateManager` | GitHub Releases check + binary self-replace. | `network::download` |
@@ -1164,7 +1158,7 @@ Every command struct implements `pub fn execute(&self, engine: &EngineContext) -
 
 ## `cps/` — Python subsystem (external crate)
 
-The pyo3 runtime is no longer compiled into `mcx`; it lives in the external `cps` crate (`Cargo.toml` → `cps = { git = "https://github.com/Mapuse/CPS", rev = "<pinned>" }`). `mcx` re-exports `cps::PythonConfig` from `core::config` and drives the subsystem through it:
+The pyo3 runtime is no longer compiled into `mcx`; it lives in the external `cps` crate (`Cargo.toml` → `cps = { git = "https://github.com/Mapuse/CPS", rev = "<pinned>", default-features = false }`). Python support is opt-in: the default build excludes pyo3 and libpython entirely, and `cargo build --release --features python` links libpython dynamically. The engine is lazy — the interpreter only initialises when a plugin/theme/TUI is actually configured, and is finalised on exit. `mcx` re-exports `cps::PythonConfig` from `core::config` and drives the subsystem through it:
 
 | Source | Exports | Role |
 | ------ | ------- | ---- |
@@ -1172,18 +1166,13 @@ The pyo3 runtime is no longer compiled into `mcx`; it lives in the external `cps
 | `cps::plugin` | `PluginManager` (pyo3) | In-process Python plugin loading (`load_all`) and hook dispatch from `PythonConfig::plugins`. |
 | `cps::theme` | `ThemeEngine` | Python theme load/render/prompt (`apply`, `register`, `unregister`, `list`). |
 | `cps::tui` | `TuiEngine` | Python TUI launch (`run`). |
-| `core::plugin` | `PluginRegistry`, `PluginSlot`, `PluginManifest`, `PluginHook`, `PluginEvent` | Builtin trait-based plugins (`Fetcher`/`Builder`/`Packer`) and the subprocess `--hook-plugin` runner, kept local to `mcx`. |
-
-## `event.rs` — Event bus
-
-`EventBus` emits JSON lifecycle events to the UNIX datagram socket `/run/mcx/event.sock`. Events: `emit_service(name, state, pid)`, `emit_boot(total, failed)`, `emit_shutdown()`. `start_listener()` binds a `UnixListener` on the socket.
+| `core::plugin` | `PluginSlot`, `PythonPlugin`, `PluginManager`, `PluginManifest`, `PluginHook`, `PluginEvent` | Hot-swappable isolation slot and the subprocess `--hook-plugin` runner, kept local to `mcx`. |
 
 ## `network/` — Remote operations
 
 | File | Struct | Role | Dependencies |
 | ---- | ------ | ---- | ------------ |
-| `download.rs` | `Downloader` | Concurrent multi-package HTTP(S) downloader with configurable parallelism, automatic retry with exponential backoff, streaming SHA-256 verification, and ETag conditional requests. Uses a semaphore-bounded worker pool. | `reqwest` + `rustls-tls` |
-| `sync.rs` | `NetworkSyncEngine` | ETag-conditional parallel sync of all repository indexes. Skips unchanged remotes (304 Not Modified), only writing new data when the server ETag differs from the cached value. Emits a `SyncReport` with per-repo status. | `download.rs`, `repo.rs` |
+| `download.rs` | `Downloader` | Concurrent multi-package HTTP(S) downloader with configurable parallelism, automatic retry with exponential backoff, streaming SHA-256 verification, connect/read timeouts, and If-Range resume for interrupted transfers. Uses a semaphore-bounded worker pool. | `reqwest` + `rustls-tls` |
 
 ## `archive/` — Artifact primitives
 
@@ -1191,7 +1180,6 @@ The pyo3 runtime is no longer compiled into `mcx`; it lives in the external `cps
 | ---- | ------ | ---- | ------------ |
 | `extract.rs` | `Extractor` | Zstd → tar → filesystem tree decompression/unpacking. | — |
 | `hash.rs` | `HashVerifier` | SHA-256 digest computation for files and streams. | — |
-| `verify.rs` | `ContentValidator` | Cross-check extracted content against manifest checksums. | `hash.rs`, `manifest.rs` |
 
 ## `utils/` — Shared utilities
 
@@ -1260,7 +1248,7 @@ var/
 │   ├── history.jsonl   # Append-only transaction history (`-H`, rollback)
 │   ├── lifecycle.jsonl # LifecycleEngine state machine journal (`transition` audit log)
 │   ├── vendor/         # Offline mirror cache (`--vendor`)
-│   └── sync/           # ETag sync state (`repo-sync`)
+│   └── sync/           # Cached repository indexes (`repo-sync`)
 ├── tmp/mcx/
 │   └── stage/          # Staging area for in-flight package extractions
 └── cache/mcx/          # Package cache (downloaded .xcs files)
@@ -1269,7 +1257,6 @@ var/
 Runtime sockets and generated state:
 
 ```
-/run/mcx/event.sock    # Unix datagram socket — EventBus lifecycle events
 /etc/mcx/config.ini    # Engine + [general]/[python] merged INI config (also at ~/.config/mcx)
 /etc/mcx/p.desc        # Legacy subprocess plugin descriptors (--hook-plugin)
 ```
@@ -1512,36 +1499,26 @@ Supports Bash, Zsh, and Fish. Generates completions for all commands, aliases, a
 | `Downloader::download` | `(&self, url: &str, dest: &Path, progress: Option<ProgressFn>) -> Result<DownloadResult>` |
 | `Downloader::download_many` | `(&self, items: &[DownloadItem]) -> Vec<DownloadOutcome>` |
 
-Returns `DownloadResult` with bytes downloaded, checksum, and server ETag.
+Returns `DownloadResult` with bytes downloaded, checksum, and server ETag (used for If-Range resume).
 
-## Network sync engine (ETag conditional sync)
+## Repository index sync
 
-`NetworkSyncEngine` (in `network::sync.rs`) synchronises all repository indexes in parallel:
+Repository sync is handled by `RepositoryManager::sync_all_parallel` (in `core/repo.rs`): all enabled repository indexes download concurrently, each written atomically via a `.tmp` rename into place, with per-repository success/error reporting. After syncing, the available-package index is rebuilt from every cached index inside one LMDB transaction so stale entries disappear.
+## Integrity scanner (verify & repair)
 
-- **ETag-aware**: sends `If-None-Match` headers; the server returns `304 Not Modified` for unchanged indexes, avoiding redundant downloads and disk writes
-- **Atomic write**: new indexes are written to a temp file, then renamed into place
-- **Per-repo reporting**: returns a `SyncReport` with status (`Updated`, `Unchanged`, `Failed`) per repository
+`IntegrityScanner` (in `core::integrity.rs`) verifies every installed package's file tree:
 
-| Method | Signature |
-| ------ | --------- |
-| `NetworkSyncEngine::new` | `(downloader: Arc&lt;Downloader&gt;) -> Self` |
-| `NetworkSyncEngine::sync_repositories` | `(&self, repos: &[RepositoryEntry], cache_dir: &Path) -> Result&lt;SyncReport&gt;` |
-
-## Integrity scanner (async verify & repair)
-
-`IntegrityScanner` (in `core::integrity.rs`) asynchronously verifies every installed package's file tree against the manifest:
-
-- **Concurrent traversal**: uses a thread pool to check files in parallel (configurable concurrency, default 4)
-- **SHA-256 verification**: reads every file, computes digest, compares against the manifest checksum
-- **Repair**: for failed files, re-downloads the original package and re-extracts just the damaged entries
-- **Report**: returns `IntegrityReport` with per-package results, total scanned/failed/repaired counts
+- **Per-file digests**: packages installed by this version record a SHA-256 digest per regular file (`file_hashes`); verification recomputes each digest and flags tampered content
+- **Legacy manifests**: packages installed before per-file digests existed are checked for existence only (the archive-level checksum validates downloads, not placed content)
+- **Dangling symlinks**: dangling links under the managed `usr/`, `etc/`, and `var/` trees are reported; `repair_all()` removes only links recorded in some installed package's manifest — unowned links are left untouched
 
 | Method | Signature |
 | ------ | --------- |
-| `IntegrityScanner::new` | `(concurrency: usize) -> Self` |
-| `IntegrityScanner::scan_all` | `(&self, db: &Database, cache_dir: &Path, cache: &CacheManager) -> Result&lt;IntegrityReport&gt;` |
+| `IntegrityScanner::new` | `(root: &Path, db: Arc&lt;Database&gt;) -> Self` |
+| `IntegrityScanner::verify_all` | `(&self) -> IntegrityReport` |
+| `IntegrityScanner::repair_all` | `(&self) -> RepairReport` |
 
-The scanner runs in the `--verify` command path and auto-repairs corruption found during verification.
+The scanner runs in the `--verify` command path; `-f` (fix-deps) drives repair.
 
 </details>
 
@@ -2578,6 +2555,25 @@ cargo +nightly -Zjson-target-spec -Zbuild-std build --target x86_64-unknown-linu
 
 # Release build (optimised for size)
 cargo +nightly -Zjson-target-spec -Zbuild-std build --release --target x86_64-unknown-linux-musl.json
+```
+
+### Feature flags
+
+| Feature | Default | Enables |
+| ------- | ------- | ------- |
+| `python` | off | cps Python subsystem: plugins, themes and TUIs through an embedded interpreter |
+
+The default build is fully native and thin — no `pyo3`, no `libpython` linked. The `cps` engine is lazy: even in a `python` build the interpreter only initialises when a plugin/theme/TUI is actually configured, and is finalised on exit.
+
+```shell
+# Thin default build (no Python)
+cargo build --release
+
+# With Python subsystem
+cargo build --release --features python
+
+# Compile-only verification of the opt-in path
+cargo check --features python
 ```
 
 ## Installation

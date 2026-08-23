@@ -188,6 +188,7 @@ impl ServiceCommand {
     }
 
     fn find_service_by_name(&self, pkg_name: &str) -> Result<CesarService> {
+        crate::core::service::validate_service_name(pkg_name)?;
         let packages = self.installed_packages_with_service();
         for (name, svc) in &packages {
             if name == pkg_name || svc.name == pkg_name {
@@ -204,8 +205,21 @@ impl ServiceCommand {
 
     fn find_cesar_binary(&self) -> Result<String> {
         for candidate in constants::CESAR_BINARY_CANDIDATES {
-            if Path::new(candidate).exists() || *candidate == "cesar" {
+            if Path::new(candidate).exists() {
                 return Ok(candidate.to_string());
+            }
+            // Bare names must actually resolve on PATH, not just exist in
+            // the caller's working directory.
+            if !candidate.contains('/') {
+                let on_path = std::env::var_os("PATH")
+                    .map(|paths| {
+                        std::env::split_paths(&paths)
+                            .any(|dir| dir.join(candidate).is_file())
+                    })
+                    .unwrap_or(false);
+                if on_path {
+                    return Ok(candidate.to_string());
+                }
             }
         }
         Err(anyhow!("Cesar binary not found"))

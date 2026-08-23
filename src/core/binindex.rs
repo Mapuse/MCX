@@ -97,16 +97,6 @@ impl BinaryIndex {
         fs::write(&index_path, json)?;
         Ok(index.len())
     }
-
-    pub fn load_cached(&self) -> HashMap<String, Vec<BinaryEntry>> {
-        let index_path = Path::new(&self.root).join(constants::PATH_BININDEX);
-        if index_path.exists()
-            && let Ok(content) = fs::read_to_string(&index_path)
-                && let Ok(index) = serde_json::from_str(&content) {
-                    return index;
-                }
-        HashMap::new()
-    }
 }
 
 fn is_binary(path: &std::path::Path) -> bool {

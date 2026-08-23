@@ -51,8 +51,14 @@ impl RemoveCommand {
             .collect();
 
         let mut residue_paths: Vec<PathBuf> = Vec::new();
+        let mut services_to_unregister: Vec<String> = Vec::new();
         let active_dir = self.root.join(constants::PATH_ACTIVE);
 
+        // Stage the whole removal inside the transaction first: back up and
+        // clear each package's ACTIVE mirror (rollback-safe via the backups),
+        // collect live residue paths and drop the registry entries. Live
+        // filesystem deletions happen only AFTER the registry commit, so a
+        // failure can never leave the database owning deleted files.
         for pkg in &all_targets {
             if !self.db.is_package_installed(pkg)? {
                 continue;
@@ -64,14 +70,16 @@ impl RemoveCommand {
             let pkg_active = active_dir.join(pkg);
             if pkg_active.exists() {
                 transaction.backup_file(&pkg_active)?;
-                residue_paths.extend(self.collect_files_recursive(&pkg_active));
                 fs::remove_dir_all(&pkg_active)
                     .with_context(|| format!("Failed to purge package root: {:?}", pkg_active))?;
             }
 
             for file_path in &manifest.files {
-                let absolute_target = self.root.join(file_path);
-                residue_paths.push(absolute_target);
+                residue_paths.push(self.root.join(file_path));
+            }
+
+            for svc in manifest.all_services() {
+                services_to_unregister.push(svc.name.clone());
             }
 
             transaction.stage_package_removal(pkg)?;
@@ -79,6 +87,9 @@ impl RemoveCommand {
 
         let shared_files = self.compute_non_orphaned_files(&all_targets);
 
+        transaction.commit()?;
+
+        // Registry no longer claims these files — now remove them from disk.
         residue_paths.sort_by_key(|a| Reverse(a.components().count()));
 
         for file_path in &residue_paths {
@@ -93,8 +104,8 @@ impl RemoveCommand {
                     && entries.next().is_none() {
                         let _ = fs::remove_dir(&absolute_target);
                     }
-            } else {
-                let _ = fs::remove_file(&absolute_target);
+            } else if let Err(e) = fs::remove_file(&absolute_target) {
+                UserInterface::warning(&format!("Failed to remove {:?}: {}", absolute_target, e));
             }
         }
 
@@ -103,22 +114,19 @@ impl RemoveCommand {
 
         // sandbox cleanup for removed packages
         for pkg in &all_targets {
-            let _ = cgroup_mgr.remove_resource_limits(pkg);
-            security_mon.unregister_package(pkg);
-
-            // unregister Cesar services if package has them
-            if let Ok(manifest) = self.db.get_package_manifest(pkg) {
-                let svc_cmd = crate::commands::service::ServiceCommand::new(
-                    self.root.to_string_lossy().to_string(),
-                    Arc::clone(&self.db),
-                );
-                for svc in manifest.all_services() {
-                    let _ = svc_cmd.unregister_service(&svc.name);
-                }
+            if let Err(e) = cgroup_mgr.remove_resource_limits(pkg) {
+                UserInterface::warning(&format!("Failed to remove resource limits for {}: {}", pkg, e));
             }
+            security_mon.unregister_package(pkg);
         }
 
-        transaction.commit()?;
+        let svc_cmd = crate::commands::service::ServiceCommand::new(
+            self.root.to_string_lossy().to_string(),
+            Arc::clone(&self.db),
+        );
+        for svc_name in &services_to_unregister {
+            let _ = svc_cmd.unregister_service(svc_name);
+        }
 
         self.fire_hooks(PluginHook::PostRemove, packages);
 
@@ -158,22 +166,21 @@ impl RemoveCommand {
                 .with_context(|| format!("Failed to retrieve manifest for {}", pkg_name))?;
 
             let mut removed_count = 0usize;
+            let mut removed_component_files: Vec<PathBuf> = Vec::new();
             let mut remaining_files: Vec<PathBuf> = Vec::new();
+            let mut kept_components = Vec::new();
 
             for component in &manifest.components {
                 if filter.include.contains(&component.name) {
                     UserInterface::info(&format!("Removing component '{}' from {}", component.name, pkg_name));
-                    for file in &component.files {
-                        let abs = self.root.join(file);
-                        if abs.exists() { let _ = fs::remove_file(&abs); }
-                        removed_count += 1;
-                    }
+                    removed_component_files.extend(component.files.iter().cloned());
                 } else {
                     remaining_files.extend(component.files.iter().cloned());
+                    kept_components.push(component.clone());
                 }
             }
 
-            if remaining_files.is_empty() && !manifest.components.is_empty() {
+            if kept_components.is_empty() && !manifest.components.is_empty() {
                 UserInterface::info(&format!("All components removed from '{}'; performing full removal", pkg_name));
                 let mut tx = self.db.begin_transaction()?;
                 let pkg_active = active_dir.join(pkg_name);
@@ -185,14 +192,38 @@ impl RemoveCommand {
                 tx.stage_package_removal(pkg_name)?;
                 tx.commit()?;
             } else {
+                // Persist the pruned manifest BEFORE deleting files so the
+                // registry never claims ownership of paths that are about to
+                // disappear from disk.
+                let mut updated = manifest.clone();
+                updated.components = kept_components;
+                updated.files = remaining_files.clone();
+                updated.file_hashes.retain(|key, _| {
+                    remaining_files.iter().any(|f| f.to_string_lossy() == *key)
+                });
+
+                let mut tx = self.db.begin_transaction()?;
+                tx.register_package_placement(&updated)?;
+                tx.commit()?;
+
                 let pkg_active = active_dir.join(pkg_name);
-                if pkg_active.exists() {
-                    for file in &manifest.files {
-                        if !remaining_files.contains(file) {
-                            let file_in_active = pkg_active.join(file);
-                            if file_in_active.exists() { let _ = fs::remove_file(&file_in_active); }
+                for file in &removed_component_files {
+                    let abs = self.root.join(file);
+                    if abs.exists() {
+                        match fs::remove_file(&abs) {
+                            Ok(()) => removed_count += 1,
+                            Err(e) => UserInterface::warning(&format!("Failed to remove {:?}: {}", abs, e)),
                         }
                     }
+                    let file_in_active = pkg_active.join(file);
+                    if file_in_active.exists() { let _ = fs::remove_file(&file_in_active); }
+                }
+
+                // Drop now-empty directories left behind in the active mirror.
+                if pkg_active.exists()
+                    && fs::read_dir(&pkg_active).map(|mut d| d.next().is_none()).unwrap_or(false)
+                {
+                    let _ = fs::remove_dir(&pkg_active);
                 }
             }
 
@@ -211,7 +242,9 @@ impl RemoveCommand {
                     let _ = svc_cmd.unregister_service(&svc.name);
                 }
             }
-            let _ = cgroup_mgr.remove_resource_limits(pkg_name);
+            if let Err(e) = cgroup_mgr.remove_resource_limits(pkg_name) {
+                UserInterface::warning(&format!("Failed to remove resource limits for {}: {}", pkg_name, e));
+            }
             security_mon.unregister_package(pkg_name);
         }
 
@@ -321,21 +354,6 @@ impl RemoveCommand {
             }
         }
         shared
-    }
-
-    fn collect_files_recursive(&self, dir: &Path) -> Vec<PathBuf> {
-        let mut files = Vec::new();
-        if !dir.exists() { return files; }
-        if let Ok(entries) = fs::read_dir(dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.is_dir() {
-                    files.extend(self.collect_files_recursive(&path));
-                }
-                files.push(path);
-            }
-        }
-        files
     }
 
     fn cleanup_dangling_symlinks(&self, root: &Path, packages: &[String]) -> Result<()> {

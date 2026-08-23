@@ -10,6 +10,7 @@ use crate::core::constants;
 pub struct HashVerifier;
 
 impl HashVerifier {
+    /// SHA-256 is the preferred digest kind for new metadata.
     pub fn calculate<P: AsRef<Path>>(path: P, kind: &str) -> Result<String> {
         let mut file = File::open(&path)?;
         let mut buffer = vec![0; constants::HASH_BUFFER_SIZE];
@@ -46,10 +47,22 @@ impl HashVerifier {
         }
     }
 
+    /// Length-independent, constant-time digest comparison to avoid leaking
+    /// match prefixes through timing.
+    fn constant_time_eq(a: &str, b: &str) -> bool {
+        let (a_bytes, b_bytes) = (a.as_bytes(), b.as_bytes());
+        let mut diff = (a_bytes.len() ^ b_bytes.len()) as u8;
+        let len = a_bytes.len().max(b_bytes.len());
+        for i in 0..len {
+            diff |= a_bytes.get(i).unwrap_or(&0) ^ b_bytes.get(i).unwrap_or(&0);
+        }
+        diff == 0
+    }
+
     pub fn verify_integrity<P: AsRef<Path>>(path: P, kind: &str, expected_hash: &str) -> Result<()> {
         let actual_hash = Self::calculate(&path, kind)?;
 
-        if actual_hash.eq_ignore_ascii_case(expected_hash) {
+        if Self::constant_time_eq(&actual_hash.to_lowercase(), &expected_hash.trim().to_lowercase()) {
             Ok(())
         } else {
             Err(anyhow!(

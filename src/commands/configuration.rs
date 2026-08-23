@@ -16,6 +16,30 @@ pub enum ConfigTarget {
     RepoConfig,
 }
 
+/// Greatest char boundary in `s` at or before byte index `i`.
+fn floor_char_boundary(s: &str, i: usize) -> usize {
+    let mut i = i.min(s.len());
+    while i > 0 && !s.is_char_boundary(i) {
+        i -= 1;
+    }
+    i
+}
+
+/// Smallest char boundary in `s` at or after byte index `i`.
+fn ceil_char_boundary(s: &str, i: usize) -> usize {
+    let mut i = i.min(s.len());
+    while i < s.len() && !s.is_char_boundary(i) {
+        i += 1;
+    }
+    i
+}
+
+/// Greatest char boundary in `s` strictly before byte index `i`
+/// (the start of the character preceding `i`).
+fn prev_char_boundary(s: &str, i: usize) -> usize {
+    floor_char_boundary(s, i.saturating_sub(1))
+}
+
 pub struct ConfigEditorCommand {
     config_path: PathBuf,
 }
@@ -145,7 +169,7 @@ impl ConfigEditorCommand {
                                     if lines.len() > 1 {
                                         cut_buffer = Some(lines.remove(cursor_y));
                                         if cursor_y >= lines.len() { cursor_y = lines.len() - 1; }
-                                        cursor_x = cursor_x.min(lines[cursor_y].len());
+                                        cursor_x = floor_char_boundary(&lines[cursor_y], cursor_x.min(lines[cursor_y].len()));
                                     } else {
                                         cut_buffer = Some(lines[0].clone());
                                         lines[0].clear();
@@ -167,14 +191,14 @@ impl ConfigEditorCommand {
                                 KeyCode::Char('y') => {
                                     if cursor_y > 0 {
                                         cursor_y -= 1;
-                                        cursor_x = cursor_x.min(lines[cursor_y].len());
+                                        cursor_x = floor_char_boundary(&lines[cursor_y], cursor_x.min(lines[cursor_y].len()));
                                     }
                                     quit_confirm = false;
                                 }
                                 KeyCode::Char('v') => {
                                     if cursor_y + 1 < lines.len() {
                                         cursor_y += 1;
-                                        cursor_x = cursor_x.min(lines[cursor_y].len());
+                                        cursor_x = floor_char_boundary(&lines[cursor_y], cursor_x.min(lines[cursor_y].len()));
                                     }
                                     quit_confirm = false;
                                 }
@@ -201,27 +225,37 @@ impl ConfigEditorCommand {
                         }
 
                         match key_event.code {
-                            KeyCode::Up => if cursor_y > 0 { cursor_y -= 1; cursor_x = cursor_x.min(lines[cursor_y].len()); },
-                            KeyCode::Down => if cursor_y + 1 < lines.len() { cursor_y += 1; cursor_x = cursor_x.min(lines[cursor_y].len()); },
+                            KeyCode::Up => if cursor_y > 0 { cursor_y -= 1; cursor_x = floor_char_boundary(&lines[cursor_y], cursor_x.min(lines[cursor_y].len())); },
+                            KeyCode::Down => if cursor_y + 1 < lines.len() { cursor_y += 1; cursor_x = floor_char_boundary(&lines[cursor_y], cursor_x.min(lines[cursor_y].len())); },
                             KeyCode::Left => {
-                                if cursor_x > 0 { cursor_x -= 1; }
-                                else if cursor_y > 0 { cursor_y -= 1; cursor_x = lines[cursor_y].len(); }
+                                if cursor_x > 0 {
+                                    cursor_x = prev_char_boundary(&lines[cursor_y], cursor_x);
+                                } else if cursor_y > 0 {
+                                    cursor_y -= 1;
+                                    cursor_x = lines[cursor_y].len();
+                                }
                             }
                             KeyCode::Right => {
-                                if cursor_x < lines[cursor_y].len() { cursor_x += 1; }
-                                else if cursor_y + 1 < lines.len() { cursor_y += 1; cursor_x = 0; }
+                                if cursor_x < lines[cursor_y].len() {
+                                    cursor_x = ceil_char_boundary(&lines[cursor_y], cursor_x + 1);
+                                } else if cursor_y + 1 < lines.len() {
+                                    cursor_y += 1;
+                                    cursor_x = 0;
+                                }
                             }
                             KeyCode::PageUp => cursor_y = cursor_y.saturating_sub(text_height),
                             KeyCode::PageDown => cursor_y = (cursor_y + text_height).min(lines.len().saturating_sub(1)),
                             KeyCode::Home => cursor_x = 0,
                             KeyCode::End => cursor_x = lines[cursor_y].len(),
                             KeyCode::Char(c) => {
+                                cursor_x = floor_char_boundary(&lines[cursor_y], cursor_x);
                                 lines[cursor_y].insert(cursor_x, c);
-                                cursor_x += 1;
+                                cursor_x += c.len_utf8();
                                 is_dirty = true;
                                 quit_confirm = false;
                             }
                             KeyCode::Tab => {
+                                cursor_x = floor_char_boundary(&lines[cursor_y], cursor_x);
                                 lines[cursor_y].insert_str(cursor_x, "    ");
                                 cursor_x += 4;
                                 is_dirty = true;
@@ -229,8 +263,9 @@ impl ConfigEditorCommand {
                             }
                             KeyCode::Backspace => {
                                 if cursor_x > 0 {
-                                    lines[cursor_y].remove(cursor_x - 1);
-                                    cursor_x -= 1;
+                                    let rm = prev_char_boundary(&lines[cursor_y], cursor_x);
+                                    lines[cursor_y].remove(rm);
+                                    cursor_x = rm;
                                     is_dirty = true;
                                 } else if cursor_y > 0 {
                                     let current_line = lines.remove(cursor_y);
@@ -243,7 +278,8 @@ impl ConfigEditorCommand {
                             }
                             KeyCode::Delete => {
                                 if cursor_x < lines[cursor_y].len() {
-                                    lines[cursor_y].remove(cursor_x);
+                                    let idx = ceil_char_boundary(&lines[cursor_y], cursor_x);
+                                    lines[cursor_y].remove(idx);
                                     is_dirty = true;
                                 } else if cursor_y + 1 < lines.len() {
                                     let next_line = lines.remove(cursor_y + 1);
@@ -253,6 +289,7 @@ impl ConfigEditorCommand {
                                 quit_confirm = false;
                             }
                             KeyCode::Enter => {
+                                cursor_x = floor_char_boundary(&lines[cursor_y], cursor_x);
                                 let current_line = &lines[cursor_y];
                                 let next_line = current_line[cursor_x..].to_string();
                                 lines[cursor_y] = current_line[..cursor_x].to_string();

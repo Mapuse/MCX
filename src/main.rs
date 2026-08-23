@@ -3,7 +3,6 @@ pub mod network;
 pub mod archive;
 pub mod utils;
 pub mod commands;
-pub mod event;
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -19,7 +18,6 @@ use crate::core::config::ConfigManager;
 use crate::core::constants;
 use crate::core::profiler::{SystemProfile, DecisionEngine, NetworkProber};
 use crate::core::plugin::{PluginManager, PluginHook, PluginEvent};
-use crate::core::plugin::{PluginRegistry, CurlFetcher, DefaultBuilder, ZstdPacker};
 use crate::commands::add::AddLocalCommand;
 use crate::commands::clean::CleanCommand;
 use crate::commands::configuration::{ConfigEditorCommand, ConfigTarget};
@@ -362,7 +360,6 @@ fn parse_key_val(s: &str) -> Result<(String, String), String> {
 struct EngineContext {
     db: Arc<Database>,
     config_mgr: ConfigManager,
-    plugin_registry: PluginRegistry,
     plugin_mgr: Arc<PluginManager>,
     sys_profile: SystemProfile,
     lifecycle: crate::core::lifecycle::LifecycleEngine,
@@ -375,11 +372,6 @@ impl EngineContext {
         let config_mgr = ConfigManager::new(root)
             .unwrap_or_else(|e| { UserInterface::error(&format!("Config error: {}", e)); process::exit(1); });
 
-        let mut plugin_registry = PluginRegistry::new();
-        plugin_registry.register_fetcher(Arc::new(CurlFetcher));
-        plugin_registry.register_builder(Arc::new(DefaultBuilder));
-        plugin_registry.register_packer(Arc::new(ZstdPacker));
-
         let plugin_mgr = Arc::new(PluginManager::new(root));
 
         let db = match Database::open(root) {
@@ -389,7 +381,7 @@ impl EngineContext {
 
         let lifecycle = crate::core::lifecycle::LifecycleEngine::new_with_root(root);
 
-        Self { db, config_mgr, plugin_registry, plugin_mgr, sys_profile, lifecycle }
+        Self { db, config_mgr, plugin_mgr, sys_profile, lifecycle }
     }
 }
 
@@ -405,7 +397,14 @@ fn record_lifecycle_install(ctx: &mut EngineContext, packages: &[String]) {
                 crate::core::lifecycle::PackageState::Installed,
                 crate::core::lifecycle::PackageState::Active,
             ] {
-                let _ = ctx.lifecycle.transition(pkg, target);
+                match ctx.lifecycle.transition(pkg, target) {
+                    Ok(_) => {}
+                    Err(e) => {
+                        // Already past this stage (e.g. reinstall): stop walking.
+                        UserInterface::warning(&format!("Lifecycle: {e}"));
+                        break;
+                    }
+                }
             }
         }
     }
@@ -421,7 +420,13 @@ fn record_lifecycle_remove(ctx: &mut EngineContext, packages: &[String]) {
             crate::core::lifecycle::PackageState::Removed,
             crate::core::lifecycle::PackageState::Purged,
         ] {
-            let _ = ctx.lifecycle.transition(pkg, target);
+            match ctx.lifecycle.transition(pkg, target) {
+                Ok(_) => {}
+                Err(e) => {
+                    UserInterface::warning(&format!("Lifecycle: {e}"));
+                    break;
+                }
+            }
         }
     }
 }
@@ -442,7 +447,6 @@ async fn main() {
     let mut ctx = EngineContext::new(&root_path);
 
     let _ = &ctx.config_mgr;
-    let _ = &ctx.plugin_registry;
     let security_mon = Arc::new(crate::core::security::SecurityMonitor::new());
     let cgroup_mgr = crate::core::cgroup::CgroupController::new();
 
@@ -624,7 +628,11 @@ async fn main() {
                     for dir in &purge_dirs {
                         for pkg in &packages {
                             let pkg_dir = dir.join(pkg);
-                            if pkg_dir.exists() { let _ = fs::remove_dir_all(&pkg_dir); }
+                            if pkg_dir.exists()
+                                && let Err(e) = fs::remove_dir_all(&pkg_dir)
+                            {
+                                UserInterface::warning(&format!("Failed to purge {}: {}", pkg_dir.display(), e));
+                            }
                         }
                     }
                     let binindex = crate::core::binindex::BinaryIndex::new(args.root.clone(), Arc::clone(&ctx.db));
@@ -657,17 +665,6 @@ async fn main() {
             let cmd = AddLocalCommand::new(args.root.clone(), Arc::clone(&ctx.db));
             match cmd.execute(&file) {
                 Ok(_) => {
-                    let staging = PathBuf::from(&args.root).join(constants::PATH_STAGE);
-                    let installed_root = PathBuf::from(&args.root).join(constants::PATH_ACTIVE);
-                    if let Ok(pkgs) = ctx.db.get_all_installed_packages()
-                        && let Some(last) = pkgs.last() {
-                            let pkg_path = staging.join(&last.pkg_name);
-                            if pkg_path.exists()
-                                && let Err(e) = std::fs::rename(&pkg_path, installed_root.join(&last.pkg_name)) {
-                                    UserInterface::error(&format!("Failed to move package from staging: {e}"));
-                                    process::exit(1);
-                                }
-                        }
                     let rollback_mgr = crate::core::rollback::RollbackManager::new(&root_path);
                     let gen_root = root_path.join(constants::PATH_ACTIVE);
                     if gen_root.exists() {
@@ -987,23 +984,29 @@ async fn main() {
                     Err(e) => { UserInterface::error(&format!("{e}")); process::exit(1); }
                 }
             } else if let Some(tx_id) = rollback {
-                UserInterface::info(&format!("Rolling back to transaction {}", tx_id));
+                UserInterface::info(&format!("Previewing rollback plan for transaction {}", tx_id));
                 let history = crate::core::history::HistoryEngine::new(&root_path, Arc::clone(&ctx.db));
                 match tx_id.parse::<u64>() {
                     Ok(id) => {
                         match history.compute_rollback_plan(id) {
                             Ok(plan) => {
+                                if plan.is_empty() {
+                                    UserInterface::info("Nothing to roll back.");
+                                }
                                 for (action, targets) in &plan {
                                     match action {
                                         crate::core::changelog::ActionKind::Installation => {
-                                            UserInterface::info(&format!("Rollback: install {:?}", targets));
+                                            UserInterface::info(&format!("Would reinstall: {:?}", targets));
                                         }
                                         crate::core::changelog::ActionKind::Removal => {
-                                            UserInterface::info(&format!("Rollback: remove {:?}", targets));
+                                            UserInterface::info(&format!("Would remove: {:?}", targets));
                                         }
                                         _ => {}
                                     }
                                 }
+                                UserInterface::warning(
+                                    "This is a preview only; automatic rollback execution is not supported. Reinstall/remove the listed packages manually.",
+                                );
                             }
                             Err(e) => {
                                 UserInterface::error(&format!("Rollback plan failed: {e}"));
@@ -1016,7 +1019,6 @@ async fn main() {
                         process::exit(1);
                     }
                 }
-                UserInterface::success("Rollback complete.");
             } else {
                 let history = crate::core::history::HistoryEngine::new(&root_path, Arc::clone(&ctx.db));
                 match history.fetch_ordered_log() {
@@ -1071,14 +1073,26 @@ async fn main() {
             let mgr = crate::core::repo::RepositoryManager::new(&args.root);
             match mgr.sync_single(&name).await {
                 Ok(_) => {
+                    // Rebuild the available index from every repository's
+                    // cached index so stale entries disappear instead of
+                    // accumulating across syncs.
                     let repos = mgr.load_repositories().unwrap_or_default();
-                    if let Some(repo) = repos.iter().find(|r| r.name == name) {
-                        let index_path = mgr.get_local_index_path(&repo.name);
-                        if index_path.exists() {
-                            let mut tx = ctx.db.begin_transaction().expect("begin transaction");
-                            let _ = tx.update_repository_index(&repo.name, index_path.to_str().expect("index path utf8"));
-                            let _ = tx.commit();
+                    if let Err(e) = (|| -> anyhow::Result<()> {
+                        let mut tx = ctx.db.begin_transaction()?;
+                        tx.clear_available_index()?;
+                        for repo in &repos {
+                            let index_path = mgr.get_local_index_path(&repo.name);
+                            if index_path.exists() {
+                                let path_str = index_path.to_str()
+                                    .ok_or_else(|| anyhow::anyhow!("index path is not valid UTF-8"))?;
+                                tx.update_repository_index(&repo.name, path_str)?;
+                            }
                         }
+                        tx.commit()?;
+                        Ok(())
+                    })() {
+                        UserInterface::error(&format!("Failed to refresh package index: {e}"));
+                        process::exit(1);
                     }
                     UserInterface::success(&format!("Repository '{}' synced.", name));
                 }
@@ -1138,64 +1152,48 @@ async fn main() {
                 process::exit(1);
             }
 
+            // Root-owned staging area under the target root; never /tmp.
+            let stage_dir = root_path.join(constants::PATH_TMP);
+
             let mut last_error = String::new();
-            let mut downloaded = false;
+            let mut updated = false;
 
             for repo in &repos {
                 let binary_url = format!("{}/system/bin/mcx", repo.url.trim_end_matches('/'));
                 UserInterface::self_update(&format!("Downloading from {}...", binary_url));
 
-                let tmp = std::env::temp_dir().join(constants::SELF_UPDATE_OLD_NAME);
-                let _ = std::fs::remove_file(&tmp);
-
-                match crate::core::update::SelfUpdateManager::binary(&binary_url, &tmp).await {
-                    Ok(downloaded_path) => {
-                        let ver_output = std::process::Command::new(&downloaded_path)
+                // stage_verified_binary refuses payloads without a published
+                // checksum and verifies them before anything is executed.
+                match crate::core::update::SelfUpdateManager::stage_verified_binary(&binary_url, &stage_dir).await {
+                    Ok(staged_path) => {
+                        let ver_output = std::process::Command::new(&staged_path)
                             .arg("--version")
                             .output()
                             .map(|o| o.stdout)
                             .unwrap_or_default();
                         let ver = String::from_utf8_lossy(&ver_output);
-                        UserInterface::info(&format!("Downloaded: {}", ver.trim()));
+                        UserInterface::info(&format!("Verified: {}", ver.trim()));
 
-                        // atomic swap: write to .new, rename over target
-                        let new_path = output_path.with_extension(constants::SELF_UPDATE_NEW_EXT);
-                        if let Some(parent) = new_path.parent() {
-                            let _ = fs::create_dir_all(parent);
+                        match crate::core::update::SelfUpdateManager::promote(&staged_path, &output_path) {
+                            Ok(()) => {
+                                updated = true;
+                                break;
+                            }
+                            Err(e) => {
+                                last_error = format!("{}: {}", repo.name, e);
+                                UserInterface::warning(&format!("Promotion failed for {}: {}", repo.name, e));
+                            }
                         }
-                        if new_path.exists() {
-                            let _ = fs::remove_file(&new_path);
-                        }
-                        fs::copy(&tmp, &new_path).unwrap_or_else(|e| {
-                            UserInterface::error(&format!("Copy failed: {}", e));
-                            let _ = fs::remove_file(&tmp);
-                            process::exit(1);
-                        });
-                        #[cfg(unix)]
-                        {
-                            use std::os::unix::fs::PermissionsExt;
-                            let _ = fs::set_permissions(&new_path, fs::Permissions::from_mode(constants::SELF_UPDATE_PERMISSIONS));
-                        }
-                        fs::rename(&new_path, &output_path).unwrap_or_else(|e| {
-                            UserInterface::error(&format!("Atomic rename failed: {}", e));
-                            let _ = fs::remove_file(&tmp);
-                            process::exit(1);
-                        });
-
-                        let _ = fs::remove_file(&tmp);
-                        downloaded = true;
-                        break;
                     }
                     Err(e) => {
                         last_error = format!("{}: {}", repo.name, e);
-                        let _ = fs::remove_file(&tmp);
                         UserInterface::info(&format!("Skipping {}: {}", repo.name, e));
                         continue;
                     }
                 }
             }
 
-            if !downloaded {
+            if !updated {
                 UserInterface::error(&format!("Self-update failed. Last error: {}", last_error));
                 process::exit(1);
             }
@@ -1445,7 +1443,7 @@ async fn main() {
                     let name = args.name.unwrap_or_else(|| {
                         src.file_stem().unwrap_or_default().to_string_lossy().to_string()
                     });
-                    let plugins_dir = Path::new("/etc/mcx/plugins");
+                    let plugins_dir = &root_path.join(constants::PATH_PLUGINS);
                     let _ = fs::create_dir_all(plugins_dir);
                     let dest = plugins_dir.join(src.file_name().unwrap_or_default());
                     if dest.exists() && !args.force {
@@ -1530,7 +1528,7 @@ async fn main() {
                     let name = args.name.unwrap_or_else(|| {
                         src.file_stem().unwrap_or_default().to_string_lossy().to_string()
                     });
-                    let themes_dir = Path::new("/etc/mcx/themes");
+                    let themes_dir = &root_path.join("etc/mcx/themes");
                     let _ = fs::create_dir_all(themes_dir);
                     let dest = themes_dir.join(src.file_name().unwrap_or_default());
                     if dest.exists() && !args.force {
@@ -1605,7 +1603,7 @@ async fn main() {
                     let name = args.name.unwrap_or_else(|| {
                         src.file_stem().unwrap_or_default().to_string_lossy().to_string()
                     });
-                    let tuis_dir = Path::new("/etc/mcx/tuis");
+                    let tuis_dir = &root_path.join("etc/mcx/tuis");
                     let _ = fs::create_dir_all(tuis_dir);
                     let dest = tuis_dir.join(src.file_name().unwrap_or_default());
                     if dest.exists() && !args.force {

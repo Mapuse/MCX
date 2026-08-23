@@ -4,13 +4,29 @@ use std::path::{Path, PathBuf};
 use serde::{Serialize, Deserialize};
 use anyhow::{Result, Context, anyhow};
 
+/// Service names become file names (`{name}.ini`) and process arguments;
+/// keep them strictly limited to safe characters.
+pub fn validate_service_name(name: &str) -> Result<()> {
+    let valid = !name.is_empty()
+        && name.len() <= 255
+        && !name.chars().all(|c| c == '.')
+        && name.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'));
+    if valid {
+        Ok(())
+    } else {
+        Err(anyhow!(
+            "Invalid service name {:?}: allowed characters are [a-zA-Z0-9._-]",
+            name
+        ))
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CesarService {
     pub name: String,
     pub exec: String,
     #[serde(default)]
-    pub requires: String,
-    #[serde(default = "default_restart")]
+    pub requires: String,    #[serde(default = "default_restart")]
     pub restart: String,
     #[serde(default)]
     pub description: String,
@@ -92,6 +108,7 @@ impl CesarService {
         if name.is_empty() || exec.is_empty() {
             return Err(anyhow!("Service INI must have 'Name' and 'Exec' fields"));
         }
+        validate_service_name(&name)?;
 
         Ok(CesarService { name, exec, requires, restart, description, environment, working_directory, socket })
     }

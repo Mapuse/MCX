@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use anyhow::{Result, anyhow};
@@ -6,7 +7,6 @@ use heed::{Env, EnvOpenOptions, RwTxn};
 use heed::types::{Str, SerdeBincode};
 
 use crate::core::constants;
-use crate::core::transaction::ParallelFileOp;
 use crate::core::component::Component;
 use crate::core::service::CesarService;
 
@@ -46,6 +46,11 @@ pub struct PackageMetadata {
     pub services: Vec<CesarService>,
     #[serde(default)]
     pub binaries: Vec<String>,
+    /// Per-file SHA-256 digests recorded at install time (relative path -> hex hash).
+    /// Integrity verification checks files against these; legacy packages without
+    /// the field are skipped gracefully.
+    #[serde(default)]
+    pub file_hashes: HashMap<String, String>,
 }
 
 impl PackageMetadata {
@@ -76,6 +81,7 @@ type StrDb = heed::Database<Str, SerdeBincode<String>>;
 
 pub struct Database {
     env: Env,
+    root: PathBuf,
     installed_db: PkgDb,
     available_db: PkgDb,
     virtual_db: StrDb,
@@ -90,7 +96,8 @@ pub struct DbTransaction<'e> {
 
 impl Database {
     pub fn open<P: AsRef<Path>>(root: P) -> Result<Self> {
-        let db_path = root.as_ref().join(crate::core::constants::PATH_DATA);
+        let root = root.as_ref().to_path_buf();
+        let db_path = root.join(crate::core::constants::PATH_DATA);
         fs::create_dir_all(&db_path)?;
 
         let env = unsafe {
@@ -106,19 +113,18 @@ impl Database {
         let virtual_db = env.create_database(&mut txn, Some("virtual"))?;
         txn.commit()?;
 
-        Ok(Self { env, installed_db, available_db, virtual_db })
+        Ok(Self { env, root, installed_db, available_db, virtual_db })
     }
 
     pub fn begin_transaction(&self) -> Result<DbTransaction<'_>> {
         let txn = self.env.write_txn()?;
-        let env_path = self.env.path();
-        let tx_root = env_path
-            .ancestors()
-            .nth(3)
-            .unwrap_or_else(|| Path::new("."))
-            .to_path_buf();
-
-        let tx_log = crate::core::transaction::PackageTransaction::new(tx_root, crate::core::changelog::ActionKind::Installation)?;
+        // The transaction journal and backups must live under the real target
+        // root so rollback can restore files; deriving it from the LMDB path
+        // with fixed ancestor arithmetic breaks for nested roots.
+        let tx_log = crate::core::transaction::PackageTransaction::new(
+            self.root.clone(),
+            crate::core::changelog::ActionKind::Installation,
+        )?;
 
         Ok(DbTransaction {
             db: self,
@@ -219,6 +225,24 @@ impl<'e> DbTransaction<'e> {
         Ok(())
     }
 
+    /// Clears the entire available-package index. Call once before refilling
+    /// from every repository's cached index inside a single transaction so
+    /// stale entries from removed/renamed packages do not accumulate.
+    pub fn clear_available_index(&mut self) -> Result<()> {
+        let mut keys = Vec::new();
+        {
+            let iter = self.db.available_db.iter(self.txn())?;
+            for result in iter {
+                let (key, _): (_, PackageMetadata) = result?;
+                keys.push(key.to_string());
+            }
+        }
+        for key in keys {
+            self.db.available_db.delete(self.txn(), &key)?;
+        }
+        Ok(())
+    }
+
     pub fn update_repository_index(&mut self, _repo_name: &str, index_path: &str) -> Result<()> {
         let content = fs::read_to_string(index_path)?;
         let remote_pkgs: Vec<PackageMetadata> = serde_json::from_str(&content)?;
@@ -237,21 +261,39 @@ impl<'e> DbTransaction<'e> {
     }
 
     pub fn stage_package_removal(&mut self, name: &str) -> Result<()> {
-        let existing = self.db.installed_db.get(self.txn(), name)?;
-        if let Some(meta) = existing {
-            if let Some(provides) = &meta.provides {
-                for v in provides {
-                    self.db.virtual_db.delete(self.txn(), v)?;
+        let Some(meta) = self.db.installed_db.get(self.txn(), name)? else {
+            return Ok(());
+        };
+
+        if let Some(provides) = &meta.provides {
+            for v in provides {
+                // Re-point the virtual capability at another installed provider,
+                // or drop it entirely — never leave a dangling mapping.
+                let replacement = {
+                    let mut owner = None;
+                    let iter = self.db.installed_db.iter(self.txn())?;
+                    for result in iter {
+                        let (_key, other): (_, PackageMetadata) = result?;
+                        if other.pkg_name != meta.pkg_name
+                            && let Some(vs) = &other.provides
+                            && vs.contains(v)
+                        {
+                            owner = Some(other.pkg_name.clone());
+                            break;
+                        }
+                    }
+                    owner
+                };
+                match replacement {
+                    Some(provider) => { self.db.virtual_db.put(self.txn(), v, &provider)?; }
+                    None => { self.db.virtual_db.delete(self.txn(), v)?; }
                 }
             }
-            self.db.installed_db.delete(self.txn(), name)?;
-            self.tx_log.track_package(name)?;
         }
-        Ok(())
-    }
 
-    pub fn parallel_copy(&self, ops: &[ParallelFileOp]) -> Result<()> {
-        self.tx_log.parallel_copy(ops)
+        self.db.installed_db.delete(self.txn(), name)?;
+        self.tx_log.track_package(name)?;
+        Ok(())
     }
 
     pub fn backup_file(&mut self, path: &Path) -> Result<()> {
@@ -262,11 +304,15 @@ impl<'e> DbTransaction<'e> {
         self.tx_log.record_staged_file(path)
     }
 
+    /// Ordered commit protocol: journal intent, then commit the durable
+    /// LMDB transaction, then mark the intent complete. Backups are kept
+    /// until process exit.
     pub fn commit(mut self) -> Result<()> {
+        self.tx_log.prepare_commit()?;
         if let Some(txn) = self.txn.take() {
             txn.commit()?;
         }
-        self.tx_log.commit()?;
+        self.tx_log.finalize_commit()?;
         self.committed = true;
         Ok(())
     }

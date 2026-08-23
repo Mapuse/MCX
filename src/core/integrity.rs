@@ -39,7 +39,7 @@ impl IntegrityScanner {
             self.verify_package(pkg, &installed_names, &mut report);
         }
 
-        report.dangling_symlinks = self.count_dangling_symlinks();
+        report.dangling_symlinks = self.find_dangling_symlinks().len();
         report.total_packages = all_pkgs.len();
         report
     }
@@ -47,40 +47,67 @@ impl IntegrityScanner {
     fn verify_package(&self, pkg: &PackageMetadata, installed_names: &HashSet<String>, report: &mut IntegrityReport) {
         let pkg_dir = self.root.join(constants::PATH_ACTIVE).join(&pkg.pkg_name);
 
-        for file in &pkg.files {
-            let full_path = self.root.join(file);
-            if !full_path.exists() {
-                report.missing_files.push(MissingFile {
-                    pkg: pkg.pkg_name.clone(),
-                    path: file.clone(),
-                });
-                continue;
-            }
-            if !full_path.is_file() {
-                report.corrupted_files.push(CorruptedFile {
-                    pkg: pkg.pkg_name.clone(),
-                    path: file.clone(),
-                    reason: "Not a regular file".into(),
-                });
-                continue;
-            }
-            let actual = match hash_file(&full_path, &pkg.checksum.kind) {
-                Ok(h) => h,
-                Err(_) => {
-                    report.corrupted_files.push(CorruptedFile {
+        if pkg.file_hashes.is_empty() {
+            // Legacy package installed before per-file digests were recorded:
+            // perform existence checks only. Re-hashing each placed file
+            // against the whole-archive checksum produced false corruption
+            // reports because archives embed metadata alongside payloads.
+            for file in &pkg.files {
+                let full_path = self.root.join(file);
+                if !full_path.exists() {
+                    report.missing_files.push(MissingFile {
                         pkg: pkg.pkg_name.clone(),
                         path: file.clone(),
-                        reason: "Unreadable".into(),
+                    });
+                }
+            }
+        } else {
+            for file in &pkg.files {
+                let full_path = self.root.join(file);
+                if !full_path.exists() {
+                    report.missing_files.push(MissingFile {
+                        pkg: pkg.pkg_name.clone(),
+                        path: file.clone(),
                     });
                     continue;
                 }
-            };
-            if actual != pkg.checksum.value {
-                report.corrupted_files.push(CorruptedFile {
-                    pkg: pkg.pkg_name.clone(),
-                    path: file.clone(),
-                    reason: format!("Hash mismatch ({}): got {}, expected {}", pkg.checksum.kind, actual, pkg.checksum.value),
-                });
+                let md = match fs::symlink_metadata(&full_path) {
+                    Ok(md) => md,
+                    Err(_) => {
+                        report.corrupted_files.push(CorruptedFile {
+                            pkg: pkg.pkg_name.clone(),
+                            path: file.clone(),
+                            reason: "Unreadable".into(),
+                        });
+                        continue;
+                    }
+                };
+                // Symlinks are recreated verbatim at install time and carry
+                // no digest entry; only regular files are hash-verified.
+                if md.file_type().is_symlink() || !md.is_file() {
+                    continue;
+                }
+                let Some(expected) = pkg.file_hashes.get(&file.to_string_lossy().into_owned()) else {
+                    continue;
+                };
+                let actual = match hash_file(&full_path, "sha256") {
+                    Ok(h) => h,
+                    Err(_) => {
+                        report.corrupted_files.push(CorruptedFile {
+                            pkg: pkg.pkg_name.clone(),
+                            path: file.clone(),
+                            reason: "Unreadable".into(),
+                        });
+                        continue;
+                    }
+                };
+                if actual != *expected {
+                    report.corrupted_files.push(CorruptedFile {
+                        pkg: pkg.pkg_name.clone(),
+                        path: file.clone(),
+                        reason: format!("Hash mismatch (sha256): got {}, expected {}", actual, expected),
+                    });
+                }
             }
         }
 
@@ -157,43 +184,70 @@ impl IntegrityScanner {
         Ok(())
     }
 
-    fn count_dangling_symlinks(&self) -> usize {
-        let mut count = 0;
-        self.walk_dangling(&self.root, &mut count);
-        count
+    /// Prefixes mcx manages; dangling-link scans never leave these trees.
+    fn managed_prefixes(&self) -> Vec<PathBuf> {
+        ["usr", "etc", "var"].iter().map(|p| self.root.join(p)).collect()
     }
 
+    fn find_dangling_symlinks(&self) -> Vec<PathBuf> {
+        let mut found = Vec::new();
+        for prefix in self.managed_prefixes() {
+            Self::walk_dangling(&prefix, &mut found);
+        }
+        found
+    }
+
+    /// Depth-first walk that uses `symlink_metadata`, so symlinked
+    /// directories are never descended into — cycles and escapes out of the
+    /// managed tree are impossible by construction.
+    fn walk_dangling(dir: &Path, out: &mut Vec<PathBuf>) {
+        let entries = match fs::read_dir(dir) {
+            Ok(e) => e,
+            Err(_) => return,
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Ok(md) = fs::symlink_metadata(&path) else { continue };
+            if md.file_type().is_symlink() {
+                if !path.exists() {
+                    out.push(path);
+                }
+            } else if md.is_dir() {
+                Self::walk_dangling(&path, out);
+            }
+        }
+    }
+
+    /// Deletes dangling symlinks, but ONLY ones recorded in an installed
+    /// package's manifest — unmanaged links belong to the user or another
+    /// tool and must be left alone.
     fn clean_dangling_symlinks(&self) -> usize {
-        let mut count = 0;
-        self.remove_dangling(&self.root, &mut count);
-        count
-    }
+        let candidates = self.find_dangling_symlinks();
+        if candidates.is_empty() {
+            return 0;
+        }
 
-    fn walk_dangling(&self, dir: &Path, count: &mut usize) {
-        if let Ok(entries) = fs::read_dir(dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.is_symlink() && !path.exists() {
-                    *count += 1;
-                } else if path.is_dir() {
-                    self.walk_dangling(&path, count);
+        let mut owned: HashSet<PathBuf> = HashSet::new();
+        if let Ok(all) = self.db.get_all_installed_packages() {
+            for pkg in &all {
+                for f in &pkg.files {
+                    owned.insert(self.root.join(f));
                 }
             }
         }
-    }
 
-    fn remove_dangling(&self, dir: &Path, count: &mut usize) {
-        if let Ok(entries) = fs::read_dir(dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.is_symlink() && !path.exists() {
-                    let _ = fs::remove_file(&path);
-                    *count += 1;
-                } else if path.is_dir() {
-                    self.remove_dangling(&path, count);
-                }
+        let mut cleaned = 0;
+        for path in candidates {
+            if !owned.contains(&path) {
+                continue;
+            }
+            if let Err(e) = fs::remove_file(&path) {
+                eprintln!("Warning: failed to remove dangling symlink {:?}: {}", path, e);
+            } else {
+                cleaned += 1;
             }
         }
+        cleaned
     }
 }
 
@@ -213,6 +267,7 @@ pub struct MissingFile {
     pub path: PathBuf,
 }
 
+#[derive(Debug)]
 pub struct CorruptedFile {
     pub pkg: String,
     pub path: PathBuf,
@@ -276,6 +331,7 @@ fn hash_file(path: &Path, kind: &str) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
 
     #[test]
     fn test_hash_file_known_content() {
@@ -393,6 +449,7 @@ mod tests {
             components: Vec::new(),
             services: Vec::new(),
             binaries: Vec::new(),
+            file_hashes: HashMap::new(),
         };
         let mut tx = db.begin_transaction().expect("begin transaction");
         tx.register_package_placement(&pkg).expect("register package placement");
@@ -432,6 +489,7 @@ mod tests {
             components: Vec::new(),
             services: Vec::new(),
             binaries: Vec::new(),
+            file_hashes: HashMap::new(),
         };
         let mut tx = db.begin_transaction().expect("begin transaction");
         tx.register_package_placement(&pkg).expect("register package placement");
@@ -458,6 +516,26 @@ mod tests {
         }
 
         let db = crate::core::db::Database::open(&root).expect("open test database");
+        let pkg = crate::core::db::PackageMetadata {
+            pkg_name: "link-pkg".into(),
+            version: "1.0".into(),
+            license: "MIT".into(),
+            source: "https://example.com".into(),
+            checksum: crate::core::db::ChecksumData { kind: "sha256".into(), value: "0000".into() },
+            dependencies: vec![],
+            files: vec![PathBuf::from("usr/lib/broken.so")],
+            provides: Some(vec![]),
+            conflicts: Some(vec![]),
+            architecture: "native".to_string(),
+            components: Vec::new(),
+            services: Vec::new(),
+            binaries: Vec::new(),
+            file_hashes: HashMap::new(),
+        };
+        let mut tx = db.begin_transaction().expect("begin transaction");
+        tx.register_package_placement(&pkg).expect("register package placement");
+        tx.commit().expect("commit transaction");
+
         let scanner = IntegrityScanner::new(&root, Arc::new(db));
         let report = scanner.verify_all();
         #[cfg(unix)]
@@ -466,6 +544,80 @@ mod tests {
         let repair = scanner.repair_all();
         #[cfg(unix)]
         assert_eq!(repair.symlinks_cleaned, 1);
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Unmanaged dangling symlinks must be reported but never deleted.
+    #[cfg(unix)]
+    #[test]
+    fn test_repair_leaves_unowned_dangling_symlinks() {
+        let root = std::env::temp_dir().join(format!("mcx_test_int_unowned_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("usr/lib")).expect("create usr lib dir");
+        std::os::unix::fs::symlink("/nonexistent/target", root.join("usr/lib/user-link.so")).expect("create symlink");
+
+        let db = crate::core::db::Database::open(&root).expect("open test database");
+        let scanner = IntegrityScanner::new(&root, Arc::new(db));
+
+        let report = scanner.verify_all();
+        assert_eq!(report.dangling_symlinks, 1, "unowned links are still counted");
+
+        let repair = scanner.repair_all();
+        assert_eq!(repair.symlinks_cleaned, 0, "deletion is restricted to package-owned paths");
+        assert!(root.join("usr/lib/user-link.so").symlink_metadata().is_ok());
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Packages installed with per-file digests get content verification;
+    /// tampered content must be flagged as corrupted.
+    #[test]
+    fn test_verify_uses_recorded_file_hashes() {
+        let root = std::env::temp_dir().join(format!("mcx_test_int_hashes_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("usr/bin")).expect("create dir");
+        fs::write(root.join("usr/bin/tool"), b"original").expect("write file");
+
+        let mut hashes = HashMap::new();
+        hashes.insert(
+            "usr/bin/tool".to_string(),
+            hash_file(&root.join("usr/bin/tool"), "sha256").expect("hash"),
+        );
+
+        let db = crate::core::db::Database::open(&root).expect("open test database");
+        let pkg = crate::core::db::PackageMetadata {
+            pkg_name: "hashed-pkg".into(),
+            version: "1.0".into(),
+            license: "MIT".into(),
+            source: "https://example.com".into(),
+            checksum: crate::core::db::ChecksumData { kind: "sha256".into(), value: "deadbeef".into() },
+            dependencies: vec![],
+            files: vec![PathBuf::from("usr/bin/tool")],
+            provides: Some(vec![]),
+            conflicts: Some(vec![]),
+            architecture: "native".to_string(),
+            components: Vec::new(),
+            services: Vec::new(),
+            binaries: Vec::new(),
+            file_hashes: hashes,
+        };
+        let mut tx = db.begin_transaction().expect("begin transaction");
+        tx.register_package_placement(&pkg).expect("register placement");
+        tx.commit().expect("commit");
+
+        let scanner = IntegrityScanner::new(&root, Arc::new(db));
+
+        // Intact state: no corruption reported despite the archive checksum
+        // field being unrelated to file content.
+        let clean = scanner.verify_all();
+        assert!(clean.corrupted_files.is_empty(), "unexpected corruption: {:?}", clean.corrupted_files);
+
+        // Tamper with the placed file: per-file digest must catch it.
+        fs::write(root.join("usr/bin/tool"), b"tampered").expect("tamper");
+        let bad = scanner.verify_all();
+        assert_eq!(bad.corrupted_files.len(), 1, "tampering must be detected");
+        assert!(bad.corrupted_files[0].reason.contains("Hash mismatch"));
 
         let _ = fs::remove_dir_all(&root);
     }

@@ -1,6 +1,6 @@
 project('mcx', 'rust',
   version : '7.0.0',
-  license : 'unlicense',
+  license : 'MIT',
   default_options : [
     'optimization=3',
     'strip=true',

@@ -31,7 +31,7 @@ cpp = 'clang++'
 ar = 'llvm-ar'
 strip = 'llvm-strip'
 rust = 'rustc'
-pkg-config = '${SCRIPT_DIR}/scripts/pkgconfig.sh'
+pkg-config = '${SCRIPT_DIR}/pkgconfig.sh'
 
 [properties]
 sys_root = '${SYSROOT}'

@@ -14,6 +14,23 @@ pub struct RepositoryManager {
     sync_dir: PathBuf,
 }
 
+/// Repository names become INI section headers and index file names
+/// (`{name}.json`); keep them strictly limited to safe characters.
+fn validate_repository_name(name: &str) -> Result<()> {
+    let valid = !name.is_empty()
+        && name.len() <= 100
+        && !name.chars().all(|c| c == '.')
+        && name.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'));
+    if valid {
+        Ok(())
+    } else {
+        Err(anyhow!(
+            "Invalid repository name {:?}: allowed characters are [a-zA-Z0-9._-]",
+            name
+        ))
+    }
+}
+
 impl RepositoryManager {
     pub fn new<P: AsRef<Path>>(root: P) -> Self {
         Self {
@@ -64,6 +81,9 @@ impl RepositoryManager {
                     });
                 }
                 current_name = Some(line[1..line.len()-1].trim().to_string());
+                if let Some(name) = &current_name {
+                    validate_repository_name(name)?;
+                }
                 current_url = None;
                 current_checksum = None;
                 current_enabled = true;
@@ -111,6 +131,7 @@ impl RepositoryManager {
     }
 
     pub fn add_repository(&self, repo: RepositoryInfo) -> Result<()> {
+        validate_repository_name(&repo.name)?;
         let mut repos = self.load_repositories()?;
         if repos.iter().any(|r| r.name == repo.name) {
             return Err(anyhow!("Repository '{}' already exists", repo.name));

@@ -90,4 +90,16 @@ impl VendorManager {
     pub fn verify_vendor_presence(&self, pkg_name: &str) -> bool {
         self.vendor_dir.join(format!("{}.xcs", pkg_name)).exists()
     }
+
+    /// Returns the vendored archive for a package, preferring the exact
+    /// `name-version.xcs` payload and falling back to the bare `name.xcs`.
+    /// Lets installs complete fully offline without network access.
+    pub fn lookup_vendor_archive(&self, pkg_name: &str, version: &str) -> Option<PathBuf> {
+        let versioned = self.vendor_dir.join(format!("{}-{}.xcs", pkg_name, version));
+        if versioned.is_file() {
+            return Some(versioned);
+        }
+        let bare = self.vendor_dir.join(format!("{}.xcs", pkg_name));
+        bare.is_file().then_some(bare)
+    }
 }

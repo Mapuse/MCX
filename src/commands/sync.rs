@@ -25,9 +25,12 @@ impl SyncCommand {
             anyhow::bail!("No repositories synced successfully");
         }
 
-        // Load the synced indexes into the database
+        // Load the synced indexes into the database, replacing the whole
+        // available-package index in one transaction (stale entries from
+        // removed repositories disappear with it).
         let repos = mgr.load_repositories()?;
         let mut tx = self.db.begin_transaction()?;
+        tx.clear_available_index()?;
         for repo in &repos {
             let index_path = mgr.get_local_index_path(&repo.name);
             if index_path.exists() {

@@ -7,7 +7,7 @@ DESTDIR  ?=
 # ── cps: external package, fetched from upstream ─────────────────────────
 CPS_URL ?= https://github.com/Mapuse/CPS
 CPS_DIR ?= $(HOME)/cudane-deps/cps
-CPS_REF ?= d8d5f7da49917ea7636147b8a65f3541311c45ab
+CPS_REF ?= c4ba21e185398558052acec3f0b4619b4e8c0678
 
 $(CPS_DIR):
 	git clone $(CPS_URL) $(CPS_DIR)

@@ -36,6 +36,8 @@ pub const DEFAULT_MAX_RETRIES: u32 = 3;
 pub const DEFAULT_BASE_DELAY_MS: u64 = 200;
 pub const CHUNKED_DOWNLOAD_THRESHOLD: u64 = 5 * 1024 * 1024; // 5 MiB
 pub const MIN_CHUNK_SIZE: u64 = 1024 * 1024; // 1 MiB
+pub const DOWNLOAD_CONNECT_TIMEOUT_SECS: u64 = 10;
+pub const DOWNLOAD_READ_TIMEOUT_SECS: u64 = 60;
 
 // ── System profiler thresholds ──────────────────────────────────────────
 pub const CPU_THRESHOLD_HIGH: usize = 16;
@@ -93,7 +95,9 @@ pub const TRANSACTION_HASH_BUFFER_SIZE: usize = 65_536; // 64 KiB
 pub const HASH_BUFFER_SIZE: usize = 8 * 1024 * 1024; // 8 MiB
 
 // ── Database ────────────────────────────────────────────────────────────
-pub const DB_MAP_SIZE: usize = 10 * 1024 * 1024; // 10 MiB
+// Sparse virtual map: LMDB only commits pages that are actually touched,
+// so a large ceiling costs nothing on disk until the database grows into it.
+pub const DB_MAP_SIZE: usize = 1024 * 1024 * 1024; // 1 GiB
 pub const DB_MAX_DBS: u32 = 4;
 
 // ── Plugin system ───────────────────────────────────────────────────────
@@ -103,9 +107,6 @@ pub const PLUGIN_CONFIG_FILE: &str = "etc/mcx/p.desc";
 
 // ── Binaries ────────────────────────────────────────────────────────────
 pub const SELF_UPDATE_BINARY_PATH: &str = "/system/bin/mcx";
-pub const SELF_UPDATE_OLD_NAME: &str = "mcx.old";
-pub const SELF_UPDATE_NEW_EXT: &str = "mcx.new";
-pub const SELF_UPDATE_PERMISSIONS: u32 = 0o755;
 
 // ── Tool names ──────────────────────────────────────────────────────────
 pub const TOOL_CURL: &str = "curl";
@@ -156,7 +157,6 @@ pub const ELF64_PHENTSIZE_RANGE: std::ops::Range<usize> = 54..56;
 pub const ELF64_PHNUM_RANGE: std::ops::Range<usize> = 56..58;
 
 // ── UI defaults ─────────────────────────────────────────────────────────
-pub const UI_PROGRESS_BAR_WIDTH: usize = 18;
 pub const UI_TABLE_WIDTH: usize = 50;
 pub const UI_BLOCK_WIDTH: usize = 60;
 
@@ -164,15 +164,11 @@ pub const UI_BLOCK_WIDTH: usize = 60;
 pub const DEFAULT_CONFIG_INI: &str = "\
 [general]\n\
 log_level = info\n\
-log_file = /var/log/mcx.md\n\
-cache_dir = /var/cache/mcx\n\
-build_dir = /tmp/mcx/build\n\
 \n\
 [engine]\n\
 thread_pool_mode = auto\n\
 max_concurrent_downloads = 8\n\
 zstd_level = 3\n\
-io_parallelism = 4\n\
 \n\
 [network]\n\
 fallback_repos = enabled\n\
@@ -180,18 +176,8 @@ latency_threshold_ms = 200\n\
 bandwidth_threshold_kbps = 5000\n\
 concurrent_downloads = 8\n\
 \n\
-[security]\n\
-verify_checksums = true\n\
-allow_unverified = false\n\
-restricted_mode = false\n\
-allowed_paths = /system,/etc,/tmp,/var,/home\n\
-\n\
 [cache]\n\
 enabled = true\n\
-limit_bytes = 5368709120\n\
-max_size_mb = 1024\n\
-prune_age_hours = 168\n\
-ttl_hours = 24\n\
 \n\
 [python]\n\
 enabled = false\n\

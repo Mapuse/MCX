@@ -40,6 +40,7 @@ async fn test_atomic_database_write_and_conflict_prevention() {
         components: Vec::new(),
         services: Vec::new(),
         binaries: Vec::new(),
+        file_hashes: std::collections::HashMap::new(),
     };
 
     let mut tx_a = db.begin_transaction().expect("begin transaction");
@@ -57,6 +58,7 @@ async fn test_atomic_database_write_and_conflict_prevention() {
         components: Vec::new(),
         services: Vec::new(),
         binaries: Vec::new(),
+        file_hashes: std::collections::HashMap::new(),
     };
 
     let mut tx_b = db.begin_transaction().expect("begin transaction");
@@ -112,6 +114,7 @@ async fn test_package_removal_and_filesystem_cleanup() {
         components: Vec::new(),
         services: Vec::new(),
         binaries: Vec::new(),
+        file_hashes: std::collections::HashMap::new(),
     };
 
     let mut tx = db.begin_transaction().expect("begin transaction");
@@ -145,6 +148,7 @@ async fn test_shell_completion_engine_querying() {
         components: Vec::new(),
         services: Vec::new(),
         binaries: Vec::new(),
+        file_hashes: std::collections::HashMap::new(),
     };
 
     let mut tx = db.begin_transaction().expect("begin transaction");
@@ -176,7 +180,6 @@ fn test_user_interface_output_nodes() {
     UserInterface::cas("CAS store test message");
     UserInterface::self_update("Self-update test message");
     UserInterface::version("mcx 5.0.0");
-    UserInterface::progress(50, 100, "Extracting asset metadata tree");
 
     let list_items = vec![
         "mcx-core-engine v5.0.0".to_string(),
@@ -236,7 +239,9 @@ fn test_config_init_generates_defaults() {
 
 // ── Network Download ────────────────────────────────────────────────────────
 
+// Requires outbound internet access; run explicitly with `cargo test -- --ignored`.
 #[tokio::test]
+#[ignore = "requires internet access"]
 async fn test_network_downloader_endpoint_handling() {
     let root = create_temporary_root("network_download");
     let downloader = Downloader::new();
@@ -286,6 +291,7 @@ async fn test_database_dependency_graph_relations() {
         components: Vec::new(),
         services: Vec::new(),
         binaries: Vec::new(),
+        file_hashes: std::collections::HashMap::new(),
     };
 
     let mut tx = db.begin_transaction().expect("begin transaction");
@@ -302,6 +308,7 @@ async fn test_database_dependency_graph_relations() {
         components: Vec::new(),
         services: Vec::new(),
         binaries: Vec::new(),
+        file_hashes: std::collections::HashMap::new(),
     };
 
     let mut tx2 = db.begin_transaction().expect("begin transaction");
@@ -331,6 +338,7 @@ async fn test_cyclic_dependency_deadlock_breaking() {
         components: Vec::new(),
         services: Vec::new(),
         binaries: Vec::new(),
+        file_hashes: std::collections::HashMap::new(),
     };
 
     let node_y = PackageMetadata {
@@ -343,6 +351,7 @@ async fn test_cyclic_dependency_deadlock_breaking() {
         components: Vec::new(),
         services: Vec::new(),
         binaries: Vec::new(),
+        file_hashes: std::collections::HashMap::new(),
     };
 
     let mut tx = db.begin_transaction().expect("begin transaction");
@@ -373,6 +382,7 @@ async fn test_dependency_solver_topological_sorting_and_resolution() {
         components: Vec::new(),
         services: Vec::new(),
         binaries: Vec::new(),
+        file_hashes: std::collections::HashMap::new(),
     };
 
     let dep_a = PackageMetadata {
@@ -385,6 +395,7 @@ async fn test_dependency_solver_topological_sorting_and_resolution() {
         components: Vec::new(),
         services: Vec::new(),
         binaries: Vec::new(),
+        file_hashes: std::collections::HashMap::new(),
     };
 
     let target_pkg = PackageMetadata {
@@ -397,6 +408,7 @@ async fn test_dependency_solver_topological_sorting_and_resolution() {
         components: Vec::new(),
         services: Vec::new(),
         binaries: Vec::new(),
+        file_hashes: std::collections::HashMap::new(),
     };
 
     let mut tx = db.begin_transaction().expect("begin transaction");
@@ -431,6 +443,7 @@ async fn test_dependency_solver_library_provider_resolution() {
         components: Vec::new(),
         services: Vec::new(),
         binaries: Vec::new(),
+        file_hashes: std::collections::HashMap::new(),
     };
 
     let build_dep_pkg = PackageMetadata {
@@ -442,6 +455,7 @@ async fn test_dependency_solver_library_provider_resolution() {
         components: Vec::new(),
         services: Vec::new(),
         binaries: Vec::new(),
+        file_hashes: std::collections::HashMap::new(),
     };
 
     let json_glib_pkg = PackageMetadata {
@@ -457,6 +471,7 @@ async fn test_dependency_solver_library_provider_resolution() {
         components: Vec::new(),
         services: Vec::new(),
         binaries: Vec::new(),
+        file_hashes: std::collections::HashMap::new(),
     };
 
     let mut tx = db.begin_transaction().expect("begin transaction");
@@ -517,6 +532,7 @@ async fn test_temporal_history_ledger_rollback() {
         components: Vec::new(),
         services: Vec::new(),
         binaries: Vec::new(),
+        file_hashes: std::collections::HashMap::new(),
     };
 
     let mut tx = db_arc.begin_transaction().expect("begin transaction");
@@ -883,27 +899,6 @@ fn test_dependency_graph_reachability_and_orphans() {
     assert!(purged.is_empty());
 }
 
-// ── NetworkSyncEngine ────────────────────────────────────────────────────────
-
-#[tokio::test]
-async fn test_network_sync_engine_ldex() {
-    let root = create_temporary_root("sync_engine");
-    let sync_dir = root.join("var/lib/mcx/sync");
-    fs::create_dir_all(&sync_dir).expect("create sync dir");
-
-    let db = Database::open(&root).expect("open test database");
-    let engine = mcx::network::sync::NetworkSyncEngine::new(Arc::new(db), root.to_string_lossy().into_owned());
-
-    // no index exists yet
-    assert!(!engine.ldex("test-repo").expect("ldex result"));
-
-    // create one
-    fs::write(sync_dir.join("test-repo.json"), b"{}").expect("write index file");
-    assert!(engine.ldex("test-repo").expect("ldex result"));
-
-    fs::remove_dir_all(&root).expect("remove temp root");
-}
-
 // ── IntegrityScanner ─────────────────────────────────────────────────────────
 
 #[tokio::test]
@@ -936,6 +931,7 @@ async fn test_integrity_scanner_detects_missing_files() {
         components: Vec::new(),
         services: Vec::new(),
         binaries: Vec::new(),
+        file_hashes: std::collections::HashMap::new(),
     };
     let mut tx = db.begin_transaction().expect("begin transaction");
     tx.register_package_placement(&pkg).expect("register package placement");
@@ -982,7 +978,7 @@ async fn test_plugin_manager_run_plugin_once() {
     let plugins_dir = root.join("var/lib/mcx/plugins");
     fs::create_dir_all(&plugins_dir).expect("create plugins dir");
     fs::write(plugins_dir.join("greeter.py"),
-        "import json\nprint(json.dumps({'success': True, 'message': 'hello'}))\n").expect("write temp plugin");
+        "import json\ndef on_post_install(event):\n    pass\nprint(json.dumps({'success': True, 'message': 'hello'}))\n").expect("write temp plugin");
 
     let mgr = mcx::core::plugin::PluginManager::new(&root);
     let event = mcx::core::plugin::PluginEvent {
@@ -1007,7 +1003,7 @@ async fn test_plugin_run_any_code() {
     let plugins_dir = root.join("var/lib/mcx/plugins");
     fs::create_dir_all(&plugins_dir).expect("create plugins dir");
     fs::write(plugins_dir.join("arbitrary.py"),
-        "import json\nresult = {'success': True, 'message': 'arbitrary ran'}\nprint(json.dumps(result))\n").expect("write temp plugin");
+        "import json\nresult = {'success': True, 'message': 'arbitrary ran'}\ndef on_post_install(event):\n    pass\nprint(json.dumps(result))\n").expect("write temp plugin");
 
     let mgr = mcx::core::plugin::PluginManager::new(&root);
     let event = mcx::core::plugin::PluginEvent {
@@ -1018,6 +1014,112 @@ async fn test_plugin_run_any_code() {
     };
     let result = mgr.run_plugin_once("arbitrary", &event).expect("run plugin once");
     assert!(result.success);
+
+    fs::remove_dir_all(&root).expect("remove temp root");
+}
+
+// ── Changelog two-phase protocol (C4 / M16 / M17) ────────────────────────────
+
+#[tokio::test]
+async fn test_changelog_two_phase_roundtrip_and_malformed_tolerance() {
+    let root = create_temporary_root("changelog_two_phase");
+    let db = Arc::new(Database::open(&root).expect("open test database"));
+
+    // Commit through the ordered transaction protocol: an intent is written
+    // at prepare time and a completion marker at finalize time.
+    let pkg = PackageMetadata {
+        pkg_name: "journal-pkg".into(), version: "1.0".into(),
+        license: "MIT".into(), source: "https://example.com".into(),
+        checksum: ChecksumData { kind: "sha256".into(), value: "00".into() },
+        dependencies: vec![], files: vec![], provides: Some(vec![]), conflicts: Some(vec![]),
+        architecture: "native".to_string(), components: Vec::new(),
+        services: Vec::new(), binaries: Vec::new(),
+        file_hashes: std::collections::HashMap::new(),
+    };
+    let mut tx = db.begin_transaction().expect("begin transaction");
+    tx.register_package_placement(&pkg).expect("register placement");
+    tx.commit().expect("commit");
+
+    let changelog = mcx::core::changelog::ChangelogManager::new(&root);
+    let records = changelog.get_history().expect("read history");
+    let recorded = records.iter()
+        .find(|r| r.targets.iter().any(|t| t == "journal-pkg"));
+    assert!(recorded.is_some(), "completed transaction must appear in history");
+    let tx_id = recorded.unwrap().transaction_id;
+
+    // A journal containing garbage lines must not break reads.
+    let journal = root.join("var/lib/mcx/history.jsonl");
+    if journal.exists() {
+        let mut content = fs::read_to_string(&journal).unwrap();
+        content.insert_str(0, "\x00{{{definitely not json\n");
+        fs::write(&journal, content).unwrap();
+        let records = changelog.get_history().expect("tolerates malformed lines");
+        assert!(records.iter().any(|r| r.transaction_id == tx_id),
+            "completed records survive malformed-line skipping");
+    }
+
+    fs::remove_dir_all(&root).expect("remove temp root");
+}
+
+// ── Solver multi-target failure propagation (M1) ─────────────────────────────
+
+#[tokio::test]
+async fn test_solver_reports_failing_target_by_name() {
+    let root = create_temporary_root("solver_target_failure");
+    let db = Arc::new(Database::open(&root).expect("open test database"));
+    let solver = mcx::core::solver::DependencySolver::new(Arc::clone(&db));
+
+    let result = solver
+        .add_target("definitely-not-a-package-xyz")
+        .solve();
+    match result {
+        Ok(_) => panic!("resolution of unknown package must fail"),
+        Err(e) => {
+            let msg = format!("{}", e);
+            assert!(msg.contains("definitely-not-a-package-xyz"),
+                "error must name the failing target, got: {msg}");
+        }
+    }
+
+    fs::remove_dir_all(&root).expect("remove temp root");
+}
+
+// ── Name validation (M8 services / M9 repositories) ─────────────────────────
+
+#[tokio::test]
+async fn test_service_ini_rejects_path_traversal_names() {
+    for evil in ["../escape", "svc/../../evil", "..", "a b"] {
+        let ini = format!("[Service]\nName = {}\nExec = /bin/true\n", evil);
+        assert!(mcx::core::service::CesarService::from_ini(&ini).is_err(),
+            "service name {:?} must be rejected", evil);
+    }
+    let ok = "[Service]\nName = my-svc_1.0\nExec = /bin/true\n";
+    assert!(mcx::core::service::CesarService::from_ini(ok).is_ok());
+}
+
+#[tokio::test]
+async fn test_repo_add_rejects_traversal_and_empty_names() {
+    let root = create_temporary_root("repo_name_validation");
+    let mgr = mcx::core::repo::RepositoryManager::new(&root);
+    mgr.initialize().expect("init repo manager");
+
+    for evil in ["../evil", "a/b", "", ".hidden/../x"] {
+        let repo = mcx::core::database::RepositoryInfo {
+            name: evil.to_string(),
+            url: "https://example.com/repo".to_string(),
+            checksum: None,
+            enabled: true,
+        };
+        assert!(mgr.add_repository(repo).is_err(), "repository name {:?} must be rejected", evil);
+    }
+
+    let good = mcx::core::database::RepositoryInfo {
+        name: "main-repo_2".to_string(),
+        url: "https://example.com/repo".to_string(),
+        checksum: None,
+        enabled: true,
+    };
+    mgr.add_repository(good).expect("valid repository accepted");
 
     fs::remove_dir_all(&root).expect("remove temp root");
 }

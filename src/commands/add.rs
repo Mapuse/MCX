@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -85,7 +86,15 @@ impl AddLocalCommand {
         let mut installed_files = Vec::new();
         Self::collect_relative_files(&stage_dir, &stage_dir, &mut installed_files)?;
 
+        // Open the transaction and record every file we are about to place
+        // *before* touching the live filesystem, so Drop-rollback can undo
+        // a partially applied local install. Collision checks also run
+        // before any bytes land on disk.
+        let mut db_tx = self.db.begin_transaction()?;
+
+        let mut file_hashes = HashMap::new();
         for rel_path in &installed_files {
+            db_tx.record_staged_file(rel_path.clone())?;
             let src = stage_dir.join(rel_path);
             let dest = self.root.join(rel_path);
 
@@ -93,15 +102,25 @@ impl AddLocalCommand {
                 fs::create_dir_all(parent)?;
             }
 
-            if src.is_file() {
-                fs::copy(&src, &dest)?;
+            // symlink_metadata never follows links: recreate symlinks as
+            // symlinks instead of copying through them.
+            let src_meta = fs::symlink_metadata(&src)?;
+            if src_meta.file_type().is_symlink() {
+                let link_target = fs::read_link(&src)?;
+                if dest.symlink_metadata().is_ok() {
+                    fs::remove_file(&dest)?;
+                }
+                std::os::unix::fs::symlink(&link_target, &dest)?;
+                continue;
             }
-        }
-
-        let mut db_tx = self.db.begin_transaction()?;
-
-        for rel_path in &installed_files {
-            db_tx.record_staged_file(rel_path.clone())?;
+            if !src_meta.is_file() {
+                continue;
+            }
+            crate::core::transaction::atomic_copy(&src, &dest)?;
+            file_hashes.insert(
+                rel_path.to_string_lossy().into_owned(),
+                HashVerifier::calculate(&src, "sha256")?,
+            );
         }
 
         let db_metadata = PackageMetadata {
@@ -118,6 +137,7 @@ impl AddLocalCommand {
             components: Vec::new(),
             services: Vec::new(),
             binaries: Vec::new(),
+            file_hashes,
         };
 
         db_tx.register_package_placement(&db_metadata)?;
@@ -157,7 +177,10 @@ impl AddLocalCommand {
             let rel = path.strip_prefix(base)
                 .map_err(|_| anyhow!("Path strip error"))?
                 .to_path_buf();
-            if path.is_dir() {
+            // symlink_metadata never follows links, so collection does not
+            // descend through symlinked directories.
+            let metadata = fs::symlink_metadata(&path)?;
+            if metadata.is_dir() {
                 Self::collect_relative_files(&path, base, files)?;
             } else {
                 files.push(rel);

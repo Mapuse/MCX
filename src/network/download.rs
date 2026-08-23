@@ -6,7 +6,7 @@ use std::time::Duration;
 use anyhow::{Result, anyhow, Context};
 use futures::future::join_all;
 use rand::Rng;
-use reqwest::header::{ACCEPT_RANGES, CONTENT_LENGTH, ETAG, IF_NONE_MATCH, RANGE};
+use reqwest::header::{ACCEPT_RANGES, CONTENT_LENGTH, ETAG, IF_NONE_MATCH, IF_RANGE, RANGE};
 use reqwest::Client;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::Mutex;
@@ -33,6 +33,10 @@ impl Downloader {
             .pool_idle_timeout(Duration::from_secs(constants::POOL_IDLE_TIMEOUT_SECS))
             .tcp_keepalive(Duration::from_secs(constants::TCP_KEEPALIVE_SECS))
             .pool_max_idle_per_host(constants::POOL_MAX_IDLE_PER_HOST)
+            // Bound connection establishment and per-read stalls so an
+            // unresponsive mirror cannot hang the client indefinitely.
+            .connect_timeout(Duration::from_secs(constants::DOWNLOAD_CONNECT_TIMEOUT_SECS))
+            .read_timeout(Duration::from_secs(constants::DOWNLOAD_READ_TIMEOUT_SECS))
             .build()
             .expect("build reqwest client");
         Self {
@@ -112,12 +116,29 @@ impl Downloader {
             if accept_ranges && cl > constants::CHUNKED_DOWNLOAD_THRESHOLD {
                 self.download_chunked(url, &part_path, cl).await?;
             } else {
-                let resume_from = self.partial_size(&part_path, accept_ranges).await;
-                self.download_streaming(url, &part_path, resume_from).await?;
+                let part_size = self.partial_size(&part_path, accept_ranges).await;
+                // A complete sibling `.part` is promoted directly; integrity is
+                // still enforced later via the archive checksum.
+                if let Some(cl) = content_length
+                    && accept_ranges
+                    && part_size == cl
+                {
+                    tokio::fs::rename(&part_path, destination).await?;
+                    return Ok(new_etag);
+                }
+                // Never resume from a partial that is larger than the remote
+                // object — it belongs to a stale, different transfer.
+                let resume_from = match content_length {
+                    Some(cl) if part_size < cl => part_size,
+                    _ => 0,
+                };
+                // If-Range makes the server reject the range request when the
+                // resource changed since the ETag we saw; we then restart cleanly.
+                self.download_streaming(url, &part_path, resume_from, new_etag.as_deref()).await?;
             }
         } else {
             // Without a known length we cannot resume reliably.
-            self.download_streaming(url, &part_path, 0).await?;
+            self.download_streaming(url, &part_path, 0, None).await?;
         }
 
         tokio::fs::rename(&part_path, destination).await?;
@@ -134,7 +155,7 @@ impl Downloader {
         }
     }
 
-    async fn download_streaming(&self, url: &str, part: &Path, mut resume_from: u64) -> Result<()> {
+    async fn download_streaming(&self, url: &str, part: &Path, mut resume_from: u64, etag: Option<&str>) -> Result<()> {
         loop {
             if resume_from == 0 {
                 let resp = self.client.get(url).send().await?;
@@ -147,11 +168,13 @@ impl Downloader {
                 return Ok(());
             }
 
-            let resp = self.client
+            let mut req = self.client
                 .get(url)
-                .header(RANGE, format!("bytes={}-", resume_from))
-                .send()
-                .await?;
+                .header(RANGE, format!("bytes={}-", resume_from));
+            if let Some(tag) = etag {
+                req = req.header(IF_RANGE, tag);
+            }
+            let resp = req.send().await?;
 
             match resp.status() {
                 reqwest::StatusCode::PARTIAL_CONTENT => {

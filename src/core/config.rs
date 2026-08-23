@@ -1,80 +1,58 @@
-use std::borrow::Cow;
 use std::fs;
-use std::marker::PhantomData;
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::path::Path;
 use anyhow::{Result, Context};
-use memmap2::Mmap;
 use super::constants;
 
-static CONFIG_GENERATION: AtomicUsize = AtomicUsize::new(0);
-
 #[derive(Clone, Debug)]
-pub struct MappedConfigEntry<'a> {
-    pub key: &'a str,
-    pub value: &'a str,
+pub struct MappedConfigEntry {
+    pub key: String,
+    pub value: String,
 }
 
 #[derive(Clone, Debug)]
-pub struct MappedConfigSection<'a> {
-    pub key: &'a str,
-    pub entries: Vec<MappedConfigEntry<'a>>,
+pub struct MappedConfigSection {
+    pub key: String,
+    pub entries: Vec<MappedConfigEntry>,
 }
 
-pub struct MappedConfig<'a> {
-    #[allow(dead_code)]
-    mmap: Arc<Mmap>,
+/// Owned INI-style configuration. The file content is read into memory once;
+/// an empty or whitespace-only file is valid and yields no sections.
+#[derive(Clone, Debug, Default)]
+pub struct MappedConfig {
     generation: usize,
-    sections: Vec<MappedConfigSection<'a>>,
-    _phantom: PhantomData<&'a ()>,
+    sections: Vec<MappedConfigSection>,
 }
 
-unsafe impl<'a> Send for MappedConfig<'a> {}
-unsafe impl<'a> Sync for MappedConfig<'a> {}
-
-impl<'a> MappedConfig<'a> {
+impl MappedConfig {
     pub fn from_file(path: &Path) -> Result<Self> {
-        let file = fs::File::open(path)
-            .with_context(|| format!("Failed to open config file for mmap: {:?}", path))?;
-        let mmap = unsafe { Mmap::map(&file) }
-            .context("Failed to memory-map config file")?;
-        // Validate UTF-8 safety before creating the reference
-        std::str::from_utf8(&mmap)
-            .map_err(|e| anyhow::anyhow!("Config file is not valid UTF-8: {}", e))?;
-        // SAFETY: validated UTF-8 above; Arc<Mmap> keeps the data alive for 'a
-        let raw = unsafe {
-            std::str::from_utf8_unchecked(std::slice::from_raw_parts(mmap.as_ptr(), mmap.len()))
-        };
-        let generation = CONFIG_GENERATION.fetch_add(1, Ordering::Relaxed);
-        let mut parser = ConfigParser { input: raw, pos: 0 };
-        let sections = parser.parse_all();
-        Ok(Self { mmap: Arc::new(mmap), generation, sections, _phantom: PhantomData })
+        let content = fs::read_to_string(path)
+            .with_context(|| format!("Failed to read config file: {:?}", path))?;
+        let generation = next_generation();
+        let mut parser = ConfigParser { input: &content, pos: 0 };
+        Ok(Self { generation, sections: parser.parse_all() })
     }
 
     pub fn generation(&self) -> usize { self.generation }
 
-    pub fn get(&self, section: &str, key: &str) -> Option<&'a str> {
+    pub fn get(&self, section: &str, key: &str) -> Option<&str> {
         self.sections.iter()
             .find(|s| s.key == section)
             .and_then(|s| s.entries.iter().find(|e| e.key == key))
-            .map(|e| e.value)
+            .map(|e| e.value.as_str())
     }
 
-    pub fn get_section(&self, section: &str) -> Option<&[MappedConfigEntry<'a>]> {
+    pub fn get_section(&self, section: &str) -> Option<&[MappedConfigEntry]> {
         self.sections.iter()
             .find(|s| s.key == section)
             .map(|s| s.entries.as_slice())
     }
 
-    pub fn sections(&self) -> &[MappedConfigSection<'a>] {
+    pub fn sections(&self) -> &[MappedConfigSection] {
         &self.sections
     }
 
-    pub fn get_or<'b>(&self, section: &str, key: &str, default: &'b str) -> Cow<'a, str> {
-        self.get(section, key)
-            .map(Cow::Borrowed)
-            .unwrap_or_else(|| Cow::Owned(default.to_string()))
+    pub fn get_or<'a>(&'a self, section: &str, key: &str, default: &'a str) -> &'a str {
+        self.get(section, key).unwrap_or(default)
     }
 
     pub fn get_u64(&self, section: &str, key: &str) -> Option<u64> {
@@ -93,13 +71,19 @@ impl<'a> MappedConfig<'a> {
     }
 }
 
+static CONFIG_GENERATION: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+fn next_generation() -> usize {
+    CONFIG_GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
 struct ConfigParser<'a> {
     input: &'a str,
     pos: usize,
 }
 
 impl<'a> ConfigParser<'a> {
-    fn parse_all(&mut self) -> Vec<MappedConfigSection<'a>> {
+    fn parse_all(&mut self) -> Vec<MappedConfigSection> {
         let mut sections = Vec::new();
         loop {
             self.skip_whitespace_and_newlines();
@@ -117,68 +101,83 @@ impl<'a> ConfigParser<'a> {
         sections
     }
 
-    fn parse_section(&mut self) -> Option<MappedConfigSection<'a>> {
+    fn parse_section(&mut self) -> Option<MappedConfigSection> {
         if self.peek() != Some('[') { return None; }
         self.pos += 1;
         let start = self.pos;
-        while self.pos < self.input.len() && self.input.as_bytes()[self.pos] != b']' {
+        while let Some(c) = self.peek() {
+            if c == ']' { break; }
             self.pos += 1;
         }
-        if self.pos >= self.input.len() { return None; }
-        let key = self.input[start..self.pos].trim();
-        self.pos += 1;
-        let entries = self.parse_entries_until_next_section();
-        Some(MappedConfigSection { key, entries })
+        if self.pos > start && self.pos < self.input.len() {
+            let key = self.input[start..self.pos].trim().to_string();
+            self.pos += 1; // consume ']'
+            MappedConfigSection {
+                key,
+                entries: self.parse_entries_until_next_section(),
+            }.into()
+        } else {
+            None
+        }
     }
 
-    fn parse_entries_until_next_section(&mut self) -> Vec<MappedConfigEntry<'a>> {
+    fn parse_entries_until_next_section(&mut self) -> Vec<MappedConfigEntry> {
         let mut entries = Vec::new();
         loop {
-            self.skip_whitespace_and_newlines();
-            if self.pos >= self.input.len() { break; }
-            let c = self.peek().expect("peek char");
-            if c == '[' { break; }
-            if c == '#' || c == ';' { self.skip_line(); continue; }
-            if let Some(entry) = self.parse_entry() {
-                entries.push(entry);
+            self.skip_whitespace_only();
+            match self.peek() {
+                None => break,
+                Some('[') => break,
+                Some('#') | Some(';') => { self.skip_line(); }
+                _ => {
+                    if let Some(entry) = self.parse_entry() {
+                        entries.push(entry);
+                    }
+                }
             }
         }
         entries
     }
 
-    fn parse_entry(&mut self) -> Option<MappedConfigEntry<'a>> {
+    fn parse_entry(&mut self) -> Option<MappedConfigEntry> {
         let start = self.pos;
-        while self.pos < self.input.len() && self.input.as_bytes()[self.pos] != b'=' {
-            if self.input.as_bytes()[self.pos] == b'\n' { return None; }
+        while let Some(c) = self.peek() {
+            if c == '=' || c == '\n' { break; }
             self.pos += 1;
         }
-        if self.pos >= self.input.len() { return None; }
-        let key = self.input[start..self.pos].trim_end();
-        self.pos += 1;
-        let val_start = self.pos;
-        while self.pos < self.input.len() && self.input.as_bytes()[self.pos] != b'\n' {
+        if self.peek() != Some('=') {
+            // Not a valid entry; skip the malformed line.
+            self.skip_line();
+            return None;
+        }
+        let key = self.input[start..self.pos].trim().to_string();
+        self.pos += 1; // consume '='
+        let value_start = self.pos;
+        while let Some(c) = self.peek() {
+            if c == '\n' { break; }
             self.pos += 1;
         }
-        let value = self.input[val_start..self.pos].trim();
-        self.pos += 1;
-        if key.is_empty() { return None; }
+        let value = self.input[value_start..self.pos].trim().to_string();
         Some(MappedConfigEntry { key, value })
     }
 
     fn skip_whitespace_and_newlines(&mut self) {
-        while self.pos < self.input.len() {
-            let b = self.input.as_bytes()[self.pos];
-            if b == b' ' || b == b'\t' || b == b'\r' || b == b'\n' {
-                self.pos += 1;
-            } else { break; }
+        while let Some(c) = self.peek() {
+            if c.is_whitespace() { self.pos += 1; } else { break; }
+        }
+    }
+
+    fn skip_whitespace_only(&mut self) {
+        while let Some(c) = self.peek() {
+            if c == ' ' || c == '\t' { self.pos += 1; } else { break; }
         }
     }
 
     fn skip_line(&mut self) {
-        while self.pos < self.input.len() && self.input.as_bytes()[self.pos] != b'\n' {
+        while let Some(c) = self.peek() {
             self.pos += 1;
+            if c == '\n' { break; }
         }
-        if self.pos < self.input.len() { self.pos += 1; }
     }
 
     fn peek(&self) -> Option<char> {
@@ -186,12 +185,9 @@ impl<'a> ConfigParser<'a> {
     }
 }
 
-#[allow(dead_code)]
 pub struct ConfigManager {
-    local_path: PathBuf,
-    repo_path: PathBuf,
-    local_config: MappedConfig<'static>,
-    repo_config: MappedConfig<'static>,
+    local_config: MappedConfig,
+    repo_config: MappedConfig,
 }
 
 impl ConfigManager {
@@ -214,14 +210,14 @@ impl ConfigManager {
         let local_config = MappedConfig::from_file(&local_path)?;
         let repo_config = MappedConfig::from_file(&repo_path)?;
 
-        Ok(Self { local_path, repo_path, local_config, repo_config })
+        Ok(Self { local_config, repo_config })
     }
 
-    pub fn local(&self) -> &MappedConfig<'static> {
+    pub fn local(&self) -> &MappedConfig {
         &self.local_config
     }
 
-    pub fn repo(&self) -> &MappedConfig<'static> {
+    pub fn repo(&self) -> &MappedConfig {
         &self.repo_config
     }
 
@@ -246,27 +242,6 @@ impl ConfigManager {
         }
     }
 
-    pub fn calibrate(&self) -> CalibratedParams {
-        let cpus = num_cpus::get();
-        let cfg = &self.local_config;
-        let thread_mode = cfg.get("engine", "thread_pool_mode").unwrap_or(constants::DEFAULT_THREAD_POOL_MODE);
-        let thread_pool_size = match thread_mode {
-            "max" => cpus * 2,
-            "half" => (cpus / 2).max(1),
-            "quad" => cpus * 4,
-            _ => cpus,
-        };
-        CalibratedParams {
-            thread_pool_size,
-            concurrent_downloads: cfg.get_usize("engine", "max_concurrent_downloads").unwrap_or(cpus.min(constants::DEFAULT_MAX_CONCURRENT_DOWNLOADS)),
-            zstd_level: cfg.get_u64("engine", "zstd_level").unwrap_or(constants::DEFAULT_ZSTD_LEVEL as u64) as i32,
-            io_parallelism: thread_pool_size.max(2),
-            network_latency_adaptive: cfg.get_bool("network", "fallback_repos").unwrap_or(true),
-            latency_threshold_ms: cfg.get_u64("network", "latency_threshold_ms").unwrap_or(constants::DEFAULT_LATENCY_THRESHOLD_MS),
-            bandwidth_threshold_kbps: cfg.get_u64("network", "bandwidth_threshold_kbps").unwrap_or(constants::DEFAULT_BANDWIDTH_THRESHOLD_KBPS),
-        }
-    }
-
     fn write_default_local(path: &Path) -> Result<()> {
         fs::write(path, constants::DEFAULT_CONFIG_INI.as_bytes())?;
         Ok(())
@@ -277,31 +252,3 @@ impl ConfigManager {
         Ok(())
     }
 }
-
-#[derive(Clone, Debug)]
-pub struct CalibratedParams {
-    pub thread_pool_size: usize,
-    pub concurrent_downloads: usize,
-    pub zstd_level: i32,
-    pub io_parallelism: usize,
-    pub network_latency_adaptive: bool,
-    pub latency_threshold_ms: u64,
-    pub bandwidth_threshold_kbps: u64,
-}
-
-impl Default for CalibratedParams {
-    fn default() -> Self {
-        let cpus = num_cpus::get();
-        Self {
-            thread_pool_size: cpus,
-            concurrent_downloads: cpus.min(constants::DEFAULT_MAX_CONCURRENT_DOWNLOADS),
-            zstd_level: constants::DEFAULT_ZSTD_LEVEL,
-            io_parallelism: cpus.max(2),
-            network_latency_adaptive: true,
-            latency_threshold_ms: constants::DEFAULT_LATENCY_THRESHOLD_MS,
-            bandwidth_threshold_kbps: constants::DEFAULT_BANDWIDTH_THRESHOLD_KBPS,
-        }
-    }
-}
-
-

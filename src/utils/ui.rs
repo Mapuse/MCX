@@ -1,4 +1,3 @@
-use std::io::{self, Write};
 use crate::core::constants;
 
 pub struct UserInterface;
@@ -32,10 +31,6 @@ impl UserInterface {
         println!(" [♻] :: {}", message);
     }
 
-    pub fn sandbox(message: &str) {
-        println!(" [▣] :: {}", message);
-    }
-
     pub fn cgroup(message: &str) {
         println!(" [@] :: {}", message);
     }
@@ -50,34 +45,6 @@ impl UserInterface {
 
     pub fn self_update(message: &str) {
         println!(" [↑] :: {}", message);
-    }
-
-    pub fn progress(current: usize, total: usize, prefix: &str) {
-        let percentage = (current * 100).checked_div(total).unwrap_or(0);
-        let bar_width: usize = constants::UI_PROGRESS_BAR_WIDTH;
-        let filled_blocks = (current * bar_width).checked_div(total).unwrap_or(0);
-        
-        let filled = "█".repeat(filled_blocks);
-        let empty = "░".repeat(bar_width - filled_blocks);
-
-        print!(
-            "\r   ⤷  {:<14} [{}{}] {:3}% ({}/{})",
-            prefix, filled, empty, percentage, current, total
-        );
-        let _ = io::stdout().flush();
-    }
-
-    pub fn prompt_confirmation(prompt: &str) -> bool {
-        print!("  ? {} [y/N] ❯ ", prompt);
-        let _ = io::stdout().flush();
-
-        let mut input = String::new();
-        if io::stdin().read_line(&mut input).is_err() {
-            return false;
-        }
-
-        let trimmed = input.trim().to_lowercase();
-        trimmed == "y" || trimmed == "yes"
     }
 
     pub fn render_list(title: &str, items: &[String]) {

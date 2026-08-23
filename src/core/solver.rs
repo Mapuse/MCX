@@ -1,11 +1,10 @@
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use anyhow::{Result, anyhow};
 use memmap2::Mmap;
-use sha2::{Sha256, Digest};
 use crate::core::constants;
 use crate::core::arch::package_matches_host;
 use crate::core::database::{Database, PackageMetadata, Dependency};
@@ -71,17 +70,12 @@ impl DependencySolver {
         let index = self.build_library_index()?;
 
         for target in targets {
-            match self.resolve_node(
+            if let Err(e) = self.resolve_node(
                 target, &mut graph, &mut resolved, &mut visiting,
                 &mut provided_virtuals, &index, &mut cycles_broken,
             ) {
-                Ok(_) => {},
-                Err(e) => {
-                    deadlocks_detected.push(format!("{}: {}", target, e));
-                    if target == targets.first().map(|s| s.as_str()).unwrap_or("") {
-                        return Err(e);
-                    }
-                }
+                deadlocks_detected.push(format!("{}: {}", target, e));
+                return Err(anyhow!("Dependency resolution failed for target '{}': {}", target, e));
             }
         }
 
@@ -379,36 +373,6 @@ impl DependencySolver {
         }
 
         Ok(())
-    }
-
-    pub fn compute_upgrade_path(&self, package: &str) -> Result<UpgradePath> {
-        let current = self.db.get_package_manifest(package)
-            .map_err(|_| anyhow!("Package '{}' not found", package))?;
-        let current_ver = semver_parse(&current.version);
-
-        let available = self.db.get_all_available_packages()?;
-        let mut candidates: Vec<PackageMetadata> = available.into_iter()
-            .filter(|meta| meta.pkg_name == package && semver_parse(&meta.version) > current_ver)
-            .collect();
-
-        candidates.sort_by_key(|b| std::cmp::Reverse(semver_parse(&b.version)));
-
-        let best = candidates.into_iter().next()
-            .ok_or_else(|| anyhow!("No upgrade available for '{}'", package))?;
-
-        let conflict_free = !self.has_conflicts_with_installed(&best);
-
-        Ok(UpgradePath {
-            package: package.to_string(),
-            from_version: current.version.clone(),
-            to_version: best.version.clone(),
-            steps: vec![UpgradeEdge {
-                from_version: current.version.clone(),
-                to_version: best.version.clone(),
-                stability_index: 1.0,
-            }],
-            conflict_free,
-        })
     }
 
     fn compute_upgrade_paths(&self, plan: &[PackageMetadata], targets: &[String]) -> Result<Vec<UpgradePath>> {
@@ -784,87 +748,4 @@ fn read_u64(buf: &[u8]) -> u64 {
 fn read_u16(buf: &[u8]) -> u16 {
     if buf.len() < 2 { return 0; }
     u16::from_le_bytes([buf[0], buf[1]])
-}
-
-fn semver_parse(version: &str) -> Vec<u64> {
-    version.trim_start_matches('v')
-        .split(|c: char| !c.is_ascii_digit())
-        .filter_map(|s| s.parse::<u64>().ok())
-        .collect()
-}
-
-pub fn compute_depsig(deps: &[Dependency]) -> String {
-    let names: Vec<&str> = deps.iter().map(|d| d.name.as_str()).collect();
-    let mut sorted = names.clone();
-    sorted.sort();
-    let joined = sorted.join("|");
-    let hash = Sha256::digest(joined.as_bytes());
-    hash.iter().map(|b| format!("{:02x}", b)).collect()
-}
-
-pub fn scan_package_directory(path: &Path) -> Result<Vec<String>> {
-    let mut libs = HashSet::new();
-    let mut stack = vec![path.to_path_buf()];
-
-    while let Some(current) = stack.pop() {
-        if let Ok(entries) = fs::read_dir(&current) {
-            for entry in entries.flatten() {
-                let entry_path = entry.path();
-                if entry_path.is_dir() {
-                    stack.push(entry_path);
-                    continue;
-                }
-
-                if let Some(name) = entry_path.file_name().and_then(|n| n.to_str())
-                    && (name.ends_with(".so") || name.contains(".so.") || name.ends_with(".dll") || name.ends_with(".dylib") || name.ends_with(".a")) {
-                        libs.insert(name.to_string());
-                    }
-
-                if is_elf_file(&entry_path) {
-                    if let Ok(needed) = read_elf_needed(&entry_path) {
-                        for lib in needed {
-                            libs.insert(lib);
-                        }
-                    }
-                    if let Ok(strings) = scan_elf_strings(&entry_path) {
-                        for lib in strings {
-                            if lib.contains(".so") {
-                        let clean = lib.trim_start_matches(constants::LIB_PATH_PREFIXES[0])
-                            .trim_start_matches(constants::LIB_PATH_PREFIXES[1])
-                            .trim_start_matches(constants::LIB_PATH_PREFIXES[2]);
-                                if clean.contains(".so") {
-                                    libs.insert(clean.to_string());
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    let mut result: Vec<String> = libs.into_iter().filter(|l| !is_core_system_lib(l)).collect();
-    result.sort();
-    Ok(result)
-}
-
-pub fn build_dependency_graph(meta: &PackageMetadata, db: &Database) -> Result<DepGraph> {
-    let mut graph = DepGraph::new();
-    let mut queue = VecDeque::new();
-    let mut visited = HashSet::new();
-
-    queue.push_back(meta.pkg_name.clone());
-
-    while let Some(current) = queue.pop_front() {
-        if !visited.insert(current.clone()) { continue; }
-
-        if let Ok(current_meta) = db.get_package_manifest(&current) {
-            for dep in &current_meta.dependencies {
-                graph.add_edge(&current, &dep.name);
-                queue.push_back(dep.name.clone());
-            }
-        }
-    }
-
-    Ok(graph)
 }

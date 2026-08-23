@@ -1,11 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::fs;
-use std::sync::atomic::{AtomicU64, AtomicBool, Ordering};
-use std::sync::Arc;
-use std::io::{Read, Write};
-use anyhow::{Result, anyhow};
+use anyhow::{Result, anyhow, Context};
 use serde::{Serialize, Deserialize};
-use crate::core::constants;
 use crate::core::changelog::{ChangelogManager, ActionKind};
 
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
@@ -14,11 +10,6 @@ pub enum TransactionState {
     Committed,
     Aborted,
     RolledBack,
-}
-
-pub struct ParallelFileOp {
-    pub src: PathBuf,
-    pub dst: PathBuf,
 }
 
 pub struct PackageTransaction {
@@ -30,9 +21,6 @@ pub struct PackageTransaction {
     backups: Vec<(PathBuf, PathBuf)>,
     state: TransactionState,
     changelog: ChangelogManager,
-    completed_ops: Arc<AtomicU64>,
-    total_ops: Arc<AtomicU64>,
-    aborted: Arc<AtomicBool>,
 }
 
 impl PackageTransaction {
@@ -47,9 +35,6 @@ impl PackageTransaction {
             backups: Vec::new(),
             state: TransactionState::Active,
             changelog,
-            completed_ops: Arc::new(AtomicU64::new(0)),
-            total_ops: Arc::new(AtomicU64::new(0)),
-            aborted: Arc::new(AtomicBool::new(false)),
         })
     }
 
@@ -85,71 +70,23 @@ impl PackageTransaction {
         Ok(())
     }
 
-    pub fn parallel_copy(&self, ops: &[ParallelFileOp]) -> Result<()> {
-        self.ensure_active()?;
-        self.total_ops.store(ops.len() as u64, Ordering::Relaxed);
-        self.completed_ops.store(0, Ordering::Relaxed);
-        self.aborted.store(false, Ordering::Relaxed);
-
-        let completed = Arc::clone(&self.completed_ops);
-        let aborted = Arc::clone(&self.aborted);
-
-        let chunk_size = (ops.len() / num_cpus::get().max(1)).max(1);
-        let mut handles = Vec::new();
-
-        for chunk in ops.chunks(chunk_size) {
-            let chunk_owned: Vec<(PathBuf, PathBuf)> = chunk.iter().map(|op| (op.src.clone(), op.dst.clone())).collect();
-            let completed = Arc::clone(&completed);
-            let aborted = Arc::clone(&aborted);
-
-            handles.push(std::thread::spawn(move || -> Result<()> {
-                for (src, dst) in &chunk_owned {
-                    if aborted.load(Ordering::Relaxed) {
-                        return Err(anyhow!("Operation aborted"));
-                    }
-                    if let Some(parent) = dst.parent() {
-                        fs::create_dir_all(parent)?;
-                    }
-                    atomic_copy(src, dst)?;
-                    completed.fetch_add(1, Ordering::Release);
-                }
-                Ok(())
-            }));
-        }
-
-        for h in handles {
-            match h.join() {
-                Ok(Ok(())) => {}
-                Ok(Err(e)) => {
-                    self.aborted.store(true, Ordering::Release);
-                    return Err(e);
-                }
-                Err(_) => {
-                    self.aborted.store(true, Ordering::Release);
-                    return Err(anyhow!("Thread panicked during parallel copy"));
-                }
-            }
-        }
-
-        Ok(())
-    }
-
-    pub fn progress(&self) -> (u64, u64) {
-        (self.completed_ops.load(Ordering::Acquire), self.total_ops.load(Ordering::Acquire))
-    }
-
-    pub fn commit(&mut self) -> Result<()> {
+    /// Phase 1 of the ordered commit protocol: record the journal intent.
+    /// The caller then commits the durable store (LMDB), and finally calls
+    /// `finalize_commit` to mark the intent complete.
+    pub fn prepare_commit(&mut self) -> Result<u64> {
         self.ensure_active()?;
         self.id = self.changelog.record_transaction(self.action_kind.clone(), self.affected_packages.clone())?;
+        Ok(self.id)
+    }
 
-        for (_, backup) in &self.backups {
-            if backup.is_dir() {
-                let _ = fs::remove_dir_all(backup);
-            } else {
-                let _ = fs::remove_file(backup);
-            }
+    /// Phase 3 of the ordered commit protocol. Backups are intentionally
+    /// retained until process exit so that a crash after the durable commit
+    /// still leaves a recoverable trail on disk.
+    pub fn finalize_commit(&mut self) -> Result<()> {
+        self.ensure_active()?;
+        if self.id != 0 {
+            self.changelog.mark_transaction_complete(self.id)?;
         }
-
         self.state = TransactionState::Committed;
         Ok(())
     }
@@ -199,69 +136,109 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
         let entry = entry?;
         let path = entry.path();
         let dest = dst.join(entry.file_name());
-        if path.is_symlink() {
+        // symlink_metadata never follows links, so a directory tree cannot
+        // escape via a symlinked subdirectory during backup/restore.
+        let metadata = fs::symlink_metadata(&path)?;
+        if metadata.file_type().is_symlink() {
             let link_target = fs::read_link(&path)?;
             #[cfg(unix)]
             std::os::unix::fs::symlink(&link_target, &dest)?;
-        } else if path.is_dir() {
+        } else if metadata.is_dir() {
             copy_dir_recursive(&path, &dest)?;
-        } else if path.is_file() {
+        } else if metadata.is_file() {
             fs::copy(&path, &dest)?;
         }
     }
     Ok(())
 }
 
-fn atomic_copy(src: &Path, dst: &Path) -> Result<()> {
-    let tmp = dst.with_extension("mcx_tmp");
-    if src.is_file() {
+/// Copies a regular file to its destination atomically.
+///
+/// The temporary file gets a unique name in the destination directory
+/// (same filesystem, so the final rename is atomic), refuses to follow
+/// symlinks or directories as source, syncs file data before renaming and
+/// flushes the parent directory entry afterwards.
+pub(crate) fn atomic_copy(src: &Path, dst: &Path) -> Result<()> {
+    let src_metadata = fs::symlink_metadata(src)
+        .with_context(|| format!("Failed to inspect {:?}", src))?;
+    if !src_metadata.is_file() {
+        return Err(anyhow!(
+            "Refusing to copy non-regular file {:?} to {:?}",
+            src,
+            dst
+        ));
+    }
+
+    let Some(parent) = dst.parent() else {
+        return Err(anyhow!("Destination {:?} has no parent directory", dst));
+    };
+    fs::create_dir_all(parent)?;
+
+    let mut tmp = tempfile::NamedTempFile::new_in(parent)?;
+    {
         let mut src_file = fs::File::open(src)?;
-        let mut dst_file = fs::File::create(&tmp)?;
-        let mut buffer = vec![0u8; constants::TRANSACTION_HASH_BUFFER_SIZE];
-        loop {
-            let n = src_file.read(&mut buffer)?;
-            if n == 0 { break; }
-            dst_file.write_all(&buffer[..n])?;
-        }
-        dst_file.sync_all()?;
-        fs::rename(&tmp, dst)?;
+        std::io::copy(&mut src_file, &mut tmp)?;
+    }
+    tmp.as_file().sync_all()?;
+    let tmp_path = tmp.into_temp_path();
+    fs::rename(&tmp_path, dst)?;
+
+    // Flush the directory entry so the rename survives a crash.
+    #[cfg(unix)]
+    if let Ok(dir) = fs::File::open(parent) {
+        let _ = dir.sync_all();
     }
     Ok(())
 }
 
-pub struct AtomicFileWriter {
-    path: PathBuf,
-    tmp_path: PathBuf,
-    written: bool,
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-impl AtomicFileWriter {
-    pub fn new(path: PathBuf) -> Self {
-        let tmp_path = path.with_extension("mcx_atomic");
-        Self { path, tmp_path, written: false }
+    #[test]
+    fn atomic_copy_rejects_symlink_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let secret = dir.path().join("secret.txt");
+        fs::write(&secret, b"data").unwrap();
+        let link = dir.path().join("link.txt");
+        std::os::unix::fs::symlink(&secret, &link).unwrap();
+
+        let dst = dir.path().join("out.txt");
+        assert!(atomic_copy(&link, &dst).is_err());
+        assert!(!dst.exists());
     }
 
-    pub fn write(&mut self, data: &[u8]) -> Result<()> {
-        if let Some(parent) = self.tmp_path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        fs::write(&self.tmp_path, data)?;
-        self.written = true;
-        Ok(())
+    #[test]
+    fn atomic_copy_writes_regular_files_atomically() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src.txt");
+        fs::write(&src, b"payload").unwrap();
+        let dst = dir.path().join("nested").join("dst.txt");
+
+        atomic_copy(&src, &dst).unwrap();
+        assert_eq!(fs::read_to_string(&dst).unwrap(), "payload");
+        assert!(atomic_copy(&src, &dst).is_ok(), "overwriting an existing destination must succeed");
     }
 
-    pub fn commit(&mut self) -> Result<()> {
-        if !self.written { return Ok(()); }
-        fs::rename(&self.tmp_path, &self.path)?;
-        self.written = false;
-        Ok(())
-    }
-}
+    #[test]
+    fn rollback_restores_backups_and_removes_staged_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("root");
+        fs::create_dir_all(root.join("usr/bin")).unwrap();
+        let live = root.join("usr/bin/tool");
+        fs::write(&live, b"old").unwrap();
 
-impl Drop for AtomicFileWriter {
-    fn drop(&mut self) {
-        if self.written {
-            let _ = fs::remove_file(&self.tmp_path);
-        }
+        let mut tx = PackageTransaction::new(root.clone(), ActionKind::Installation).unwrap();
+        tx.backup_file(&live).unwrap();
+        tx.prepare_commit().unwrap();
+
+        // Simulate an install overwriting the file mid-transaction.
+        fs::write(&live, b"new").unwrap();
+        tx.record_staged_file(PathBuf::from("usr/bin/extra")).unwrap();
+        fs::write(root.join("usr/bin/extra"), b"x").unwrap();
+
+        tx.rollback().unwrap();
+        assert_eq!(fs::read_to_string(&live).unwrap(), "old", "backup must be restored on rollback");
+        assert!(!root.join("usr/bin/extra").exists(), "staged files must be removed on rollback");
     }
 }
