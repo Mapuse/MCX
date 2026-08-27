@@ -2580,46 +2580,110 @@ cargo check --features python
 
 All build systems auto-detect `x86_64`/`aarch64` and select the correct musl target. Cross-compilation files are in `env.mk`, `toolchain.cmake`, and `cross.txt` (generated via `scripts/crossgen.sh`).
 
-### Cargo (direct)
+### Target profiles
+
+| Target | Arch | Rust target | Prefix |
+|---|---|---|---|
+| **amd64** | x86_64 | `x86_64-unknown-linux-musl` | `/system` |
+| **arm64** | aarch64 | `aarch64-unknown-linux-musl` | `/system` |
+
+The active target is auto-detected from the host via `uname -m`. To cross-compile
+(e.g. arm64 from an amd64 host), override `RUST_TARGET` on the command line.
+
+### Build and install (Cargo)
 
 ```shell
-cargo build --release
-# Binary: target/release/mcx
-# Install:
-install -Dm755 target/release/mcx /system/bin/mcx
+# ── Native (host arch auto-detected) ────────────────────────────────────
+cargo build --release --locked
+# Binary: target/$(RUST_TARGET)/release/mcx
+install -Dm755 target/*/release/mcx /system/bin/mcx
+
+# ── amd64 ────────────────────────────────────────────────────────────────
+cargo build --release --locked --target x86_64-unknown-linux-musl
+install -Dm755 target/x86_64-unknown-linux-musl/release/mcx /system/bin/mcx
+
+# ── arm64 (cross from amd64) ─────────────────────────────────────────────
+cargo build --release --locked --target aarch64-unknown-linux-musl
+install -Dm755 target/aarch64-unknown-linux-musl/release/mcx /system/bin/mcx
 ```
 
-### Make
+### Build and install (Make)
 
 ```shell
-make build                    # auto-detects arch, builds for host
+# ── Native (host arch auto-detected) ────────────────────────────────────
+make build                    # builds for host
 make install                  # installs to /system/bin/mcx
-make install DESTDIR=/mnt     # staged install
+make install DESTDIR=/mnt     # staging install
+
+# ── amd64 ────────────────────────────────────────────────────────────────
+make build RUST_TARGET=x86_64-unknown-linux-musl
+make install RUST_TARGET=x86_64-unknown-linux-musl
+
+# ── arm64 (cross from amd64) ─────────────────────────────────────────────
+make build RUST_TARGET=aarch64-unknown-linux-musl
+make install RUST_TARGET=aarch64-unknown-linux-musl
 ```
 
-### Meson
+### Build and install (Ninja)
 
 ```shell
-./scripts/crossgen.sh                              # generate cross file for host arch
-meson setup builddir --cross-file /path/to/cross.txt --prefix=/system
+# ── Native (host arch auto-detected) ────────────────────────────────────
+ninja -f build.ninja                       # build
+DESTDIR=/mnt ninja -f build.ninja install  # staging install
+```
+
+The Ninja build auto-detects the arch inline. To cross-compile, edit the
+`cargo` rule's target triple in `build.ninja`.
+
+### Build and install (Meson)
+
+```shell
+# ── Native (host arch auto-detected) ────────────────────────────────────
+./scripts/crossgen.sh                              # generate cross.txt
+meson setup builddir --cross-file cross.txt --prefix=/system
 meson compile -C builddir
 meson install -C builddir
+
+# ── amd64 ────────────────────────────────────────────────────────────────
+ARCH=amd64 ./scripts/crossgen.sh
+meson setup builddir-amd64 --cross-file cross.txt --prefix=/system
+meson compile -C builddir-amd64
+meson install -C builddir-amd64
+
+# ── arm64 (cross from amd64) ─────────────────────────────────────────────
+ARCH=arm64 ./scripts/crossgen.sh
+meson setup builddir-arm64 --cross-file cross.txt --prefix=/system
+meson compile -C builddir-arm64
+meson install -C builddir-arm64
 ```
 
-### Ninja
+### Build and install (CMake)
 
 ```shell
-ninja -f build.ninja                       # build
-DESTDIR=/mnt ninja -f build.ninja install  # staged install
-```
-
-### CMake
-
-```shell
+# ── Native (host arch auto-detected) ────────────────────────────────────
 cmake -B build -DCMAKE_TOOLCHAIN_FILE=toolchain.cmake -DCMAKE_INSTALL_PREFIX=/system
 cmake --build build
 cmake --install build
+
+# ── amd64 ────────────────────────────────────────────────────────────────
+cmake -B build-amd64 -DCMAKE_TOOLCHAIN_FILE=toolchain.cmake -DCMAKE_INSTALL_PREFIX=/system
+cmake --build build-amd64
+cmake --install build-amd64
+
+# ── arm64 (cross from amd64) ─────────────────────────────────────────────
+cmake -B build-arm64 -DCMAKE_TOOLCHAIN_FILE=toolchain.cmake -DCMAKE_INSTALL_PREFIX=/system
+cmake --build build-arm64
+cmake --install build-arm64
 ```
+
+### Environment variables
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `RUST_TARGET` | auto-detected | Rust target triple (`x86_64-unknown-linux-musl` / `aarch64-unknown-linux-musl`) |
+| `PROFILE` | `release` | Cargo profile (`release` / `debug`) |
+| `PREFIX` | `/system` | Install prefix |
+| `DESTDIR` | (empty) | Staging directory for install |
 
 ## Testing
 
