@@ -27,6 +27,11 @@ pub use core::history::HistoryEngine;
 pub use core::integrity::IntegrityScanner;
 pub use core::lifecycle::{LifecycleEngine, LifecycleEntry, LifecycleTransition, LifecycleEvent, PackageState, DependencyGraph, OrphanSet};
 pub use core::manifest::ManifestParser;
+pub use core::mode::{
+    Mode, ModeConfig, UserSelection, current_user, ensure_mode_fields, normalize_root,
+    read_mode_config, read_user_selection, read_user_selection_in, resolve_mode, resolve_root,
+    user_selection_path, user_selection_path_in, write_user_selection, write_user_selection_in,
+};
 pub use core::package::PackageEntity;
 pub use core::plugin::{PluginSlot, PluginManager, PythonPlugin, PluginManifest, PluginHook, PluginEvent, PluginResult};
 pub use core::profiler::{SystemProfile, NetworkProfile, CalibratedParams, DecisionEngine, DecisionMatrix, HeuristicVerdict, NetworkProber};

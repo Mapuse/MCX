@@ -28,6 +28,7 @@ use crate::commands::search::SearchCommand;
 use crate::commands::service::ServiceCommand;
 use crate::commands::sync::SyncCommand;
 use crate::commands::system::SystemCommand;
+use crate::core::gitpkg::GitPackageManager;
 
 struct UiReporter;
 
@@ -43,20 +44,15 @@ impl cps::Reporter for UiReporter {
     }
 }
 
-fn default_root() -> String {
-    if is_root_process() {
-        constants::DEFAULT_ROOT.to_string()
-    } else {
-        let home = std::env::var("HOME").unwrap_or_else(|_| constants::DEFAULT_HOME.to_string());
-        PathBuf::from(home).join(".mcx").to_string_lossy().to_string()
-    }
-}
-
 #[derive(Parser)]
     #[command(name = constants::APP_NAME, version = constants::APP_VERSION, disable_version_flag = true)]
 struct Cli {
-    #[arg(long, global = true, default_value_t = default_root())]
+    #[arg(long, global = true, default_value = "")]
     root: String,
+    #[arg(long = "user-mode", global = true, conflicts_with = "system_mode_flag")]
+    user_mode_flag: bool,
+    #[arg(long = "system-mode", global = true)]
+    system_mode_flag: bool,
     #[arg(long = "version", short = 'v', help = "Print version")]
     version: bool,
     #[command(subcommand)]
@@ -215,6 +211,12 @@ pub enum Commands {
     AutoRemove {
         #[arg(long, help = "Actually remove orphaned packages (default: dry-run)")]
         apply: bool,
+    },
+
+    #[command(long_flag = "mode", aliases = ["toggle", "mode-toggle"])]
+    Mode {
+        #[arg(value_parser = ["user", "system", "status"])]
+        action: String,
     },
 }
 
@@ -435,20 +437,76 @@ fn record_lifecycle_remove(ctx: &mut EngineContext, packages: &[String]) {
 async fn main() {
     cps::configure(cps::Options::new("mcx").with_reporter(Arc::new(UiReporter)));
 
-    let args = Cli::parse();
+    let mut args = Cli::parse();
     if args.version {
         UserInterface::version(&format!("{} {}", constants::APP_NAME, constants::APP_VERSION));
         return;
     }
-    crate::core::sudo::root_access();
 
+    let mode_flag = if args.user_mode_flag {
+        Some(true)
+    } else if args.system_mode_flag {
+        Some(false)
+    } else {
+        None
+    };
+
+    // The mode command is resolved before any root is selected: it reads and
+    // persists the toggle in the user's home config and never needs the
+    // engine context.
+    let mode_action = match &args.command {
+        Commands::Mode { action } => Some(action.clone()),
+        _ => None,
+    };
+    if let Some(action) = &mode_action {
+        handle_mode_command(action, mode_flag);
+        return;
+    }
+
+    let mode = crate::core::mode::resolve_mode(mode_flag);
+    let selection = crate::core::mode::read_user_selection();
+    let mode_cfg = crate::core::mode::read_mode_config();
+    if crate::core::mode::user_selection_path().exists() && selection.is_none() {
+        UserInterface::warning(&format!(
+            "Invalid user selection config {:?}; falling back to system mode.",
+            crate::core::mode::user_selection_path().display()
+        ));
+    }
+    if let Err(e) = crate::core::mode::ensure_mode_fields() {
+        UserInterface::warning(&format!("Could not ensure configurable settings in user config: {e}"));
+    }
+    let explicit_root = if args.root.is_empty() {
+        None
+    } else {
+        Some(args.root.as_str())
+    };
+    let read_only = subcommand_is_read_only(&args.command);
+    let root_path = crate::core::mode::resolve_root(explicit_root, mode, &mode_cfg, read_only);
+    if mode.is_user() && let Some(requested) = explicit_root {
+        let requested = crate::core::mode::normalize_root(Path::new(requested));
+        if requested != root_path {
+            UserInterface::warning(&format!(
+                "User mode always operates inside ~/.mcx ({}); ignoring --root {}.",
+                root_path.display(),
+                requested.display()
+            ));
+        }
+    }
+    args.root = root_path.to_string_lossy().into_owned();
     let root_path = PathBuf::from(&args.root);
+
+    crate::core::sudo::root_access(&root_path, &mode);
 
     let mut ctx = EngineContext::new(&root_path);
 
     let _ = &ctx.config_mgr;
     let security_mon = Arc::new(crate::core::security::SecurityMonitor::new());
     let cgroup_mgr = crate::core::cgroup::CgroupController::new();
+
+    if let Err(e) = expand_wildcards(&mut args.command, &ctx.db) {
+        UserInterface::error(&format!("{}", e));
+        process::exit(1);
+    }
 
     match args.command {
         Commands::Install { packages, minimal, dev, components, exclude, only } => {
@@ -603,6 +661,10 @@ async fn main() {
             match cmd.execute(&packages, &cgroup_mgr, &security_mon) {
                 Ok(_) => {
                     record_lifecycle_remove(&mut ctx, &packages);
+                    let git_cleanup = GitPackageManager::new(&root_path);
+                    for pkg in &packages {
+                        let _ = git_cleanup.purge(pkg);
+                    }
                     let binindex = crate::core::binindex::BinaryIndex::new(args.root.clone(), Arc::clone(&ctx.db));
                     let _ = binindex.rebuild();
                     UserInterface::separator();
@@ -620,6 +682,10 @@ async fn main() {
             match cmd.execute(&packages, &cgroup_mgr, &security_mon) {
                 Ok(_) => {
                     record_lifecycle_remove(&mut ctx, &packages);
+                    let git_cleanup = GitPackageManager::new(&root_path);
+                    for pkg in &packages {
+                        let _ = git_cleanup.purge(pkg);
+                    }
                     let purge_dirs = vec![
                         root_path.join(constants::PATH_ACTIVE),
                         root_path.join(constants::PATH_CACHE),
@@ -743,80 +809,19 @@ async fn main() {
             }
         }
         Commands::Query { package } => {
-            match ctx.db.get_package_manifest(&package) {
-                Ok(meta) => {
-                    let file_count = meta.files.len().to_string();
-                    let dep_count = meta.dependencies.len().to_string();
-
-                    let rdepends: Vec<String> = ctx.db.get_all_installed_packages()
-                        .unwrap_or_default()
-                        .into_iter()
-                        .filter(|p| p.dependencies.iter().any(|d| d.name == package))
-                        .map(|p| p.pkg_name)
-                        .collect();
-                    let rdeps_str = if rdepends.is_empty() {
-                        "none".to_string()
-                    } else {
-                        rdepends.join(", ")
-                    };
-
-                    let dep_list: Vec<String> = meta.dependencies.iter()
-                        .map(|d| {
-                            let ver = ctx.db.get_package_manifest(&d.name)
-                                .ok()
-                                .map(|m| m.version)
-                                .unwrap_or_default();
-                            format!("{} {} ({})", d.name, ver, d.dep_type)
-                        })
-                        .collect();
-
-                    let pairs = [
-                        ("Package", meta.pkg_name.as_str()),
-                        ("Version", meta.version.as_str()),
-                        ("License", meta.license.as_str()),
-                        ("Architecture", &meta.architecture),
-                        ("Source", meta.source.as_str()),
-                        ("Files", &file_count),
-                        ("Dependencies", &dep_count),
-                        ("Reverse deps", &rdeps_str),
-                    ];
-                    UserInterface::render_key_values(&format!("Package: {}", meta.pkg_name), &pairs);
-
-                    let table_rows = vec![
-                        vec![meta.pkg_name.clone(), meta.version.clone(), meta.architecture.clone(), meta.license.clone()],
-                    ];
-                    UserInterface::table("Package summary", &["Name", "Version", "Architecture", "License"], &table_rows);
-
-                    if !dep_list.is_empty() {
-                        UserInterface::render_list("Dependency tree", &dep_list);
-                    }
-                    if !rdepends.is_empty() {
-                        UserInterface::render_list("Required by", &rdepends);
-                    }
-                    if !meta.files.is_empty() {
-                        let file_strings: Vec<String> = meta.files.iter()
-                            .map(|p| p.to_string_lossy().to_string())
-                            .collect();
-                        UserInterface::render_list("Installed files", &file_strings);
-                    }
-                    if !meta.components.is_empty() {
-                        let comp_strings: Vec<String> = meta.components.iter()
-                            .map(|c| format!("{} [{}] ({} files)", c.name, c.priority, c.files.len()))
-                            .collect();
-                        UserInterface::render_list("Components", &comp_strings);
-                    }
-                    for svc in meta.all_services() {
-                        let mut svc_items: Vec<String> = Vec::new();
-                        svc_items.push(format!("Name: {}", svc.name));
-                        svc_items.push(format!("Exec: {}", svc.exec));
-                        svc_items.push(format!("Restart: {}", svc.restart));
-                        if !svc.requires.is_empty() {
-                            svc_items.push(format!("Requires: {}", svc.requires));
-                        }
-                        UserInterface::render_list("Service", &svc_items);
-                    }
+            if crate::core::wildcard::has_wildcard(&package) {
+                let installed: Vec<String> = ctx.db.get_all_installed_packages()
+                    .unwrap_or_default().iter().map(|p| p.pkg_name.clone()).collect();
+                let matched = crate::core::wildcard::expand(&package, installed.iter().map(String::as_str));
+                if matched.is_empty() {
+                    UserInterface::error(&format!("No installed packages match '{}'", package));
+                    process::exit(1);
                 }
-                Err(_) => UserInterface::error("Not installed."),
+                for name in &matched {
+                    run_query_command(&ctx.db, name);
+                }
+            } else {
+                run_query_command(&ctx.db, &package);
             }
         }
         Commands::Clean => {
@@ -1094,6 +1099,10 @@ async fn main() {
                         UserInterface::error(&format!("Failed to refresh package index: {e}"));
                         process::exit(1);
                     }
+                    let git = GitPackageManager::new(Path::new(&args.root));
+                    if let Err(e) = git.sync_registry_from_indexes(&PathBuf::from(&args.root).join(constants::PATH_SYNC)) {
+                        UserInterface::warning(&format!("Failed to refresh git registry: {e}"));
+                    }
                     UserInterface::success(&format!("Repository '{}' synced.", name));
                 }
                 Err(e) => { UserInterface::error(&format!("{e}")); process::exit(1); }
@@ -1228,7 +1237,7 @@ async fn main() {
                         .filter(|p| vendor.verify_vendor_presence(&p.pkg_name))
                         .map(|p| format!("{} {} (vendored)", p.pkg_name, p.version))
                         .collect();
-                    UserInterface::render_list("Vendored packages", &items);
+                     UserInterface::render_list("Vendored packages", &items);
                 }
             }
         }
@@ -1682,6 +1691,7 @@ async fn main() {
                 Err(e) => { UserInterface::error(&format!("Analysis failed: {e}")); process::exit(1); }
             }
         }
+        Commands::Mode { .. } => unreachable!("mode command is handled before engine context is built"),
     }
 }
 
@@ -1708,14 +1718,234 @@ fn copy_dir_recursive(src: &PathBuf, dst: &PathBuf, base: &PathBuf) -> std::io::
     Ok(())
 }
 
-fn is_root_process() -> bool {
-    std::process::Command::new(constants::TOOL_ID)
-        .arg("-u")
-        .output()
-        .ok()
-        .and_then(|o| String::from_utf8(o.stdout).ok())
-        .map(|s| s.trim() == "0")
-        .unwrap_or(false)
+/// Expand `*`/`?` wildcard package arguments into their concrete matches
+/// before dispatch. Non-wildcard arguments pass through untouched; wildcards
+/// are matched against the most relevant name space for the command
+/// (available packages for installs/updates, installed packages for
+/// removal), so `mcx install libs*` installs every matching package instead
+/// of requiring each name literally.
+fn expand_wildcards(cmd: &mut Commands, db: &Database) -> anyhow::Result<()> {
+    use crate::core::wildcard::{expand, has_wildcard};
+
+    fn name_pool(db: &Database, available: bool) -> Vec<String> {
+        let metas = if available {
+            db.get_all_available_packages()
+        } else {
+            db.get_all_installed_packages()
+        };
+        let mut names: Vec<String> = metas
+            .unwrap_or_default()
+            .into_iter()
+            .map(|m| m.pkg_name)
+            .collect();
+        names.sort();
+        names.dedup();
+        names
+    }
+
+    fn expand_targets(patterns: &[String], pool: &[String]) -> anyhow::Result<Vec<String>> {
+        let mut result: Vec<String> = Vec::new();
+        for pat in patterns {
+            if !has_wildcard(pat) {
+                if !result.iter().any(|r| r == pat) {
+                    result.push(pat.clone());
+                }
+                continue;
+            }
+            let matched = expand(pat, pool.iter().map(String::as_str));
+            if matched.is_empty() {
+                return Err(anyhow::anyhow!("No packages match pattern '{}'", pat));
+            }
+            for name in matched {
+                if !result.iter().any(|r| r == &name) {
+                    result.push(name);
+                }
+            }
+        }
+        Ok(result)
+    }
+
+    let available_pool = name_pool(db, true);
+    match cmd {
+        Commands::Install { packages, .. } => {
+            *packages = expand_targets(packages, &available_pool)?;
+        }
+        Commands::Remove { packages, .. } | Commands::Purge { packages } => {
+            let installed_pool = name_pool(db, false);
+            *packages = expand_targets(packages, &installed_pool)?;
+        }
+        Commands::Update { packages: Some(pkgs) } => {
+            *pkgs = expand_targets(pkgs, &available_pool)?;
+        }
+        Commands::Update { packages: None } => {}
+        Commands::Upgrade { packages: Some(pkgs), .. } => {
+            *pkgs = expand_targets(pkgs, &available_pool)?;
+        }
+        Commands::Upgrade { packages: None, .. } => {}
+        _ => {}
+    }
+    Ok(())
+}
+
+/// Render a single package's query output ("Not installed." on failure).
+fn run_query_command(db: &Database, package: &str) {
+    match db.get_package_manifest(package) {
+        Ok(meta) => {
+            let file_count = meta.files.len().to_string();
+            let dep_count = meta.dependencies.len().to_string();
+
+            let rdepends: Vec<String> = db.get_all_installed_packages()
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|p| p.dependencies.iter().any(|d| d.name == package))
+                .map(|p| p.pkg_name)
+                .collect();
+            let rdeps_str = if rdepends.is_empty() {
+                "none".to_string()
+            } else {
+                rdepends.join(", ")
+            };
+
+            let dep_list: Vec<String> = meta.dependencies.iter()
+                .map(|d| {
+                    let ver = db.get_package_manifest(&d.name)
+                        .ok()
+                        .map(|m| m.version)
+                        .unwrap_or_default();
+                    format!("{} {} ({})", d.name, ver, d.dep_type)
+                })
+                .collect();
+
+            let pairs = [
+                ("Package", meta.pkg_name.as_str()),
+                ("Version", meta.version.as_str()),
+                ("License", meta.license.as_str()),
+                ("Architecture", &meta.architecture),
+                ("Source", meta.source.as_str()),
+                ("Files", &file_count),
+                ("Dependencies", &dep_count),
+                ("Reverse deps", &rdeps_str),
+            ];
+            UserInterface::render_key_values(&format!("Package: {}", meta.pkg_name), &pairs);
+
+            let table_rows = vec![
+                vec![meta.pkg_name.clone(), meta.version.clone(), meta.architecture.clone(), meta.license.clone()],
+            ];
+            UserInterface::table("Package summary", &["Name", "Version", "Architecture", "License"], &table_rows);
+
+            if !dep_list.is_empty() {
+                UserInterface::render_list("Dependency tree", &dep_list);
+            }
+            if !rdepends.is_empty() {
+                UserInterface::render_list("Required by", &rdepends);
+            }
+            if !meta.files.is_empty() {
+                let file_strings: Vec<String> = meta.files.iter()
+                    .map(|p| p.to_string_lossy().to_string())
+                    .collect();
+                UserInterface::render_list("Installed files", &file_strings);
+            }
+            if !meta.components.is_empty() {
+                let comp_strings: Vec<String> = meta.components.iter()
+                    .map(|c| format!("{} [{}] ({} files)", c.name, c.priority, c.files.len()))
+                    .collect();
+                UserInterface::render_list("Components", &comp_strings);
+            }
+            for svc in meta.all_services() {
+                let mut svc_items: Vec<String> = Vec::new();
+                svc_items.push(format!("Name: {}", svc.name));
+                svc_items.push(format!("Exec: {}", svc.exec));
+                svc_items.push(format!("Restart: {}", svc.restart));
+                if !svc.requires.is_empty() {
+                    svc_items.push(format!("Requires: {}", svc.requires));
+                }
+                UserInterface::render_list("Service", &svc_items);
+            }
+        }
+        Err(_) => UserInterface::error("Not installed."),
+    }
+}
+
+/// Commands that never mutate the target root: when a non-root user runs one
+/// in system mode, mcx operates on the user root instead of escalating.
+fn subcommand_is_read_only(cmd: &Commands) -> bool {
+    matches!(
+        cmd,
+        Commands::Search { .. }
+            | Commands::Query { .. }
+            | Commands::History { .. }
+            | Commands::Completion { .. }
+            | Commands::RepoList
+            | Commands::RepoInfo { .. }
+    )
+}
+
+/// `mcx --mode user|system|status`. Toggling requires the root password on
+/// every invocation and persists the user selection in the separate
+/// `~/.mcx/etc/mcx/user.ini` (with a required `user` field), so the mode is
+/// never mixed into the root-directory config.
+fn handle_mode_command(action: &str, mode_flag: Option<bool>) {
+    let cfg = crate::core::mode::read_mode_config();
+    match action {
+        "status" => {
+            let effective = crate::core::mode::resolve_mode(mode_flag);
+            let selection = crate::core::mode::read_user_selection();
+            let user = selection
+                .map(|s| s.user)
+                .unwrap_or_else(crate::core::mode::current_user);
+            UserInterface::info("Mode status:");
+            UserInterface::block(
+                "Operating mode",
+                &[
+                    &format!("Mode: {}", effective.as_str()),
+                    &format!("User: {}", user),
+                    &format!("User root: {}", cfg.effective_user_root().display()),
+                    &format!("System root: {}", cfg.effective_system_root().display()),
+                    &format!("Selection config: {}", crate::core::mode::user_selection_path().display()),
+                    &format!("Root config: {}", crate::core::mode::user_config_path().display()),
+                ],
+            );
+            UserInterface::info("Toggling: mcx --mode user | mcx --mode system");
+        }
+        target @ ("user" | "system") => {
+            UserInterface::info(&format!(
+                "Toggling mode to '{}' (root password required)...",
+                target
+            ));
+            if !crate::core::sudo::authenticate_toggle() {
+                process::exit(1);
+            }
+            let user = crate::core::mode::current_user();
+            let sel = crate::core::mode::UserSelection {
+                mode: crate::core::mode::Mode::parse(target).expect("clap restricts mode action"),
+                user: user.clone(),
+            };
+            if let Err(e) = crate::core::mode::write_user_selection(&sel) {
+                UserInterface::error(&format!("Failed to persist user selection: {e}"));
+                process::exit(1);
+            }
+            let _ = crate::core::mode::ensure_mode_fields();
+            let root = if target == "user" {
+                let home = crate::core::mode::home_dir().join(crate::core::constants::USER_ROOT_DIR);
+                home.display().to_string()
+            } else {
+                cfg.effective_system_root().display().to_string()
+            };
+            UserInterface::success(&format!(
+                "Mode switched to '{}' for user '{}' (root: {}, selection config: {})",
+                target,
+                user,
+                root,
+                crate::core::mode::user_selection_path().display()
+            ));
+            UserInterface::info(&format!(
+                "Next invocations of mcx will run in {} mode. Toggle again with: mcx --mode {}",
+                target,
+                if target == "user" { "system" } else { "user" }
+            ));
+        }
+        _ => unreachable!("clap restricts mode action to user/system/status"),
+    }
 }
 
 fn run_autoremove_scan(db: &Arc<Database>, root: &str) {

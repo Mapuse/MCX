@@ -65,6 +65,7 @@ The Package Manager of **`[Cudane]`**, built for a full lifecycle and heavy work
   - [**`[Component tiers]`**](#component-tiers)
 - [**`[Development]`**](#development)
   - [**`[Building]`**](#building)
+  - [**`[Installation]`**](#installation)
   - [**`[Testing]`**](#testing)
   - [**`[Linting]`**](#linting)
   - [**`[Auditing]`**](#auditing)
@@ -113,6 +114,8 @@ mcx in <package>...
 Resolves the dependency graph for the target packages via `DependencySolver`, downloads missing `.xcs` archives into `var/cache/mcx/`, verifies SHA-256 checksums, extracts each package in parallel (≥4 CPUs + ≥1 GB RAM triggers `spawn_blocking` per-package), copies artifacts into both the active root and `var/lib/mcx/active/<pkg>/`, and commits the transaction to LMDB.
 
 Installs proceed in topological dependency order. Downloads write to a sibling `<name>.xcs.part` file and are only promoted to the final archive once the full body has been received; a retried transfer sends a `Range: bytes=<resume_from>-` request so an interrupted download resumes from the last byte instead of restarting (the server responds with `206 Partial Content`, or `200`/`416` to fall back to a full re-download). If an older version of a package is already installed, `mcx install <pkg>` re-installs it to upgrade; an installed version that is already equal to or newer than the resolved target is a no-op. Every state transition is recorded in `var/lib/mcx/lifecycle.jsonl` by `LifecycleEngine`.
+
+Anywhere a package name is accepted, `*` (any run of characters) and `?` (a single character) act as wildcards: `mcx install pkg*` installs every available package beginning with `pkg`, and `mcx rm *core*` removes every installed package containing `core`. `*` and `?` in a pattern are matched literally (patterns never match the pattern itself). Wildcards are expanded against the most relevant name set — **available** packages for `install`/`update`/`upgrade`, **installed** packages for `remove`/`purge`/`query` — and an argument that is an exact name is always passed through untouched. A wildcard matching nothing is an error (`No packages match pattern '…'`).
 
 | Input | Type | Required | Description |
 | ----- | ---- | -------- | ----------- |
@@ -722,7 +725,12 @@ Edit `etc/mcx/repo.ini` directly with any text editor. The file is managed throu
 
 | Flag | Type | Default | Description |
 | ---- | ---- | ------- | ----------- |
-| `--root` | `PathBuf` | `/` (root) or `~/.mcx/` (non-root) | MCX root directory. All state paths (`etc/mcx/`, `var/lib/mcx/`, `var/cache/mcx/`, etc.) are resolved relative to this path. Auto-detected at startup. |
+| `--root` | `String` | auto | Root directory in **system** mode: absolute (`/opt/mcx`), relative (`rel/root`, resolved against the working directory), or `~`-prefixed (`~/.mcx`) paths. All state paths (`etc/mcx/`, `var/lib/mcx/`, `var/cache/mcx/`, etc.) are resolved relative to this path. In **user** mode `--root` is ignored — mcx always operates inside `~/.mcx` so config and state never live outside the selected user. |
+| `--user-mode` | flag | — | Force user mode for this invocation (operate inside `~/.mcx`, never elevate). |
+| `--system-mode` | flag | — | Force system mode for this invocation (target the system root; mutating commands escalate via sudo). Conflicts with `--user-mode`. |
+| `--mode` | `user\|system\|status` | — | Select the operating user or show status. Switching requires the root password on every invocation and persists the selection in `~/.mcx/etc/mcx/user.ini`. |
+
+Environment overrides: `MCX_USER_MODE` / `MCX_SYSTEM_MODE` force the mode for the current invocation, and `MCX_IGNORE_SUDO` disables elevation entirely (used by tests and automation).
 
 </details>
 
@@ -2049,25 +2057,90 @@ This creates the entire configuration directory and all three default files. Exi
 └── profile.ini         # empty declarative profile
 ```
 
-The root is auto-detected:
+The root is auto-detected from the active mode:
 
-| User | Root | Example |
-| ---- | ---- | ------- |
-| root (UID 0) | `/` | `/etc/mcx/config.ini` |
-| non-root | `~/.mcx/` | `~/.mcx/etc/mcx/config.ini` |
+| Mode | User | Root | Example |
+| ---- | ---- | ---- | ------- |
+| system | root (UID 0) | `/` | `/etc/mcx/config.ini` |
+| system | non-root, read-only | `~/.mcx/` | `~/.mcx/etc/mcx/config.ini` |
+| user | any | `~/.mcx/` | `~/.mcx/etc/mcx/config.ini` |
 
 Override with `--root`:
 
 ```shell
-# Custom root
+# Absolute root
 mcx -C --init --root /opt/mcx
+
+# Relative root (resolved against the current directory)
+mcx -C --init --root ./my-mcx-root
+
+# Root inside the home directory (`~` is expanded)
+mcx -C --init --root ~/.mcx
 ```
+
+### User / system mode
+
+`mcx` can operate in two modes:
+
+- **system**: targets the system root (`/` by default). Mutating commands run
+  by a non-root user re-execute through `sudo`; read-only commands fall back
+  to the user root so queries never require elevation.
+- **user**: operates entirely inside the selected user's `~/.mcx` — config
+  (`config.ini`, `repo.ini`, `profile.ini`, `user.ini`), state
+  (`var/lib/mcx/`, `var/cache/mcx/`), and installs all live there, and it
+  never elevates. An external `--root` is ignored with a warning: user mode
+  cannot define directories outside the selected user as root.
+
+Switching is gated and persistent: `mcx --mode user|system` **requires the
+root password on every switch** (cached `sudo` credentials are flushed first,
+so it always re-prompts) and writes the **user selection** — the two required
+fields `mode` and `user` — into its own separate config
+`~/.mcx/etc/mcx/user.ini`, independent of the root-directory config:
+
+```ini
+# ~/.mcx/etc/mcx/user.ini   (user selection — required fields)
+[general]
+mode = user     # required: user | system
+user = m        # required: the selected user
+```
+
+`mcx --mode status` reports the effective mode, selected user, roots, and the
+paths of both config files. The selection file is never mixed into
+`config.ini`; a missing or incomplete `user.ini` falls back to system mode
+with a warning rather than guessing an external target. The effective mode
+can also be forced per-invocation with `--user-mode` / `--system-mode` or the
+`MCX_USER_MODE` / `MCX_SYSTEM_MODE` environment variables;
+`MCX_IGNORE_SUDO` disables elevation entirely.
+
+The root-directory settings live separately in `~/.mcx/etc/mcx/config.ini`
+under `[general]`:
+
+```ini
+# ~/.mcx/etc/mcx/config.ini   (root-directory config)
+[general]
+user_root = ~/.mcx       # per-user root (absolute, relative, or ~ paths)
+system_root = /          # system root targeted in system mode
+```
+
+`user_root` and `system_root` accept absolute, relative (resolved against
+the working directory), and `~`-prefixed paths, so the root directory is
+fully configurable without passing `--root` every time.
+
+If the selected user's `config.ini` does not yet contain these fields (for
+example it was written by an older mcx), they are **added automatically** on
+the next invocation — values already set in the file are left untouched.
 
 ### Step 3 — Understand each file
 
 #### `config.ini` — engine parameters
 
 ```ini
+# ~/.mcx/etc/mcx/config.ini   (root-directory config)
+[general]
+log_level = info
+user_root = ~/.mcx       # per-user root (absolute, relative, or ~ paths)
+system_root = /          # system root targeted in system mode
+
 [engine]
 thread_pool_mode = auto
 max_concurrent_downloads = 8
@@ -2089,7 +2162,9 @@ prune_age_hours = 168
 
 | Section | Key | Default | Values | Effect |
 | ------- | --- | ------- | ------ | ------ |
-| `[engine]` | `thread_pool_mode` | `auto` | `auto`, `max`, `half`, `quad` | Thread pool = `auto=cpus`, `max=cpus*2`, `half=cpus/2`, `quad=cpus*4` |
+| `[general]` | `log_level` | `info` | `info`, `debug`, `quiet` | Console verbosity |
+| `[general]` | `user_root` | `~/.mcx` | path | Per-user root (`~`, absolute, or relative paths accepted) |
+| `[general]` | `system_root` | `/` | path | System root targeted in system mode |
 | `[engine]` | `max_concurrent_downloads` | `8` | integer | Cap on parallel HTTP downloads, clamped to `min(cpus, val)` |
 | `[engine]` | `zstd_level` | `3` | 1–19 | `.xcs` compression level |
 | `[network]` | `fallback_repos` | `enabled` | `enabled`, `disabled` | Fall through to secondary repos on primary failure |
@@ -2557,6 +2632,62 @@ cargo +nightly -Zjson-target-spec -Zbuild-std build --target x86_64-unknown-linu
 cargo +nightly -Zjson-target-spec -Zbuild-std build --release --target x86_64-unknown-linux-musl.json
 ```
 
+### Cross-compilation with the clang `CC` toolchain
+
+Both musl targets build through `clang` — no GNU cross-toolchain is needed.
+`.cargo/config.toml` already wires each target to `clang` as the linker with
+`--sysroot=/system`, `+crt-static`, and target-specific CPU/LTO flags
+(`x86-64-v3` for amd64, `armv8-a` for arm64). rustc links via clang directly.
+
+Build-script C code (`cc`-style crates) needs rustc's C compiler to resolve per
+target, which is what the `CC_*` variables below supply.
+
+```shell
+rustup target add x86_64-unknown-linux-musl aarch64-unknown-linux-musl
+
+# ── Native (host arch) ──────────────────────────────────────────────────
+CC=clang cargo build --release --target x86_64-unknown-linux-musl
+# Binary: target/x86_64-unknown-linux-musl/release/mcx
+```
+
+Cross-compiling for a foreign target needs a clang that can emit the
+corresponding `-linux-musl` object code. With no system musl headers installed,
+drive the C toolchain through the `zig cc` wrappers that ship in this repo
+under `./toolchains/` — they rewrite rustc's triples into zig's native form
+(`x86_64-unknown-linux-musl` → `x86_64-linux-musl`,
+`aarch64-unknown-linux-musl` → `aarch64-linux-musl`) and delegate to `zig cc`.
+
+```shell
+ls toolchains/   # zig-x86_64-musl-cc  zig-aarch64-musl-cc
+```
+
+Point `CC_*` (and `TARGET_CC` for the foreign target) at the matching wrapper:
+
+```shell
+# ── amd64 (native or cross) ──────────────────────────────────────────────
+CC_x86_64_unknown_linux_musl="$PWD/toolchains/zig-x86_64-musl-cc" \
+cargo build --release --target x86_64-unknown-linux-musl
+
+# ── arm64 (cross from amd64) ─────────────────────────────────────────────
+CC_aarch64_unknown_linux_musl="$PWD/toolchains/zig-aarch64-musl-cc" \
+TARGET_CC="$PWD/toolchains/zig-aarch64-musl-cc" \
+cargo build --release --target aarch64-unknown-linux-musl
+
+# Binary: target/<triple>/release/mcx
+```
+
+Apply the same environment forward for tests and linting on the foreign target:
+
+```shell
+CC_aarch64_unknown_linux_musl="$PWD/toolchains/zig-aarch64-musl-cc" \
+TARGET_CC="$PWD/toolchains/zig-aarch64-musl-cc" \
+cargo test --target aarch64-unknown-linux-musl
+
+CC_aarch64_unknown_linux_musl="$PWD/toolchains/zig-aarch64-musl-cc" \
+TARGET_CC="$PWD/toolchains/zig-aarch64-musl-cc" \
+cargo clippy --target aarch64-unknown-linux-musl --all-targets -- -D warnings
+```
+
 ### Feature flags
 
 | Feature | Default | Enables |
@@ -2684,6 +2815,31 @@ cmake --install build-arm64
 | `PROFILE` | `release` | Cargo profile (`release` / `debug`) |
 | `PREFIX` | `/system` | Install prefix |
 | `DESTDIR` | (empty) | Staging directory for install |
+
+### Installing the built binary
+
+```shell
+# ── Copy the release binary into the managed root ────────────────────────
+install -Dm755 target/x86_64-unknown-linux-musl/release/mcx /system/bin/mcx
+# (use target/aarch64-unknown-linux-musl/release/mcx on arm64)
+
+# ── Bootstrap the managed root ────────────────────────────────────────────
+# Creates config.ini / repo.ini / profile.ini, missing files only.
+mcx -C --init
+
+# ── Point mcx at a repository and refresh the indexes ────────────────────
+mcx --repo-add cudane https://packages.cudane.org
+mcx -u
+
+# ── Install, upgrade, and self-update ─────────────────────────────────────
+mcx -i curl
+mcx -U                       # diff-based: only changed files are written
+mcx --self-update            # fetch + verify + atomically replace /system/bin/mcx
+
+# ── User-level roots work the same, without root privileges ───────────────
+mcx --root ~/.mcx -C --init
+mcx --root ~/.mcx -i curl
+```
 
 ## Testing
 

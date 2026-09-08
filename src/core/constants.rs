@@ -2,6 +2,8 @@ pub const APP_NAME: &str = "mcx";
 pub const APP_VERSION: &str = "7.0.0";
 pub const DEFAULT_HOME: &str = "/tmp/.mcx";
 pub const DEFAULT_ROOT: &str = "/";
+pub const DEFAULT_USER_ROOT: &str = "~/.mcx";
+pub const USER_ROOT_DIR: &str = ".mcx";
 
 // ── URLs ────────────────────────────────────────────────────────────────
 pub const MAIN_REPO_URL: &str = "https://packages.cudane.org";
@@ -72,12 +74,15 @@ pub const PATH_HISTORY: &str = "var/lib/mcx/history.jsonl";
 pub const PATH_LIFECYCLE: &str = "var/lib/mcx/lifecycle.jsonl";
 pub const PATH_VENDOR: &str = "var/lib/mcx/vendor";
 pub const PATH_SYNC: &str = "var/lib/mcx/sync";
+pub const PATH_GITS: &str = "var/lib/mcx/gits";
+pub const PATH_GITSTATE: &str = "var/lib/mcx/gitstate";
 pub const PATH_BUILD: &str = "var/mcx/build";
 pub const PATH_MCX_STAGE: &str = "var/mcx/stage";
 pub const PATH_LOG_HISTORY: &str = "var/log/mcx/history";
 pub const PATH_LIB_MCX: &str = "var/lib/mcx";
 pub const PATH_ETC_MCX: &str = "etc/mcx";
 pub const PATH_CONFIG_INI: &str = "etc/mcx/config.ini";
+pub const PATH_USER_INI: &str = "etc/mcx/user.ini";
 pub const PATH_REPO_INI: &str = "etc/mcx/repo.ini";
 pub const PATH_PROFILE_INI: &str = "etc/mcx/profile.ini";
 
@@ -164,6 +169,8 @@ pub const UI_BLOCK_WIDTH: usize = 60;
 pub const DEFAULT_CONFIG_INI: &str = "\
 [general]\n\
 log_level = info\n\
+user_root = ~/.mcx\n\
+system_root = /\n\
 \n\
 [engine]\n\
 thread_pool_mode = auto\n\

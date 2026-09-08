@@ -1,5 +1,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
+use anyhow::Context;
+use crate::core::constants;
 use crate::core::db::Database;
 use crate::core::repo::RepositoryManager;
 
@@ -40,6 +42,12 @@ impl SyncCommand {
             }
         }
         tx.commit()?;
+
+        // Harvest the optional per-package `git_source` key into the git
+        // registry sidecar so later updates can be applied as diffs.
+        let git = crate::core::gitpkg::GitPackageManager::new(&self.root);
+        git.sync_registry_from_indexes(&self.root.join(constants::PATH_SYNC))
+            .context("failed to refresh git package registry")?;
 
         Ok(())
     }

@@ -34,7 +34,9 @@ pub struct PackageMetadata {
     pub license: String,
     pub source: String,
     pub checksum: ChecksumData,
+    #[serde(default)]
     pub dependencies: Vec<Dependency>,
+    #[serde(default)]
     pub files: Vec<PathBuf>,
     pub provides: Option<Vec<String>>,
     pub conflicts: Option<Vec<String>>,

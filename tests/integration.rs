@@ -1,5 +1,5 @@
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use mcx::utils::ui::UserInterface;
 use mcx::core::database::{Database, PackageMetadata, ChecksumData, Dependency};
@@ -1122,4 +1122,422 @@ async fn test_repo_add_rejects_traversal_and_empty_names() {
     mgr.add_repository(good).expect("valid repository accepted");
 
     fs::remove_dir_all(&root).expect("remove temp root");
+}
+
+// ── Git-tracked packages (archive install, git diff update) ───────────────
+
+fn run_git_silent(dir: &PathBuf, args: &[&str]) {
+    let out = std::process::Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .expect("run git");
+    assert!(out.status.success(), "git {:?} failed: {}", args, String::from_utf8_lossy(&out.stderr));
+}
+
+/// Write a `.xcs` archive (zstd-compressed tar) from a flat payload list.
+fn write_xcs(path: &PathBuf, files: &[(&str, &str)]) {
+    fs::create_dir_all(path.parent().expect("archive parent")).expect("create archive dir");
+    let tar_path = path.with_extension("tar");
+    {
+        let f = fs::File::create(&tar_path).expect("create tar file");
+        let mut builder = tar::Builder::new(f);
+        for (rel, content) in files {
+            let mut header = tar::Header::new_gnu();
+            header.set_size(content.len() as u64);
+            header.set_mode(0o644);
+            header.set_entry_type(tar::EntryType::Regular);
+            header.set_path(rel).expect("set tar path");
+            builder.append_data(&mut header, rel, content.as_bytes()).expect("append tar entry");
+        }
+        builder.finish().expect("finish tar");
+    }
+    {
+        let mut input = fs::File::open(&tar_path).expect("open tar");
+        let output = fs::File::create(path).expect("create xcs");
+        let mut enc = zstd::stream::Encoder::new(output, 1).expect("zstd encoder");
+        std::io::copy(&mut input, &mut enc).expect("compress to zstd");
+        enc.finish().expect("finish zstd");
+    }
+    fs::remove_file(&tar_path).expect("remove temp tar");
+}
+
+fn write_payload(dir: &Path, files: &[(&str, &str)]) {
+    for (rel, content) in files {
+        let full = dir.join(rel);
+        if let Some(parent) = full.parent() {
+            fs::create_dir_all(parent).expect("create payload dir");
+        }
+        fs::write(&full, content).expect("write payload file");
+    }
+}
+
+fn package_meta(name: &str, version: &str, source: &str, checksum: &str, files: &[&str]) -> PackageMetadata {
+    PackageMetadata {
+        pkg_name: name.to_string(), version: version.to_string(),
+        license: "MIT".to_string(), source: source.to_string(),
+        checksum: ChecksumData { kind: "sha256".to_string(), value: checksum.to_string() },
+        dependencies: vec![], files: files.iter().map(PathBuf::from).collect(),
+        provides: Some(vec![]), conflicts: Some(vec![]),
+        architecture: "native".to_string(),
+        components: Vec::new(), services: Vec::new(), binaries: Vec::new(),
+        file_hashes: std::collections::HashMap::new(),
+    }
+}
+
+/// Set up a git-tracked package: a cached v1 `.xcs` archive + its git repo
+/// (with a `v1.0.0` tag) + the git registry sidecar + a v1 available index.
+/// Returns (root, db, remote_git_repo_dir).
+fn setup_git_backed_package(identifier: &str) -> (PathBuf, Arc<Database>, PathBuf) {
+    let root = create_temporary_root(identifier);
+    let remote = root.join("remote/pkg");
+
+    // v1 archive placed straight into the cache so the first install never
+    // hits the network.
+    let archive_path = root.join("var/cache/mcx/git-hello-1.0.0.xcs");
+    write_xcs(&archive_path, &[
+        ("usr/bin/hello", "hello v1\n"),
+        ("usr/share/doc/hello/readme.txt", "readme v1\n"),
+    ]);
+    let archive_hash = mcx::archive::hash::HashVerifier::calculate(&archive_path, "sha256").expect("hash archive");
+
+    // The package's own git repository, tagged per released version.
+    fs::create_dir_all(&remote).expect("create repo dir");
+    write_payload(&remote, &[
+        ("usr/bin/hello", "hello v1\n"),
+        ("usr/share/doc/hello/readme.txt", "readme v1\n"),
+    ]);
+    run_git_silent(&remote, &["init", "-b", "main"]);
+    run_git_silent(&remote, &["symbolic-ref", "HEAD", "refs/heads/main"]);
+    run_git_silent(&remote, &["add", "."]);
+    run_git_silent(&remote, &["-c", "user.name=Test", "-c", "user.email=test@example.com",
+        "commit", "-m", "v1.0.0"]);
+    run_git_silent(&remote, &["tag", "v1.0.0"]);
+
+    // Git registry sidecar: package -> its git repository.
+    let gitstate_dir = root.join("var/lib/mcx/gitstate");
+    fs::create_dir_all(&gitstate_dir).expect("create gitstate dir");
+    fs::write(
+        gitstate_dir.join("registry.json"),
+        serde_json::to_string_pretty(&std::collections::HashMap::from([(
+            "git-hello".to_string(),
+            format!("file://{}", remote.display()),
+        )])).expect("serialize registry"),
+    ).expect("write registry");
+
+    // Available index with v1 only.
+    let db = Arc::new(Database::open(&root).expect("open test database"));
+    let index_dir = root.join("var/lib/mcx/sync");
+    fs::create_dir_all(&index_dir).expect("create sync dir");
+    let index = index_dir.join("test.json");
+    let v1 = package_meta(
+        "git-hello", "1.0.0",
+        &format!("file://{}", archive_path.display()),
+        &archive_hash,
+        &["usr/bin/hello", "usr/share/doc/hello/readme.txt"],
+    );
+    fs::write(&index, serde_json::to_string_pretty(&vec![&v1]).expect("serialize index")).expect("write index");
+    {
+        let mut tx = db.begin_transaction().expect("begin transaction");
+        tx.update_repository_index("test", index.to_str().expect("utf8 index path")).expect("load v1 index");
+        tx.commit().expect("commit transaction");
+    }
+
+    (root, db, remote)
+}
+
+#[tokio::test]
+async fn test_archive_diff_update_touches_only_changed_files() {
+    let root = create_temporary_root("archive_diff");
+    let db = Arc::new(Database::open(&root).expect("open test database"));
+    let index_dir = root.join("var/lib/mcx/sync");
+    fs::create_dir_all(&index_dir).expect("create sync dir");
+
+    // v1 archive + available index; install happens entirely from the archive.
+    let v1_archive = root.join("var/cache/mcx/plain-pkg-1.0.0.xcs");
+    write_xcs(&v1_archive, &[
+        ("usr/bin/tool", "tool v1\n"),
+        ("etc/plain-pkg.conf", "conf v1\n"),
+        ("usr/share/doc/plain-pkg/readme.txt", "readme v1\n"),
+    ]);
+    let v1_hash = mcx::archive::hash::HashVerifier::calculate(&v1_archive, "sha256").expect("hash v1");
+    let v1 = package_meta(
+        "plain-pkg", "1.0.0",
+        &format!("file://{}", v1_archive.display()),
+        &v1_hash,
+        &["usr/bin/tool", "etc/plain-pkg.conf", "usr/share/doc/plain-pkg/readme.txt"],
+    );
+    let index = index_dir.join("test.json");
+    fs::write(&index, serde_json::to_string_pretty(&vec![&v1]).expect("serialize v1")).expect("write index");
+    {
+        let mut tx = db.begin_transaction().expect("begin transaction");
+        tx.update_repository_index("test", index.to_str().expect("utf8")).expect("load v1");
+        tx.commit().expect("commit");
+    }
+
+    let cmd = InstallCommand::new(root.to_string_lossy().into_owned(), Arc::clone(&db));
+    cmd.execute(&["plain-pkg".to_string()]).await.expect("v1 install");
+    assert_eq!(fs::read_to_string(root.join("usr/bin/tool")).unwrap(), "tool v1\n");
+
+    // v2: tool changed, tool-extra added, readme removed, conf payload-identical.
+    tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+    let before_conf = fs::metadata(root.join("etc/plain-pkg.conf")).expect("conf metadata")
+        .modified().expect("conf mtime");
+    let before_tool = fs::metadata(root.join("usr/bin/tool")).expect("tool metadata")
+        .modified().expect("tool mtime");
+
+    let v2_archive = root.join("var/cache/mcx/plain-pkg-2.0.0.xcs");
+    write_xcs(&v2_archive, &[
+        ("usr/bin/tool", "tool v2\n"),
+        ("usr/bin/tool-extra", "tool-extra v2\n"),
+        ("etc/plain-pkg.conf", "conf v1\n"),
+    ]);
+    let v2_hash = mcx::archive::hash::HashVerifier::calculate(&v2_archive, "sha256").expect("hash v2");
+    let v2 = package_meta(
+        "plain-pkg", "2.0.0",
+        &format!("file://{}", v2_archive.display()),
+        &v2_hash,
+        &["usr/bin/tool", "usr/bin/tool-extra", "etc/plain-pkg.conf"],
+    );
+    fs::write(&index, serde_json::to_string_pretty(&vec![&v2]).expect("serialize v2")).expect("write index 2");
+    {
+        let mut tx = db.begin_transaction().expect("begin transaction");
+        tx.update_repository_index("test", index.to_str().expect("utf8")).expect("load v2");
+        tx.commit().expect("commit");
+    }
+
+    // No git registry entry => the diff is computed against the new archive.
+    let cmd2 = InstallCommand::new(root.to_string_lossy().into_owned(), Arc::clone(&db));
+    cmd2.execute(&["plain-pkg".to_string()]).await.expect("v2 archive-diff update");
+
+    // Changed + added placed, removed gone.
+    assert_eq!(fs::read_to_string(root.join("usr/bin/tool")).unwrap(), "tool v2\n");
+    assert_eq!(fs::read_to_string(root.join("usr/bin/tool-extra")).unwrap(), "tool-extra v2\n");
+    assert!(!root.join("usr/share/doc/plain-pkg/readme.txt").exists(), "removed file deleted");
+
+    // Payload-identical file keeps original mtime: only the diff was applied.
+    let after_conf = fs::metadata(root.join("etc/plain-pkg.conf")).expect("conf metadata")
+        .modified().expect("conf mtime");
+    assert_eq!(after_conf, before_conf, "unchanged file not rewritten");
+    assert_eq!(fs::read_to_string(root.join("etc/plain-pkg.conf")).unwrap(), "conf v1\n");
+
+    // Rewritten file got a fresh timestamp.
+    let after_tool = fs::metadata(root.join("usr/bin/tool")).expect("tool metadata")
+        .modified().expect("tool mtime");
+    assert_ne!(after_tool, before_tool, "changed file rewritten");
+
+    // Installed state + active mirror reflect v2.
+    let installed = db.get_package_manifest("plain-pkg").expect("get manifest");
+    assert_eq!(installed.version, "2.0.0");
+    assert_eq!(
+        fs::read_to_string(root.join("var/lib/mcx/active/plain-pkg/usr/bin/tool-extra")).unwrap(),
+        "tool-extra v2\n",
+        "active mirror updated with added file"
+    );
+    assert!(!root.join("var/lib/mcx/active/plain-pkg/usr/share/doc/plain-pkg/readme.txt").exists(),
+        "active mirror drops removed file");
+
+    fs::remove_dir_all(&root).expect("remove temp root");
+}
+
+#[tokio::test]
+async fn test_git_tracked_package_still_updates_from_archive() {
+    let (root, db, remote) = setup_git_backed_package("git_pkg_e2e");
+
+    // Fresh install comes from the `.xcs` archive, not from git.
+    let cmd = InstallCommand::new(root.to_string_lossy().into_owned(), Arc::clone(&db));
+    cmd.execute(&["git-hello".to_string()]).await.expect("archive install");
+    assert_eq!(fs::read_to_string(root.join("usr/bin/hello")).unwrap(), "hello v1\n");
+    assert_eq!(fs::read_to_string(root.join("usr/share/doc/hello/readme.txt")).unwrap(), "readme v1\n");
+    assert!(!root.join("var/lib/mcx/gits/git-hello").exists(), "no git clone on install");
+
+    // Maintainer bumps the package's git remote to v2 and tags it — install
+    // does not care: the update reads the new `.xcs` archive from source.
+    run_git_silent(&remote, &["rm", "-q", "usr/share/doc/hello/readme.txt"]);
+    fs::write(remote.join("usr/bin/hello"), "hello v2\n").expect("modify hello");
+    fs::write(remote.join("usr/bin/hello2"), "hello2 v2\n").expect("add hello2");
+    run_git_silent(&remote, &["add", "-A"]);
+    run_git_silent(&remote, &["-c", "user.name=Test", "-c", "user.email=test@example.com",
+        "commit", "-m", "v2.0.0"]);
+    run_git_silent(&remote, &["tag", "v2.0.0"]);
+
+    // Publish a real v2 archive (read from source this time) and advertise it
+    // in the available index with its real checksum.
+    let v2_archive = root.join("var/cache/mcx/git-hello-2.0.0.xcs");
+    write_xcs(&v2_archive, &[
+        ("usr/bin/hello", "hello v2\n"),
+        ("usr/bin/hello2", "hello2 v2\n"),
+    ]);
+    let v2_hash = mcx::archive::hash::HashVerifier::calculate(&v2_archive, "sha256").expect("hash v2");
+    let v2 = package_meta("git-hello", "2.0.0",
+        &format!("file://{}", v2_archive.display()),
+        &v2_hash,
+        &["usr/bin/hello", "usr/bin/hello2"],
+    );
+    {
+        let index = root.join("var/lib/mcx/sync/test.json");
+        fs::write(&index, serde_json::to_string_pretty(&vec![&v2]).expect("serialize v2 index")).expect("write v2 index");
+        let mut tx = db.begin_transaction().expect("begin transaction");
+        tx.update_repository_index("test", index.to_str().expect("utf8")).expect("load v2 index");
+        tx.commit().expect("commit transaction");
+    }
+
+    // The update reads the archive from source and applies only the diff.
+    let cmd2 = InstallCommand::new(root.to_string_lossy().into_owned(), Arc::clone(&db));
+    cmd2.execute(&["git-hello".to_string()]).await.expect("archive diff update");
+
+    assert_eq!(fs::read_to_string(root.join("usr/bin/hello")).unwrap(), "hello v2\n", "changed file updated");
+    assert_eq!(fs::read_to_string(root.join("usr/bin/hello2")).unwrap(), "hello2 v2\n", "added file placed");
+    assert!(!root.join("usr/share/doc/hello/readme.txt").exists(), "removed file deleted");
+
+    // The git machinery is not consulted: no checkout, no worktree, no state.
+    assert!(!root.join("var/lib/mcx/gits/git-hello").exists(), "no git clone on update");
+    assert!(!root.join("var/lib/mcx/gits/git-hello.wt").exists(), "no worktree created");
+    let git = mcx::core::gitpkg::GitPackageManager::new(&root);
+    assert!(git.read_state("git-hello").expect("read state").is_none(), "no git state written");
+
+    // Installed state + active mirror reflect v2.
+    let installed = db.get_package_manifest("git-hello").expect("get manifest");
+    assert_eq!(installed.version, "2.0.0");
+    assert_eq!(
+        fs::read_to_string(root.join("var/lib/mcx/active/git-hello/usr/bin/hello2")).unwrap(),
+        "hello2 v2\n",
+        "active mirror updated"
+    );
+
+    fs::remove_dir_all(&root).expect("remove temp root");
+}
+
+#[tokio::test]
+async fn test_git_package_purge_removes_checkout_and_worktree() {
+    let (root, db, remote) = setup_git_backed_package("git_pkg_purge");
+
+    let cmd = InstallCommand::new(root.to_string_lossy().into_owned(), Arc::clone(&db));
+    cmd.execute(&["git-hello".to_string()]).await.expect("archive install");
+
+    // Simulate a git-updated package: clone + materialise a worktree.
+    let git = mcx::core::gitpkg::GitPackageManager::new(&root);
+    git.ensure_clone("git-hello", &format!("file://{}", remote.display())).expect("clone");
+    git.fetch("git-hello").expect("fetch");
+    let commit = git.resolve_commit("git-hello", "1.0.0").expect("resolve").expect("tag exists");
+    let wt = git.create_worktree("git-hello", &commit).expect("worktree");
+    assert!(wt.exists(), "worktree created");
+
+    assert!(root.join("var/lib/mcx/gits/git-hello/.git").exists(), "checkout exists");
+
+    git.purge("git-hello").expect("purge git state");
+    assert!(!root.join("var/lib/mcx/gits/git-hello").exists(), "checkout purged");
+    assert!(!wt.exists(), "worktree purged");
+    assert!(git.read_state("git-hello").expect("read state after purge").is_none(), "state purged");
+
+    fs::remove_dir_all(&root).expect("remove temp root");
+}
+
+// ── User / System mode ───────────────────────────────────────────────────────
+
+#[test]
+fn test_user_selection_round_trip_requires_fields() {
+    let root = create_temporary_root("user_sel_round_trip");
+    let sel_path = root.join("etc/mcx/user.ini");
+    fs::create_dir_all(sel_path.parent().unwrap()).expect("create config dir");
+
+    assert!(mcx::core::mode::read_user_selection_in(&sel_path).is_none(), "missing file has no selection");
+    fs::write(&sel_path, "[general]\nmode = user\n").expect("write selection without user");
+    assert!(
+        mcx::core::mode::read_user_selection_in(&sel_path).is_none(),
+        "missing required user field yields no selection"
+    );
+
+    let sel = mcx::core::mode::UserSelection {
+        mode: mcx::core::mode::Mode::User,
+        user: "alice".to_string(),
+    };
+    mcx::core::mode::write_user_selection_in(&sel, &sel_path).expect("write selection");
+    let reread = mcx::core::mode::read_user_selection_in(&sel_path).expect("read selection");
+    assert_eq!(reread.mode, mcx::core::mode::Mode::User);
+    assert_eq!(reread.user, "alice");
+    fs::remove_dir_all(&root).expect("remove temp root");
+}
+
+#[test]
+fn test_mode_config_patch_appends_general_without_selection() {
+    let root = create_temporary_root("mode_defaults");
+    let config_path = root.join("etc/mcx/config.ini");
+    fs::create_dir_all(config_path.parent().unwrap()).expect("create config dir");
+    fs::write(&config_path, "[general]\nlog_level = debug\n\n[python]\nenabled = false\n").expect("write seed config");
+
+    mcx::core::mode::ensure_mode_fields_in(&config_path).expect("ensure root fields");
+
+    let content = fs::read_to_string(&config_path).expect("read back");
+    assert!(content.contains("user_root = ~/.mcx"), "user_root appended");
+    assert!(content.contains("system_root = /"), "system_root appended");
+    assert!(content.contains("log_level = debug"), "other general keys preserved");
+    assert!(content.contains("[python]"), "seed section untouched");
+    assert!(!content.contains("user_mode"), "user selection never lives in root config");
+
+    let cfg = mcx::core::mode::read_mode_config_in(&config_path);
+    assert_eq!(cfg.user_root, "~/.mcx");
+    assert_eq!(cfg.system_root, "/");
+    fs::remove_dir_all(&root).expect("remove temp root");
+}
+
+#[test]
+fn test_resolve_root_modes() {
+    let cfg = mcx::core::mode::ModeConfig {
+        user_root: "u-root".to_string(),
+        system_root: "/sys-root".to_string(),
+    };
+    let home = std::env::var("HOME").expect("HOME");
+
+    // User mode always operates inside ~/.mcx, ignoring any external --root.
+    let user = mcx::core::mode::resolve_root(Some("/external"), mcx::core::mode::Mode::User, &cfg, false);
+    assert_eq!(user, std::path::PathBuf::from(format!("{home}/.mcx")));
+
+    // System mode honors explicit --root: absolute stays absolute, relative joins CWD.
+    let abs = mcx::core::mode::resolve_root(Some("/opt/mcx"), mcx::core::mode::Mode::System, &cfg, false);
+    assert_eq!(abs, std::path::PathBuf::from("/opt/mcx"));
+    let cwd = std::env::current_dir().expect("cwd");
+    let rel = mcx::core::mode::resolve_root(Some("my-root"), mcx::core::mode::Mode::System, &cfg, false);
+    assert_eq!(rel, cwd.join("my-root"));
+
+    // System mode mutating targets the system root; read-only falls back to
+    // the per-user root so queries never elevate (only when not running as root).
+    let sys = mcx::core::mode::resolve_root(None, mcx::core::mode::Mode::System, &cfg, false);
+    assert_eq!(sys, std::path::PathBuf::from("/sys-root"));
+    let is_root = std::process::Command::new("id")
+        .arg("-u")
+        .output()
+        .map(|o| String::from_utf8(o.stdout).unwrap_or_default().trim() == "0")
+        .unwrap_or(false);
+    if !is_root {
+        let readonly = mcx::core::mode::resolve_root(None, mcx::core::mode::Mode::System, &cfg, true);
+        assert_eq!(readonly, cwd.join("u-root"));
+    }
+}
+
+// ── Wildcard package matching ────────────────────────────────────────────────
+
+#[test]
+fn test_wildcard_expand_from_library() {
+    let names = [
+        "pkg-tools-1",
+        "pkg-tools-2",
+        "pkg-libs",
+        "otherpkg",
+    ];
+
+    // Prefix glob: pkg* matches every pkg-tools and pkg-libs.
+    let matched = mcx::core::wildcard::expand("pkg*", names.iter().copied());
+    assert_eq!(matched, vec!["pkg-libs", "pkg-tools-1", "pkg-tools-2"]);
+
+    // Suffix glob.
+    let matched = mcx::core::wildcard::expand("*tools*", names.iter().copied());
+    assert_eq!(matched, vec!["pkg-tools-1", "pkg-tools-2"]);
+
+    // No matches yields an empty list.
+    assert!(mcx::core::wildcard::expand("zzz*", names.iter().copied()).is_empty());
+
+    // Exact names are flagged as non-wildcards and match themselves.
+    assert!(!mcx::core::wildcard::has_wildcard("pkg-tools-1"));
+    assert!(mcx::core::wildcard::has_wildcard("pkg-*"));
 }

@@ -1,0 +1,14 @@
+#!/bin/sh
+# zig cc wrapper for the amd64 musl target. rustc hands a C compiler its own
+# triple (`x86_64-unknown-linux-musl`); zig uses `x86_64-linux-musl`, so this
+# wrapper translates the triple and delegates everything else to `zig cc`.
+# Requires `zig` on PATH.
+out=""
+for a in "$@"; do
+    case "$a" in
+        --target=x86_64-unknown-linux-musl) out="$out --target=x86_64-linux-musl" ;;
+        -target|x86_64-unknown-linux-musl|--sysroot=*) ;;
+        *) out="$out \"$a\"" ;;
+    esac
+done
+eval "exec zig cc $out"

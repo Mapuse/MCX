@@ -62,14 +62,13 @@ impl InstallCommand {
         }
 
         self.fire_hooks(PluginHook::PreInstall, packages);
-
-        let sys_profile = SystemProfile::probe();
+let sys_profile = SystemProfile::probe();
         let mut solver = DependencySolver::new(Arc::clone(&self.db));
         for pkg in packages {
             solver = solver.add_target(pkg);
         }
 
-        let plan = solver.solve()?;
+        let mut plan = solver.solve()?;
         for meta in &plan {
             if !crate::core::arch::package_matches_host(&meta.architecture) {
                 return Err(anyhow!(
@@ -81,6 +80,30 @@ impl InstallCommand {
         let root_path = Path::new(&self.root);
         let cache_dir = root_path.join(constants::PATH_CACHE);
         fs::create_dir_all(&cache_dir)?;
+
+        // The solver pins an already-installed target to its installed
+        // manifest, so upgrades are resolved to the newest *available* version
+        // here. The new `.xcs` archive is then read straight from its source
+        // and only the diff against the installed content is placed.
+        let all_available = self.db.get_all_available_packages()?;
+        let mut newest_available: HashMap<String, PackageMetadata> = HashMap::new();
+        for meta in &all_available {
+            if !crate::core::arch::package_matches_host(&meta.architecture) {
+                continue;
+            }
+            match newest_available.get(&meta.pkg_name) {
+                Some(existing) if compare_versions(&existing.version, &meta.version) != std::cmp::Ordering::Less => {}
+                _ => { newest_available.insert(meta.pkg_name.clone(), meta.clone()); }
+            }
+        }
+        for meta in &mut plan {
+            if self.db.is_package_installed(&meta.pkg_name)?
+                && let Some(newer) = newest_available.get(&meta.pkg_name)
+                && compare_versions(&meta.version, &newer.version) == std::cmp::Ordering::Less
+            {
+                *meta = newer.clone();
+            }
+        }
 
         // ── Phase 1: acquire archives. Cached copies win, then locally
         // vendored payloads (offline installs), and only then the network —
@@ -160,10 +183,19 @@ impl InstallCommand {
 
         // ── Phase 3: the committed window. Collision checks run against the
         // database BEFORE any live write; every placed path is journaled so
-        // dropping the transaction rolls the system back.
+        // dropping the transaction rolls the system back. Upgrades diff the
+        // staged archive against the previously installed content and only
+        // touch the files that actually changed — the new `.xcs` archive is
+        // read from its source and the diff is applied straight from it.
+        let installed_map: HashMap<String, PackageMetadata> = self.db
+            .get_all_installed_packages()?
+            .into_iter()
+            .map(|m| (m.pkg_name.clone(), m))
+            .collect();
         let mut transaction = self.db.begin_transaction()?;
         let installed_root = root_path.join(constants::PATH_ACTIVE);
         let mut replaced_links: Vec<(PathBuf, PathBuf)> = Vec::new();
+        let mut diff_report: Vec<(String, usize, usize)> = Vec::new();
 
         for sp in &staged {
             transaction.register_package_placement(&sp.meta)?;
@@ -171,7 +203,18 @@ impl InstallCommand {
 
         let placement_result = (|| -> Result<()> {
             for sp in &staged {
-                place_package(root_path, &installed_root, sp, &mut transaction, &mut replaced_links)?;
+                let prev = installed_map.get(&sp.meta.pkg_name);
+                let (changed, removed) = place_package(
+                    root_path,
+                    &installed_root,
+                    sp,
+                    &mut transaction,
+                    &mut replaced_links,
+                    prev,
+                )?;
+                if prev.is_some() {
+                    diff_report.push((sp.meta.pkg_name.clone(), changed, removed));
+                }
             }
             Ok(())
         })();
@@ -188,6 +231,13 @@ impl InstallCommand {
         }
 
         transaction.commit()?;
+
+        for (name, changed, removed) in &diff_report {
+            UserInterface::success(&format!(
+                "{}: {} changed, {} removed (diff)",
+                name, changed, removed
+            ));
+        }
 
         // sandbox setup for each installed package
         for sp in &staged {
@@ -322,13 +372,19 @@ fn stage_package(
     Ok(StagedPackage { meta })
 }
 
+/// Place a staged package into the target root. On upgrades (`prev` is the
+/// installed manifest) this is diff-based: unchanged files are left
+/// untouched, changed/added files are written straight from the new archive's
+/// extracted contents, and files no longer in the new payload are deleted.
+/// Returns (changed, removed).
 fn place_package(
     root_path: &Path,
     installed_root: &Path,
     staged: &StagedPackage,
     transaction: &mut DbTransaction<'_>,
     replaced_links: &mut Vec<(PathBuf, PathBuf)>,
-) -> Result<()> {
+    prev: Option<&PackageMetadata>,
+) -> Result<(usize, usize)> {
     let name = &staged.meta.pkg_name;
     let pkg_stage = root_path.join(constants::PATH_STAGE).join(name);
     let pkg_active_new = installed_root.join(format!("{}.mcx-new", name));
@@ -342,9 +398,21 @@ fn place_package(
     let _ = fs::remove_dir_all(&pkg_active_old);
     fs::create_dir_all(&pkg_active_new)?;
 
+    let staged_hashes = &staged.meta.file_hashes;
+    let mut changed = 0usize;
+    let mut removed = 0usize;
+
     for file in &staged.meta.files {
         let src = pkg_stage.join(file);
         let Ok(src_meta) = fs::symlink_metadata(&src) else { continue };
+
+        // Content-identical to the previously installed file? Then it needs
+        // no root write; only the active mirror picks it up. The digest
+        // comparison only skips regular files that carried a digest before,
+        // so symlinks and irregular files are always refreshed.
+        let key = file.to_string_lossy().into_owned();
+        let unchanged = staged_hashes.get(&key).is_some()
+            && matches!(prev, Some(p) if p.file_hashes.get(&key) == staged_hashes.get(&key));
 
         if src_meta.file_type().is_symlink() {
             // Recreate symlinks as symlinks instead of copying through them.
@@ -354,6 +422,11 @@ fn place_package(
                 fs::create_dir_all(parent)?;
             }
             std::os::unix::fs::symlink(&target, &dst_active)?;
+
+            if unchanged {
+                continue;
+            }
+            changed += 1;
 
             let dst = root_path.join(file);
             if dst.symlink_metadata().is_ok() {
@@ -383,6 +456,11 @@ fn place_package(
         }
         crate::core::transaction::atomic_copy(&src, &dst_active)?;
 
+        if unchanged {
+            continue;
+        }
+        changed += 1;
+
         let dst = root_path.join(file);
         if dst.symlink_metadata().is_ok() {
             // Preserve prior content of overwritten paths for rollback.
@@ -393,6 +471,21 @@ fn place_package(
         }
         crate::core::transaction::atomic_copy(&src, &dst)?;
         transaction.record_staged_file(file.clone())?;
+    }
+
+    // Files that existed before but are absent from the new payload are
+    // removed from the live root (the rebuilt generation already drops them).
+    if let Some(prev_meta) = prev {
+        for file in &prev_meta.files {
+            if !staged.meta.files.contains(file) {
+                let dst = root_path.join(file);
+                if dst.symlink_metadata().is_ok() {
+                    transaction.backup_file(&dst)?;
+                    let _ = fs::remove_file(&dst);
+                    removed += 1;
+                }
+            }
+        }
     }
 
     // Swap generations only after the new tree is complete; on failure the
@@ -415,6 +508,6 @@ fn place_package(
     // This package's staging copy is fully consumed.
     let _ = fs::remove_dir_all(&pkg_stage);
 
-    Ok(())
+    Ok((changed, removed))
 }
 

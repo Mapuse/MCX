@@ -7,7 +7,7 @@ const SUBCOMMANDS: &[&str] = &[
     "query", "clean", "verify", "fix", "config", "history", "build",
     "repo-add", "repo-remove", "repo-list", "repo-sync", "repo-enable",
     "repo-disable", "repo-info", "self-update", "vendor", "completion",
-    "cgroup",
+    "cgroup", "mode",
 ];
 
 pub struct CompletionEngine {

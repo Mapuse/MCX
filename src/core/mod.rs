@@ -10,11 +10,13 @@ pub mod config;
 pub mod constants;
 pub mod database;
 pub mod declarative;
+pub mod gitpkg;
 pub mod graph;
 pub mod history;
 pub mod integrity;
 pub mod lifecycle;
 pub mod manifest;
+pub mod mode;
 pub mod package;
 pub mod plugin;
 pub mod profiler;
@@ -26,6 +28,7 @@ pub mod solver;
 pub mod transaction;
 pub mod update;
 pub mod vendor;
+pub mod wildcard;
 pub mod sudo;
 pub mod workspace;
 
@@ -41,10 +44,16 @@ pub use cps::PythonConfig;
 pub use database::Database;
 pub use declarative::ProfileValidator;
 pub use graph::DepGraph;
+pub use gitpkg::{GitPackageManager, GitPackageState, PackageDiff, is_git_source, git_remote_url};
 pub use history::HistoryEngine;
 pub use integrity::IntegrityScanner;
 pub use lifecycle::{LifecycleEngine, LifecycleEntry, LifecycleTransition, LifecycleEvent, PackageState, DependencyGraph, OrphanSet};
 pub use manifest::ManifestParser;
+pub use mode::{
+    Mode, ModeConfig, UserSelection, current_user, ensure_mode_fields, normalize_root,
+    read_mode_config, read_user_selection, read_user_selection_in, resolve_mode, resolve_root,
+    user_selection_path, user_selection_path_in, write_user_selection, write_user_selection_in,
+};
 pub use package::PackageEntity;
 pub use plugin::{PluginSlot, PluginManager, PythonPlugin, PluginManifest, PluginHook, PluginEvent, PluginResult};
 pub use profiler::{SystemProfile, NetworkProfile, CalibratedParams, DecisionEngine, DecisionMatrix, HeuristicVerdict, NetworkProber};
@@ -55,5 +64,6 @@ pub use solver::DependencySolver;
 pub use update::SelfUpdateManager;
 pub use transaction::PackageTransaction;
 pub use vendor::VendorManager;
+pub use wildcard::{expand, has_wildcard, pattern_to_regex};
 pub use workspace::WorkspaceManager;
 pub use autoremove::{AutoRemoveAnalyzer, AutoRemoveReport, OrphanedPackage, OrphanReason, UnnecessaryLib};
