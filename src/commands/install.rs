@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use anyhow::{Result, anyhow, Context};
+use anyhow::{Result, anyhow};
 use crate::core::solver::DependencySolver;
 use crate::core::db::{Database, DbTransaction};
 use crate::core::database::PackageMetadata;
@@ -372,11 +372,13 @@ fn stage_package(
     Ok(StagedPackage { meta })
 }
 
-/// Place a staged package into the target root. On upgrades (`prev` is the
-/// installed manifest) this is diff-based: unchanged files are left
-/// untouched, changed/added files are written straight from the new archive's
-/// extracted contents, and files no longer in the new payload are deleted.
-/// Returns (changed, removed).
+/// Place a staged package into the target root. The first install is always
+/// a complete install: the full payload is materialised. Every later update
+/// is git-pull style: the new active generation is seeded from the currently
+/// active tree (an instant rename, no data copy) and only the files that
+/// actually changed are overlaid on top; unchanged files are never rewritten
+/// and files no longer in the new payload are dropped. Returns
+/// (changed, removed).
 fn place_package(
     root_path: &Path,
     installed_root: &Path,
@@ -391,12 +393,20 @@ fn place_package(
     let pkg_active_old = installed_root.join(format!("{}.mcx-old", name));
     let pkg_active = installed_root.join(name);
 
-    // Materialise the new active-mirror generation alongside the current one
-    // so an upgrade never destroys the previous tree before its replacement
-    // is fully in place.
+    // Seed the new generation from the current one when it exists (first
+    // install materialises a fresh tree instead); unchanged files are thus
+    // carried over without being re-copied from the stage.
     let _ = fs::remove_dir_all(&pkg_active_new);
     let _ = fs::remove_dir_all(&pkg_active_old);
-    fs::create_dir_all(&pkg_active_new)?;
+    match fs::rename(&pkg_active, &pkg_active_new) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            fs::create_dir_all(&pkg_active_new)?;
+        }
+        Err(e) => {
+            return Err(anyhow!("Failed to seed update generation for {}: {}", name, e));
+        }
+    }
 
     let staged_hashes = &staged.meta.file_hashes;
     let mut changed = 0usize;
@@ -407,9 +417,9 @@ fn place_package(
         let Ok(src_meta) = fs::symlink_metadata(&src) else { continue };
 
         // Content-identical to the previously installed file? Then it needs
-        // no root write; only the active mirror picks it up. The digest
-        // comparison only skips regular files that carried a digest before,
-        // so symlinks and irregular files are always refreshed.
+        // no root write; the digest comparison only skips regular files that
+        // carried a digest before, so symlinks and irregular files are always
+        // refreshed.
         let key = file.to_string_lossy().into_owned();
         let unchanged = staged_hashes.get(&key).is_some()
             && matches!(prev, Some(p) if p.file_hashes.get(&key) == staged_hashes.get(&key));
@@ -451,6 +461,20 @@ fn place_package(
         if !src_meta.is_file() { continue; } // directories appear implicitly
 
         let dst_active = pkg_active_new.join(file);
+        if unchanged {
+            // The generation was seeded from the previous active tree; a
+            // regular file already present there is kept as-is. Anything
+            // irregular (missing, a symlink, or a type change) is refreshed
+            // from the stage.
+            let refresh = match fs::symlink_metadata(&dst_active) {
+                Ok(md) => md.file_type().is_symlink() || !md.is_file(),
+                Err(_) => true,
+            };
+            if !refresh {
+                continue;
+            }
+        }
+
         if let Some(parent) = dst_active.parent() {
             fs::create_dir_all(parent)?;
         }
@@ -474,7 +498,7 @@ fn place_package(
     }
 
     // Files that existed before but are absent from the new payload are
-    // removed from the live root (the rebuilt generation already drops them).
+    // removed from the live root and from the seeded generation.
     if let Some(prev_meta) = prev {
         for file in &prev_meta.files {
             if !staged.meta.files.contains(file) {
@@ -484,22 +508,20 @@ fn place_package(
                     let _ = fs::remove_file(&dst);
                     removed += 1;
                 }
+                let gen_path = pkg_active_new.join(file);
+                if gen_path.symlink_metadata().is_ok() {
+                    let _ = fs::remove_file(&gen_path);
+                }
             }
         }
     }
 
-    // Swap generations only after the new tree is complete; on failure the
-    // previous generation is restored in place.
-    if pkg_active.symlink_metadata().is_ok() {
-        fs::rename(&pkg_active, &pkg_active_old)
-            .with_context(|| format!("Failed to preserve active tree for {}", name))?;
-    }
+    // Promote the merged generation. Because it was seeded from the previous
+    // tree, a failure can simply be retried without losing the prior state;
+    // the transaction rollback restores the live root.
     match fs::rename(&pkg_active_new, &pkg_active) {
         Ok(()) => {}
         Err(e) => {
-            if pkg_active_old.symlink_metadata().is_ok() {
-                let _ = fs::rename(&pkg_active_old, &pkg_active);
-            }
             return Err(anyhow!("Failed to activate new generation for {}: {}", name, e));
         }
     }

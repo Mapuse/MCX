@@ -1,5 +1,6 @@
 use std::env;
 use std::fs;
+use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use super::config::MappedConfig;
@@ -41,8 +42,10 @@ impl Mode {
 
 /// Which user mcx operates for, persisted in its own separate config
 /// (`~/.mcx/etc/mcx/user.ini`). Both `mode` and `user` are required fields;
-/// keeping this file distinct from the root-directory config means the
-/// selection can never silently target a directory outside the user.
+/// the `user` field records the OS user who switched, and a selection is only
+/// honored while that same OS user runs mcx. Keeping this file distinct from
+/// the root-directory config means the selection can never silently target a
+/// directory outside the user.
 #[derive(Clone, Debug)]
 pub struct UserSelection {
     pub mode: Mode,
@@ -177,6 +180,36 @@ fn inside_home(path: &Path) -> bool {
     path == home || path.starts_with(&home)
 }
 
+/// Whether `path` lies inside the current process's home directory. User mode
+/// is 100% separated from the system and every other user, so its root must
+/// satisfy this.
+pub fn is_within_home(path: &Path) -> bool {
+    inside_home(path)
+}
+
+/// Home directory of the given OS user, from the passwd database (`getpwnam`).
+/// Returns `None` for unknown users.
+pub fn home_dir_for_user(name: &str) -> Option<PathBuf> {
+    let c_name = std::ffi::CString::new(name).ok()?;
+    // SAFETY: getpwnam() read-only; the returned pointer is owned by libc and
+    // only dereferenced here, before any other passwd call could invalidate it.
+    let pw = unsafe { libc::getpwnam(c_name.as_ptr()) };
+    if pw.is_null() {
+        return None;
+    }
+    // SAFETY: pw is non-null and pw_dir is a NUL-terminated string valid for
+    // the lifetime of this read.
+    let dir = unsafe { std::ffi::CStr::from_ptr((*pw).pw_dir) };
+    let s = dir.to_string_lossy();
+    if s.is_empty() { None } else { Some(PathBuf::from(s.into_owned())) }
+}
+
+/// The canonical per-user root for `--for-user`: the selected user's home plus
+/// `.mcx`, exactly the directory that same user's own user mode targets.
+pub fn target_user_root(name: &str) -> Option<PathBuf> {
+    home_dir_for_user(name).map(|home| home.join(constants::USER_ROOT_DIR))
+}
+
 /// Resolve the effective mode with CLI flag precedence over environment
 /// variables over the persisted user-selection config over the default.
 pub fn resolve_mode(flag: Option<bool>) -> Mode {
@@ -196,10 +229,12 @@ pub fn resolve_mode(flag: Option<bool>) -> Mode {
 
 /// Choose the operational root directory for this invocation.
 ///
-/// User mode always operates inside the selected user's home (`~/.mcx`).
-/// System mode honors `--root` (absolute, relative, or `~`-prefixed) and the
-/// system root; non-root read-only commands in system mode fall back to the
-/// per-user root so queries never require elevation.
+/// User mode honors `--root` (absolute, relative, or `~`-prefixed) and
+/// otherwise uses the configured per-user root; callers additionally enforce
+/// [`check_directory_access`] so a user-mode directory a user cannot read and
+/// write is refused. System mode honors `--root` and the system root;
+/// non-root read-only commands in system mode fall back to the per-user root
+/// so queries never require elevation.
 pub fn resolve_root(
     explicit_root: Option<&str>,
     mode: Mode,
@@ -208,7 +243,10 @@ pub fn resolve_root(
 ) -> PathBuf {
     let user_root = cfg.effective_user_root();
     if mode.is_user() {
-        return default_user_root();
+        return explicit_root
+            .map(Path::new)
+            .map(normalize_root)
+            .unwrap_or(user_root);
     }
     if let Some(root) = explicit_root {
         return normalize_root(Path::new(root));
@@ -224,14 +262,81 @@ pub fn resolve_root(
     }
 }
 
+/// Verify the current process can traverse to, read, and write the directory
+/// at `path` — the same permission `ls -la` exposes for a user. Used to
+/// refuse a user-mode root the switching user has no read/write access to.
+///
+/// The final component may not exist yet (mcx creates its root on first
+/// use); in that case the nearest existing ancestor is checked, so a path can
+/// never be selected in a location the user cannot create files in.
+pub fn check_directory_access(path: &Path) -> Result<()> {
+    let mut candidate = path.to_path_buf();
+    let existing = loop {
+        if candidate.as_os_str().is_empty() || candidate == Path::new("/") {
+            break candidate;
+        }
+        match fs::metadata(&candidate) {
+            Ok(md) => {
+                if !md.is_dir() {
+                    anyhow::bail!("{} is not a directory", candidate.display());
+                }
+                break candidate;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                match candidate.parent() {
+                    Some(parent) => candidate = parent.to_path_buf(),
+                    None => break candidate,
+                }
+            }
+            Err(e) => {
+                return Err(e).with_context(|| {
+                    format!("Cannot inspect {} while checking directory access", candidate.display())
+                });
+            }
+        }
+    };
+
+    let c_path = std::ffi::CString::new(existing.as_os_str().as_bytes())
+        .with_context(|| format!("Unrepresentable path {}", existing.display()))?;
+    // SAFETY: access(2) takes a NUL-terminated C string we own and never
+    // touches process state beyond the requested permission bits.
+    let rc = unsafe { libc::access(c_path.as_ptr(), libc::R_OK | libc::W_OK | libc::X_OK) };
+    if rc != 0 {
+        anyhow::bail!(
+            "{} has no read/write access to {} ({})",
+            current_user(),
+            path.display(),
+            std::io::Error::last_os_error()
+        );
+    }
+    Ok(())
+}
+
 // ── User selection config (user.ini) ───────────────────────────────────────
 
-/// Load the persisted user selection from `~/.mcx/etc/mcx/user.ini`. Both
-/// `mode` and `user` are required; a missing file or missing fields returns
-/// `None` so the caller can fall back to the default (system mode, current
-/// user) rather than guessing an external target.
+/// Load the persisted user selection from `~/.mcx/etc/mcx/user.ini`, but only
+/// if it belongs to the current OS user. A selection written by another user
+/// is ignored, so switching between users stays isolated: each user inherits
+/// user mode only if they switched to it themselves; everyone else falls back
+/// to the default (system mode). A missing file or missing fields also
+/// returns `None` so the caller never guesses an external target.
 pub fn read_user_selection() -> Option<UserSelection> {
-    read_user_selection_in(&user_selection_path())
+    owned_for_user(read_user_selection_in(&user_selection_path()), &current_user())
+}
+
+/// Whether `sel` was authored by the given OS user. Kept separate so the
+/// ownership rule can be tested without touching process-global `HOME`/`USER`.
+pub fn selection_owned_by(sel: &UserSelection, user: &str) -> bool {
+    sel.user == user
+}
+
+/// Filter a raw selection by the OS user it is bound to (`None` when missing
+/// or authored by someone else).
+fn owned_for_user(sel: Option<UserSelection>, user: &str) -> Option<UserSelection> {
+    match sel {
+        Some(sel) if selection_owned_by(&sel, user) => Some(sel),
+        _ => None,
+    }
 }
 
 /// User-selection read anchored at an explicit path (used by tests).
@@ -575,19 +680,17 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_root_user_mode_is_home_root() {
-        let cfg = config("/tmp");
-        let home = home_dir();
+    fn test_resolve_root_user_mode_uses_configured_user_root() {
+        let cfg = config("/tmp/u");
         let root = resolve_root(None, Mode::User, &cfg, false);
-        assert_eq!(root, home.join(".mcx"));
+        assert_eq!(root, std::path::PathBuf::from("/tmp/u/u"));
     }
 
     #[test]
-    fn test_resolve_root_user_mode_ignores_external_root() {
+    fn test_resolve_root_user_mode_honors_explicit_root() {
         let cfg = config("/tmp");
-        let home = home_dir();
         let root = resolve_root(Some("/external/root"), Mode::User, &cfg, false);
-        assert_eq!(root, home.join(".mcx"));
+        assert_eq!(root, std::path::PathBuf::from("/external/root"));
     }
 
     #[test]
@@ -595,6 +698,85 @@ mod tests {
         let cfg = config("/tmp/sys");
         let sys = resolve_root(None, Mode::System, &cfg, false);
         assert_eq!(sys, std::path::PathBuf::from("/tmp/sys/s"));
+    }
+
+    #[test]
+    fn test_selection_ignored_when_owned_by_another_user() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("etc/mcx/user.ini");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, "[general]\nmode = user\nuser = alice\n").unwrap();
+
+        let raw = read_user_selection_in(&path);
+        assert!(raw.is_some());
+        assert!(
+            owned_for_user(raw.clone(), "alice").is_some(),
+            "the user who switched inherits user mode"
+        );
+        assert!(
+            owned_for_user(raw, "bob").is_none(),
+            "other users stay on the default system mode"
+        );
+    }
+
+    #[test]
+    fn test_check_directory_access_allows_writable_temp_dir() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        check_directory_access(tmp.path()).expect("writable temp dir is accessible");
+    }
+
+    #[test]
+    fn test_check_directory_access_allows_missing_leaf_under_writable_dir() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let missing = tmp.path().join("not-yet-created");
+        check_directory_access(&missing).expect("missing leaf under writable parent is accessible");
+    }
+
+    #[test]
+    fn test_check_directory_access_rejects_regular_file() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let file = tmp.path().join("file");
+        fs::write(&file, b"x").unwrap();
+        let err = check_directory_access(&file).unwrap_err();
+        assert!(err.to_string().contains("not a directory"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_check_directory_access_rejects_readonly_dir_when_not_root() {
+        use std::os::unix::fs::PermissionsExt;
+        let is_root = std::process::Command::new("id")
+            .arg("-u")
+            .output()
+            .map(|o| String::from_utf8(o.stdout).unwrap_or_default().trim() == "0")
+            .unwrap_or(false);
+        if is_root {
+            return; // root can always write, whatever the mode bits say
+        }
+        let tmp = tempfile::TempDir::new().unwrap();
+        let ro = tmp.path().join("ro");
+        fs::create_dir(&ro).unwrap();
+        fs::set_permissions(&ro, fs::Permissions::from_mode(0o555)).unwrap();
+        let err = check_directory_access(&ro).unwrap_err();
+        assert!(err.to_string().contains("no read/write access"));
+        fs::set_permissions(&ro, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    #[test]
+    fn test_is_within_home_matches_home_boundary() {
+        let home = home_dir();
+        assert!(is_within_home(&home), "the home itself qualifies");
+        assert!(is_within_home(&home.join(".mcx")), "subdirs of home qualify");
+        assert!(!is_within_home(Path::new("/tmp")), "system dirs do not qualify");
+        assert!(!is_within_home(Path::new("/")), "the system root never qualifies");
+    }
+
+    #[test]
+    fn test_home_dir_for_user_uses_passwd_database() {
+        assert!(home_dir_for_user("this-user-cannot-exist-mcx").is_none(), "unknown user has no home");
+        let home = home_dir_for_user("root").expect("root exists in the passwd database");
+        assert_eq!(home, PathBuf::from("/root"));
+        assert_eq!(target_user_root("root"), Some(PathBuf::from("/root/.mcx")));
     }
 
     #[test]

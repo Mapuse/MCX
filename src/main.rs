@@ -49,6 +49,9 @@ impl cps::Reporter for UiReporter {
 struct Cli {
     #[arg(long, global = true, default_value = "")]
     root: String,
+    #[arg(long = "for-user", global = true, default_value = "",
+          help = "System mode only: run this command in the named OS user's environment (requires the root password on every command)")]
+    user_target: String,
     #[arg(long = "user-mode", global = true, conflicts_with = "system_mode_flag")]
     user_mode_flag: bool,
     #[arg(long = "system-mode", global = true)]
@@ -459,14 +462,46 @@ async fn main() {
         _ => None,
     };
     if let Some(action) = &mode_action {
+        if !args.user_target.is_empty() {
+            UserInterface::error("--for-user cannot be combined with the mode command; select the mode first.");
+            process::exit(1);
+        }
         handle_mode_command(action, mode_flag);
         return;
     }
 
     let mode = crate::core::mode::resolve_mode(mode_flag);
-    let selection = crate::core::mode::read_user_selection();
+    let user_target = if args.user_target.is_empty() {
+        None
+    } else {
+        Some(args.user_target.clone())
+    };
+    if let Some(name) = &user_target
+        && mode.is_user()
+    {
+        UserInterface::error(&format!(
+            "--for-user is only available in system mode; refusing to target user mode root in '{}'.",
+            name
+        ));
+        process::exit(1);
+    }
     let mode_cfg = crate::core::mode::read_mode_config();
-    if crate::core::mode::user_selection_path().exists() && selection.is_none() {
+    let raw_selection = crate::core::mode::read_user_selection_in(&crate::core::mode::user_selection_path());
+    let selection = crate::core::mode::read_user_selection();
+    let current_user = crate::core::mode::current_user();
+    if let Some(sel) = &raw_selection {
+        if !crate::core::mode::selection_owned_by(sel, &current_user) {
+            UserInterface::warning(&format!(
+                "User selection was written by '{}'; keeping user mode separate for '{}'.",
+                sel.user, current_user
+            ));
+        } else if selection.is_none() {
+            UserInterface::warning(&format!(
+                "Invalid user selection config {:?}; falling back to system mode.",
+                crate::core::mode::user_selection_path().display()
+            ));
+        }
+    } else if crate::core::mode::user_selection_path().exists() {
         UserInterface::warning(&format!(
             "Invalid user selection config {:?}; falling back to system mode.",
             crate::core::mode::user_selection_path().display()
@@ -481,21 +516,43 @@ async fn main() {
         Some(args.root.as_str())
     };
     let read_only = subcommand_is_read_only(&args.command);
-    let root_path = crate::core::mode::resolve_root(explicit_root, mode, &mode_cfg, read_only);
-    if mode.is_user() && let Some(requested) = explicit_root {
-        let requested = crate::core::mode::normalize_root(Path::new(requested));
-        if requested != root_path {
-            UserInterface::warning(&format!(
-                "User mode always operates inside ~/.mcx ({}); ignoring --root {}.",
-                root_path.display(),
-                requested.display()
+    let root_path = if let Some(name) = &user_target {
+        if !args.root.is_empty() {
+            UserInterface::error("--for-user cannot be combined with --root; the user's own environment is used.");
+            process::exit(1);
+        }
+        match crate::core::mode::target_user_root(name) {
+            Some(root) => root,
+            None => {
+                UserInterface::error(&format!("Unknown user '{}' in --for-user.", name));
+                process::exit(1);
+            }
+        }
+    } else {
+        crate::core::mode::resolve_root(explicit_root, mode, &mode_cfg, read_only)
+    };
+    if mode.is_user() {
+        // User mode is 100% separated: the root must live inside the
+        // switching user's own home (no sudo, no other users, no system
+        // root) and be readable and writable by them — the same permission
+        // `ls -la` exposes.
+        if !crate::core::mode::is_within_home(&root_path) {
+            UserInterface::error(&format!(
+                "Refusing to run in user mode: your home is your root ({}); {} is outside it.",
+                crate::core::mode::home_dir().display(),
+                root_path.display()
             ));
+            process::exit(1);
+        }
+        if let Err(e) = crate::core::mode::check_directory_access(&root_path) {
+            UserInterface::error(&format!("Refusing to run in user mode: {e}"));
+            process::exit(1);
         }
     }
     args.root = root_path.to_string_lossy().into_owned();
     let root_path = PathBuf::from(&args.root);
 
-    crate::core::sudo::root_access(&root_path, &mode);
+    crate::core::sudo::root_access(&root_path, &mode, user_target.as_deref());
 
     let mut ctx = EngineContext::new(&root_path);
 
@@ -1883,7 +1940,10 @@ fn subcommand_is_read_only(cmd: &Commands) -> bool {
 /// `mcx --mode user|system|status`. Toggling requires the root password on
 /// every invocation and persists the user selection in the separate
 /// `~/.mcx/etc/mcx/user.ini` (with a required `user` field), so the mode is
-/// never mixed into the root-directory config.
+/// never mixed into the root-directory config. User mode is bound to the OS
+/// user who switched to it: another user's selection is ignored and each user
+/// can only switch into user mode when they can read and write the effective
+/// user root.
 fn handle_mode_command(action: &str, mode_flag: Option<bool>) {
     let cfg = crate::core::mode::read_mode_config();
     match action {
@@ -1926,8 +1986,14 @@ fn handle_mode_command(action: &str, mode_flag: Option<bool>) {
             }
             let _ = crate::core::mode::ensure_mode_fields();
             let root = if target == "user" {
-                let home = crate::core::mode::home_dir().join(crate::core::constants::USER_ROOT_DIR);
-                home.display().to_string()
+                // User mode is bound to whichever OS user switches to it and
+                // refuses a root the switching user cannot read and write.
+                let candidate = cfg.effective_user_root();
+                if let Err(e) = crate::core::mode::check_directory_access(&candidate) {
+                    UserInterface::error(&format!("Cannot switch to user mode: {e}"));
+                    process::exit(1);
+                }
+                candidate.display().to_string()
             } else {
                 cfg.effective_system_root().display().to_string()
             };

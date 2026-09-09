@@ -9,8 +9,8 @@ use super::mode::Mode;
 fn command_token(args: &[String]) -> Option<(usize, &str)> {
     let mut iter = args.iter().enumerate();
     while let Some((idx, a)) = iter.next() {
-        if a == "--root" {
-            iter.next(); // consume the separate root value
+        if a == "--root" || a == "--for-user" {
+            iter.next(); // consume the separate value
         } else if !a.starts_with('-') {
             return Some((idx, a.as_str()));
         }
@@ -70,7 +70,7 @@ fn is_read_only_command() -> bool {
     )
 }
 
-pub fn root_access(root: &Path, mode: &Mode) {
+pub fn root_access(root: &Path, mode: &Mode, target_user: Option<&str>) {
     if env::var("MCX_IGNORE_SUDO").is_ok() || env::var("USER").map(|u| u == "root").unwrap_or(false) {
         return;
     }
@@ -87,12 +87,20 @@ pub fn root_access(root: &Path, mode: &Mode) {
 
     if uid != 0 {
         if mode.is_user() {
-            // User mode operates entirely on the user's own root; elevation
-            // is never required.
+            // User mode operates entirely on the user's own root inside their
+            // home; elevation is never required or permitted.
             return;
         }
-        if is_read_only_command() {
+        let elevating = target_user.is_some() || !is_read_only_command();
+        if !elevating {
             return;
+        }
+
+        // Operating on another user's environment always demands the root
+        // password, even for read-only commands.
+        if target_user.is_some() && !authenticate_root() {
+            eprintln!("Error: root password required to operate on another user; authentication failed.");
+            exit(1);
         }
 
         UserInterface::info("Using root access for this action...");
@@ -113,7 +121,11 @@ pub fn root_access(root: &Path, mode: &Mode) {
             new_args[idx] = canonical_command(cmd).to_string();
         }
 
-        if !new_args.iter().any(|a| a == "--root" || a.starts_with("--root=")) {
+        // An explicit target user re-resolves its own root as root in the
+        // child; otherwise the resolved root is passed down explicitly.
+        if target_user.is_none()
+            && !new_args.iter().any(|a| a == "--root" || a.starts_with("--root="))
+        {
             new_args.push("--root".to_string());
             new_args.push(root.to_string_lossy().to_string());
         }
@@ -134,11 +146,11 @@ pub fn root_access(root: &Path, mode: &Mode) {
     }
 }
 
-/// Validate that the current invocation is permitted to toggle the operating
-/// mode. The root password is demanded on every toggle: cached sudo
-/// credentials are flushed first so `sudo -v` always re-prompts. Running as
-/// root or with `MCX_IGNORE_SUDO` set bypasses the check.
-pub fn authenticate_toggle() -> bool {
+/// Demand the root password right now: cached `sudo` credentials are flushed
+/// first so `sudo -v` always re-prompts. Returns `true` when authenticated
+/// (or already running as root / `MCX_IGNORE_SUDO` is set). Pure: callers
+/// decide what to print.
+pub fn authenticate_root() -> bool {
     if env::var("MCX_IGNORE_SUDO").is_ok() || env::var("USER").map(|u| u == "root").unwrap_or(false) {
         return true;
     }
@@ -153,16 +165,19 @@ pub fn authenticate_toggle() -> bool {
     let _ = Command::new("sudo").arg("-k").status();
 
     match Command::new("sudo").arg("-v").status() {
-        Ok(status) if status.success() => true,
-        Ok(_) => {
-            UserInterface::error("Root password required to toggle mode; authentication failed.");
-            false
-        }
-        Err(e) => {
-            UserInterface::error(&format!("Failed to authenticate via sudo: {e}"));
-            false
-        }
+        Ok(status) => status.success(),
+        Err(_) => false,
     }
+}
+
+/// Validate that the current invocation is permitted to toggle the operating
+/// mode. The root password is demanded on every toggle.
+pub fn authenticate_toggle() -> bool {
+    if authenticate_root() {
+        return true;
+    }
+    UserInterface::error("Root password required to toggle mode; authentication failed.");
+    false
 }
 
 fn is_mode_command() -> bool {

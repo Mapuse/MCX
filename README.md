@@ -113,7 +113,7 @@ mcx in <package>...
 
 Resolves the dependency graph for the target packages via `DependencySolver`, downloads missing `.xcs` archives into `var/cache/mcx/`, verifies SHA-256 checksums, extracts each package in parallel (≥4 CPUs + ≥1 GB RAM triggers `spawn_blocking` per-package), copies artifacts into both the active root and `var/lib/mcx/active/<pkg>/`, and commits the transaction to LMDB.
 
-Installs proceed in topological dependency order. Downloads write to a sibling `<name>.xcs.part` file and are only promoted to the final archive once the full body has been received; a retried transfer sends a `Range: bytes=<resume_from>-` request so an interrupted download resumes from the last byte instead of restarting (the server responds with `206 Partial Content`, or `200`/`416` to fall back to a full re-download). If an older version of a package is already installed, `mcx install <pkg>` re-installs it to upgrade; an installed version that is already equal to or newer than the resolved target is a no-op. Every state transition is recorded in `var/lib/mcx/lifecycle.jsonl` by `LifecycleEngine`.
+Installs proceed in topological dependency order. Downloads write to a sibling `<name>.xcs.part` file and are only promoted to the final archive once the full body has been received; a retried transfer sends a `Range: bytes=<resume_from>-` request so an interrupted download resumes from the last byte instead of restarting (the server responds with `206 Partial Content`, or `200`/`416` to fall back to a full re-download). If an older version of a package is already installed, `mcx install <pkg>` re-installs it to upgrade; an installed version that is already equal to or newer than the resolved target is a no-op. Updates behave like `git clone` then `git pull`: the **first install of a package is always complete** (the full payload is materialised), while every later update is a **diff** — the new active generation is seeded from the current one (an instant rename, no data copy) and only the files that actually changed are written, so unchanged files are never rewritten and files that dropped out of the payload are removed. Every state transition is recorded in `var/lib/mcx/lifecycle.jsonl` by `LifecycleEngine`.
 
 Anywhere a package name is accepted, `*` (any run of characters) and `?` (a single character) act as wildcards: `mcx install pkg*` installs every available package beginning with `pkg`, and `mcx rm *core*` removes every installed package containing `core`. `*` and `?` in a pattern are matched literally (patterns never match the pattern itself). Wildcards are expanded against the most relevant name set — **available** packages for `install`/`update`/`upgrade`, **installed** packages for `remove`/`purge`/`query` — and an argument that is an exact name is always passed through untouched. A wildcard matching nothing is an error (`No packages match pattern '…'`).
 
@@ -725,10 +725,11 @@ Edit `etc/mcx/repo.ini` directly with any text editor. The file is managed throu
 
 | Flag | Type | Default | Description |
 | ---- | ---- | ------- | ----------- |
-| `--root` | `String` | auto | Root directory in **system** mode: absolute (`/opt/mcx`), relative (`rel/root`, resolved against the working directory), or `~`-prefixed (`~/.mcx`) paths. All state paths (`etc/mcx/`, `var/lib/mcx/`, `var/cache/mcx/`, etc.) are resolved relative to this path. In **user** mode `--root` is ignored — mcx always operates inside `~/.mcx` so config and state never live outside the selected user. |
-| `--user-mode` | flag | — | Force user mode for this invocation (operate inside `~/.mcx`, never elevate). |
+| `--root` | `String` | auto | Root directory in **system** mode: absolute (`/opt/mcx`), relative (`rel/root`, resolved against the working directory), or `~`-prefixed (`~/.mcx`) paths. All state paths (`etc/mcx/`, `var/lib/mcx/`, `var/cache/mcx/`, etc.) are resolved relative to this path. In **user** mode `--root` is honored only when it resolves inside the current user's home (it must also be readable/writable by them); anything outside the home is refused — the home is the root in user mode. |
+| `--user-mode` | flag | — | Force user mode for this invocation (never elevates; operates only inside the current user's home, in a root they can read and write). |
 | `--system-mode` | flag | — | Force system mode for this invocation (target the system root; mutating commands escalate via sudo). Conflicts with `--user-mode`. |
-| `--mode` | `user\|system\|status` | — | Select the operating user or show status. Switching requires the root password on every invocation and persists the selection in `~/.mcx/etc/mcx/user.ini`. |
+| `--for-user` | `String` | — | System mode only: run this command in the named OS user's environment (`~/.mcx`). Always requires the root password, refuses user mode, and cannot be combined with `--root`. |
+| `--mode` | `user\|system\|status` | — | Select the operating user or show status. Switching requires the root password on every invocation, persists the selection in `~/.mcx/etc/mcx/user.ini`, and refuses a user root the switching user cannot read/write. |
 
 Environment overrides: `MCX_USER_MODE` / `MCX_SYSTEM_MODE` force the mode for the current invocation, and `MCX_IGNORE_SUDO` disables elevation entirely (used by tests and automation).
 
@@ -1404,7 +1405,11 @@ Deduplicates shared libraries across package boundaries:
 
 ## Full upgrade lifecycle
 
-A full upgrade (loading the entire new `.xcs` package) is more efficient and less resource-intensive than delta upgrades for the following reasons:
+The upgrade transport loads the entire new `.xcs` archive, while the **write**
+side is git-pull style and diff-only (the placement logic seeds the new active
+generation from the current one and overlays just the changed files). Loading
+a full package is deliberately cheaper than a binary delta for the following
+reasons:
 
 **Zstd + mmap throughput.** Unpacking a full package with Zstd and passing the data directly via mmap to the Content-Addressable Store (CAS) saturates the CPU cache line faster than binary merging algorithms.
 
@@ -2085,24 +2090,33 @@ mcx -C --init --root ~/.mcx
 - **system**: targets the system root (`/` by default). Mutating commands run
   by a non-root user re-execute through `sudo`; read-only commands fall back
   to the user root so queries never require elevation.
-- **user**: operates entirely inside the selected user's `~/.mcx` — config
-  (`config.ini`, `repo.ini`, `profile.ini`, `user.ini`), state
-  (`var/lib/mcx/`, `var/cache/mcx/`), and installs all live there, and it
-  never elevates. An external `--root` is ignored with a warning: user mode
-  cannot define directories outside the selected user as root.
+- **user**: 100% separated — the root is always inside the switching user's
+  own home (`~/.mcx` by default), `sudo` and every other root wrapping are
+  never used, and the system root and other users are off-limits. `user_root`
+  or `--root` are honored only when they resolve inside that home; a root the
+  user cannot read and write (the same permission `ls -la` exposes) or that
+  lands anywhere outside the home is refused, never silently ignored. The
+  only way out is switching back to system mode (<code>mcx --mode system</code>),
+  which demands the root password every time.
 
 Switching is gated and persistent: `mcx --mode user|system` **requires the
 root password on every switch** (cached `sudo` credentials are flushed first,
-so it always re-prompts) and writes the **user selection** — the two required
-fields `mode` and `user` — into its own separate config
+so it always re-prompts) and writes the **user selection** — the two fields
+`mode` and `user` — into its own separate config
 `~/.mcx/etc/mcx/user.ini`, independent of the root-directory config:
 
 ```ini
-# ~/.mcx/etc/mcx/user.ini   (user selection — required fields)
+# ~/.mcx/etc/mcx/user.ini   (user selection)
 [general]
 mode = user     # required: user | system
-user = m        # required: the selected user
+user = m        # required: the OS user who switched
 ```
+
+The `user` field records **which OS user switched**: the selection is only
+honored while that same user runs mcx, so mode choices stay isolated per user.
+Other users on the machine keep the default system mode unless they switch to
+user mode themselves — a selection written by someone else is ignored with a
+warning instead of being applied.
 
 `mcx --mode status` reports the effective mode, selected user, roots, and the
 paths of both config files. The selection file is never mixed into
@@ -2124,7 +2138,26 @@ system_root = /          # system root targeted in system mode
 
 `user_root` and `system_root` accept absolute, relative (resolved against
 the working directory), and `~`-prefixed paths, so the root directory is
-fully configurable without passing `--root` every time.
+fully configurable without passing `--root` every time. In user mode the
+effective user root (from `user_root` or an explicit `--root`) must resolve
+**inside** the switching user's home and be readable and writable by them
+before every invocation; `mcx --mode user` refuses the switch otherwise.
+
+In **system mode**, any command can instead target a specific OS user's
+environment with `--for-user <name>` — the mutating ones (`install`, `update`,
+`upgrade`, `remove`) and queries alike. The command then runs against that
+user's `~/.mcx` rather than the system root, **always requires the root
+password in every single invocation** (cached `sudo` credentials are flushed,
+so it re-prompts each time), and is refused in user mode. Example:
+
+```sh
+sudo mcx -i --for-user alice curl      # installs into alice's ~/.mcx
+mcx -q --for-user alice curl           # queries alice's environment
+```
+
+`--for-user` cannot be combined with `--root` or the mode command, and the
+target user's own `user.ini` selection is never touched — the operation is
+purely per-command.
 
 If the selected user's `config.ini` does not yet contain these fields (for
 example it was written by an older mcx), they are **added automatically** on

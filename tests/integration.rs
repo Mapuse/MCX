@@ -1487,16 +1487,18 @@ fn test_resolve_root_modes() {
         user_root: "u-root".to_string(),
         system_root: "/sys-root".to_string(),
     };
-    let home = std::env::var("HOME").expect("HOME");
 
-    // User mode always operates inside ~/.mcx, ignoring any external --root.
+    // User mode honors the configured per-user root and any explicit --root;
+    // callers separately enforce that the user can read/write the directory.
+    let cwd = std::env::current_dir().expect("cwd");
     let user = mcx::core::mode::resolve_root(Some("/external"), mcx::core::mode::Mode::User, &cfg, false);
-    assert_eq!(user, std::path::PathBuf::from(format!("{home}/.mcx")));
+    assert_eq!(user, std::path::PathBuf::from("/external"));
+    let user_cfg = mcx::core::mode::resolve_root(None, mcx::core::mode::Mode::User, &cfg, false);
+    assert_eq!(user_cfg, cwd.join("u-root"));
 
     // System mode honors explicit --root: absolute stays absolute, relative joins CWD.
     let abs = mcx::core::mode::resolve_root(Some("/opt/mcx"), mcx::core::mode::Mode::System, &cfg, false);
     assert_eq!(abs, std::path::PathBuf::from("/opt/mcx"));
-    let cwd = std::env::current_dir().expect("cwd");
     let rel = mcx::core::mode::resolve_root(Some("my-root"), mcx::core::mode::Mode::System, &cfg, false);
     assert_eq!(rel, cwd.join("my-root"));
 
