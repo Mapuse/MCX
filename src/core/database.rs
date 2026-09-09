@@ -1,13 +1,13 @@
+use anyhow::{Result, anyhow};
+use heed::types::{SerdeBincode, Str};
+use heed::{Env, EnvOpenOptions, RwTxn};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use anyhow::{Result, anyhow};
-use serde::{Serialize, Deserialize};
-use heed::{Env, EnvOpenOptions, RwTxn};
-use heed::types::{Str, SerdeBincode};
 
-use crate::core::constants;
 use crate::core::component::Component;
+use crate::core::constants;
 use crate::core::provenance::PackageProvenance;
 use crate::core::service::CesarService;
 
@@ -66,12 +66,27 @@ impl PackageMetadata {
     }
 
     pub fn find_component_for_file(&self, file: &str) -> Option<&Component> {
-        self.components.iter().find(|&comp| comp.files.iter().any(|f| f.to_string_lossy() == file || f.to_string_lossy().contains(file))).map(|v| v as _)
+        self.components
+            .iter()
+            .find(|&comp| {
+                comp.files
+                    .iter()
+                    .any(|f| f.to_string_lossy() == file || f.to_string_lossy().contains(file))
+            })
+            .map(|v| v as _)
     }
 
     pub fn find_component_for_binary(&self, binary: &str) -> Option<&Component> {
         let bin_path = format!("usr/bin/{}", binary);
-        self.components.iter().find(|&comp| comp.files.iter().any(|f| f.to_string_lossy() == bin_path || f.file_name().map(|n| n == binary).unwrap_or(false))).map(|v| v as _)
+        self.components
+            .iter()
+            .find(|&comp| {
+                comp.files.iter().any(|f| {
+                    f.to_string_lossy() == bin_path
+                        || f.file_name().map(|n| n == binary).unwrap_or(false)
+                })
+            })
+            .map(|v| v as _)
     }
 }
 
@@ -120,7 +135,13 @@ impl Database {
         let virtual_db = env.create_database(&mut txn, Some("virtual"))?;
         txn.commit()?;
 
-        Ok(Self { env, root, installed_db, available_db, virtual_db })
+        Ok(Self {
+            env,
+            root,
+            installed_db,
+            available_db,
+            virtual_db,
+        })
     }
 
     pub fn begin_transaction(&self) -> Result<DbTransaction<'_>> {
@@ -193,10 +214,9 @@ impl Database {
         let iter = self.installed_db.iter(&txn)?;
         for result in iter {
             let (_key, meta) = result?;
-            if meta.pkg_name != pkg_name
-                && meta.dependencies.iter().any(|d| d.name == pkg_name) {
-                    return Ok(true);
-                }
+            if meta.pkg_name != pkg_name && meta.dependencies.iter().any(|d| d.name == pkg_name) {
+                return Ok(true);
+            }
         }
         Ok(false)
     }
@@ -204,7 +224,9 @@ impl Database {
 
 impl<'e> DbTransaction<'e> {
     fn txn(&mut self) -> &mut RwTxn<'e> {
-        self.txn.as_mut().expect("DbTransaction: txn already consumed or committed")
+        self.txn
+            .as_mut()
+            .expect("DbTransaction: txn already consumed or committed")
     }
 
     pub fn register_package_placement(&mut self, meta: &PackageMetadata) -> Result<()> {
@@ -215,7 +237,11 @@ impl<'e> DbTransaction<'e> {
             if installed.pkg_name != meta.pkg_name {
                 for file in &meta.files {
                     if installed.files.contains(file) {
-                        return Err(anyhow!("File collision error: {:?} belongs to {}", file, installed.pkg_name));
+                        return Err(anyhow!(
+                            "File collision error: {:?} belongs to {}",
+                            file,
+                            installed.pkg_name
+                        ));
                     }
                 }
             }
@@ -292,8 +318,12 @@ impl<'e> DbTransaction<'e> {
                     owner
                 };
                 match replacement {
-                    Some(provider) => { self.db.virtual_db.put(self.txn(), v, &provider)?; }
-                    None => { self.db.virtual_db.delete(self.txn(), v)?; }
+                    Some(provider) => {
+                        self.db.virtual_db.put(self.txn(), v, &provider)?;
+                    }
+                    None => {
+                        self.db.virtual_db.delete(self.txn(), v)?;
+                    }
                 }
             }
         }

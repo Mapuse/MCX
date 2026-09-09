@@ -1,7 +1,7 @@
-use std::path::Path;
-use anyhow::{Result, anyhow};
-use crate::core::changelog::{ChangelogManager, ActionKind, RegistryTransactionRecord};
+use crate::core::changelog::{ActionKind, ChangelogManager, RegistryTransactionRecord};
 use crate::core::db::Database;
+use anyhow::{Result, anyhow};
+use std::path::Path;
 
 pub struct HistoryEngine {
     changelog: ChangelogManager,
@@ -22,11 +22,21 @@ impl HistoryEngine {
         Ok(history)
     }
 
-    pub fn compute_rollback_plan(&self, target_transaction_id: u64) -> Result<Vec<(ActionKind, Vec<String>)>> {
+    pub fn compute_rollback_plan(
+        &self,
+        target_transaction_id: u64,
+    ) -> Result<Vec<(ActionKind, Vec<String>)>> {
         let history = self.fetch_ordered_log()?;
-        
-        let target_index = history.iter().position(|r| r.transaction_id == target_transaction_id)
-            .ok_or_else(|| anyhow!("Target historic state marker not registered in log sequence: {}", target_transaction_id))?;
+
+        let target_index = history
+            .iter()
+            .position(|r| r.transaction_id == target_transaction_id)
+            .ok_or_else(|| {
+                anyhow!(
+                    "Target historic state marker not registered in log sequence: {}",
+                    target_transaction_id
+                )
+            })?;
 
         let mut operations_pipeline = Vec::new();
 

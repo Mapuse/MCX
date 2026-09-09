@@ -1,7 +1,3 @@
-use std::fs;
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use anyhow::{anyhow, Context, Result};
 use crate::commands::add::AddLocalCommand;
 use crate::core::database::Database;
 use crate::core::localsrc::{
@@ -11,6 +7,10 @@ use crate::core::localsrc::{
     scan_xcs_dir, source_manifest, validate_source_name, versions_outdated,
 };
 use crate::utils::ui::UserInterface;
+use anyhow::{Context, Result, anyhow};
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 pub struct LocalSourceCommand {
     root: PathBuf,
@@ -42,10 +42,7 @@ impl LocalSourceCommand {
             SourceMode::Source
         };
         if prebuilt {
-            if class
-                != SourceKind::Dir
-                && class != SourceKind::FileDir
-            {
+            if class != SourceKind::Dir && class != SourceKind::FileDir {
                 return Err(anyhow!(
                     "Prebuilt local sources must be a local directory of .xcs archives, not a URL"
                 ));
@@ -73,16 +70,10 @@ impl LocalSourceCommand {
                         path.to_string()
                     };
                     if !source_manifest(&local).exists() {
-                        return Err(anyhow!(
-                            "Source path has no manifest.json: '{}'",
-                            local
-                        ));
+                        return Err(anyhow!("Source path has no manifest.json: '{}'", local));
                     }
                 }
-                SourceKind::Git
-                | SourceKind::Archive
-                | SourceKind::Http
-                | SourceKind::JsonUrl => {
+                SourceKind::Git | SourceKind::Archive | SourceKind::Http | SourceKind::JsonUrl => {
                     // Remote/git/download sources validate at build/pull time.
                 }
             }
@@ -143,10 +134,16 @@ impl LocalSourceCommand {
                     UserInterface::info(&format!("Local source '{}': {}", source.name, reason));
                 }
                 Ok(LocalSourceResult::Built) => {
-                    UserInterface::success(&format!("Local source '{}': built and installed.", source.name));
+                    UserInterface::success(&format!(
+                        "Local source '{}': built and installed.",
+                        source.name
+                    ));
                 }
                 Ok(LocalSourceResult::InstalledPrebuilt) => {
-                    UserInterface::success(&format!("Local source '{}': prebuilt archives installed.", source.name));
+                    UserInterface::success(&format!(
+                        "Local source '{}': prebuilt archives installed.",
+                        source.name
+                    ));
                 }
                 Err(e) => {
                     UserInterface::error(&format!("Local source '{}' failed: {}", source.name, e));
@@ -187,7 +184,10 @@ impl LocalSourceCommand {
                 }
                 Ok(_) => {}
                 Err(e) => {
-                    UserInterface::warning(&format!("Local source '{}' failed: {}", source.name, e));
+                    UserInterface::warning(&format!(
+                        "Local source '{}' failed: {}",
+                        source.name, e
+                    ));
                 }
             }
         }
@@ -210,11 +210,16 @@ impl LocalSourceCommand {
     fn build_prebuilt(&self, source: &LocalSource, force: bool) -> Result<LocalSourceResult> {
         let dir = PathBuf::from(&source.path);
         if !dir.is_dir() {
-            return Err(anyhow!("Prebuilt source directory not found: '{}'", source.path));
+            return Err(anyhow!(
+                "Prebuilt source directory not found: '{}'",
+                source.path
+            ));
         }
         let archives = scan_xcs_dir(&dir)?;
         if archives.is_empty() {
-            return Ok(LocalSourceResult::Skipped("no .xcs archives found".to_string()));
+            return Ok(LocalSourceResult::Skipped(
+                "no .xcs archives found".to_string(),
+            ));
         }
 
         let fingerprint = compute_prebuilt_fingerprint(&dir)?;
@@ -228,10 +233,15 @@ impl LocalSourceCommand {
         }
         let outdated = versions_outdated(&self.db, &packages);
 
-        match decide_action(Some(&fingerprint), source.last_built.as_deref(), force, outdated) {
-            LocalSourceAction::Skip => {
-                Ok(LocalSourceResult::Skipped("unchanged, no install needed".to_string()))
-            }
+        match decide_action(
+            Some(&fingerprint),
+            source.last_built.as_deref(),
+            force,
+            outdated,
+        ) {
+            LocalSourceAction::Skip => Ok(LocalSourceResult::Skipped(
+                "unchanged, no install needed".to_string(),
+            )),
             LocalSourceAction::Rebuild => {
                 let add = AddLocalCommand::new(
                     self.root.to_string_lossy().into_owned(),
@@ -240,7 +250,8 @@ impl LocalSourceCommand {
                 for archive in &archives {
                     add.execute(&archive.to_string_lossy())?;
                 }
-                self.manager().update_last_built(&source.name, &fingerprint)?;
+                self.manager()
+                    .update_last_built(&source.name, &fingerprint)?;
                 Ok(LocalSourceResult::InstalledPrebuilt)
             }
         }
@@ -259,13 +270,17 @@ impl LocalSourceCommand {
                     "ous binary not found; skipping build of '{}'",
                     source.name
                 ));
-                return Ok(LocalSourceResult::Skipped("ous binary not available".to_string()));
+                return Ok(LocalSourceResult::Skipped(
+                    "ous binary not available".to_string(),
+                ));
             }
         };
 
         if let Some(reason) = check_download_tools(&source.path) {
             UserInterface::warning(&format!("Local source '{}': {}", source.name, reason));
-            return Ok(LocalSourceResult::Skipped("download tool missing".to_string()));
+            return Ok(LocalSourceResult::Skipped(
+                "download tool missing".to_string(),
+            ));
         }
 
         let materialized = materialize_source(&self.manager(), source)?;
@@ -285,9 +300,9 @@ impl LocalSourceCommand {
             force,
             outdated,
         ) {
-            LocalSourceAction::Skip => {
-                Ok(LocalSourceResult::Skipped("unchanged, no rebuild needed".to_string()))
-            }
+            LocalSourceAction::Skip => Ok(LocalSourceResult::Skipped(
+                "unchanged, no rebuild needed".to_string(),
+            )),
             LocalSourceAction::Rebuild => {
                 let out_dir = self.manager().out_dir().join(&source.name);
                 if out_dir.exists() {
@@ -298,10 +313,7 @@ impl LocalSourceCommand {
                 let manifest_parent = manifest
                     .parent()
                     .ok_or_else(|| anyhow!("Manifest has no parent directory"))?;
-                let args = build_ous_args(
-                    &manifest.to_string_lossy(),
-                    &out_dir.to_string_lossy(),
-                );
+                let args = build_ous_args(&manifest.to_string_lossy(), &out_dir.to_string_lossy());
                 let status = std::process::Command::new(&ous)
                     .args(&args)
                     .current_dir(manifest_parent)
@@ -311,7 +323,11 @@ impl LocalSourceCommand {
                     .status()
                     .with_context(|| format!("failed to run ous ({})", ous))?;
                 if !status.success() {
-                    return Err(anyhow!("ous build failed for '{}' (exit status {})", source.name, status));
+                    return Err(anyhow!(
+                        "ous build failed for '{}' (exit status {})",
+                        source.name,
+                        status
+                    ));
                 }
 
                 let mut expected_names = output_names;
@@ -330,10 +346,7 @@ impl LocalSourceCommand {
                 for name in &expected_names {
                     let candidate = out_dir.join(name);
                     if !candidate.exists() {
-                        return Err(anyhow!(
-                            "ous did not produce expected archive '{}'",
-                            name
-                        ));
+                        return Err(anyhow!("ous did not produce expected archive '{}'", name));
                     }
                     add.execute(&candidate.to_string_lossy())?;
                     installed += 1;
@@ -341,7 +354,8 @@ impl LocalSourceCommand {
                 if installed == 0 {
                     return Err(anyhow!("ous build produced no installable archives"));
                 }
-                self.manager().update_last_built(&source.name, &fingerprint)?;
+                self.manager()
+                    .update_last_built(&source.name, &fingerprint)?;
                 Ok(LocalSourceResult::Built)
             }
         }

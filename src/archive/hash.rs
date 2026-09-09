@@ -1,11 +1,11 @@
+use crate::core::constants;
+use anyhow::{Result, anyhow};
+use md5::Md5;
+use sha1::Sha1;
+use sha2::{Digest, Sha256};
 use std::fs::File;
 use std::io::Read;
 use std::path::Path;
-use sha2::{Sha256, Digest};
-use sha1::Sha1;
-use md5::Md5;
-use anyhow::{Result, anyhow};
-use crate::core::constants;
 
 pub struct HashVerifier;
 
@@ -20,7 +20,9 @@ impl HashVerifier {
                 let mut hasher = Sha256::new();
                 loop {
                     let count = file.read(&mut buffer)?;
-                    if count == 0 { break; }
+                    if count == 0 {
+                        break;
+                    }
                     hasher.update(&buffer[..count]);
                 }
                 Ok(format!("{:064x}", hasher.finalize()))
@@ -29,7 +31,9 @@ impl HashVerifier {
                 let mut hasher = Sha1::new();
                 loop {
                     let count = file.read(&mut buffer)?;
-                    if count == 0 { break; }
+                    if count == 0 {
+                        break;
+                    }
                     hasher.update(&buffer[..count]);
                 }
                 Ok(format!("{:040x}", hasher.finalize()))
@@ -38,12 +42,17 @@ impl HashVerifier {
                 let mut hasher = Md5::new();
                 loop {
                     let count = file.read(&mut buffer)?;
-                    if count == 0 { break; }
+                    if count == 0 {
+                        break;
+                    }
                     hasher.update(&buffer[..count]);
                 }
                 Ok(format!("{:032x}", hasher.finalize()))
             }
-            other => Err(anyhow!("Unsupported checksum kind: '{}' (supported: sha256, sha1, md5)", other)),
+            other => Err(anyhow!(
+                "Unsupported checksum kind: '{}' (supported: sha256, sha1, md5)",
+                other
+            )),
         }
     }
 
@@ -59,10 +68,17 @@ impl HashVerifier {
         diff == 0
     }
 
-    pub fn verify_integrity<P: AsRef<Path>>(path: P, kind: &str, expected_hash: &str) -> Result<()> {
+    pub fn verify_integrity<P: AsRef<Path>>(
+        path: P,
+        kind: &str,
+        expected_hash: &str,
+    ) -> Result<()> {
         let actual_hash = Self::calculate(&path, kind)?;
 
-        if Self::constant_time_eq(&actual_hash.to_lowercase(), &expected_hash.trim().to_lowercase()) {
+        if Self::constant_time_eq(
+            &actual_hash.to_lowercase(),
+            &expected_hash.trim().to_lowercase(),
+        ) {
             Ok(())
         } else {
             Err(anyhow!(

@@ -1,5 +1,5 @@
-use std::collections::BTreeSet;
 use regex::Regex;
+use std::collections::BTreeSet;
 
 /// Whether a package argument uses a wildcard (`*` glob or `?` single char).
 pub fn has_wildcard(s: &str) -> bool {
@@ -60,7 +60,10 @@ mod tests {
     #[test]
     fn test_suffix_pattern_matches_prefix_group() {
         let names = ["pkg-1", "pkg-2", "pkg-3", "otherpkg"];
-        assert_eq!(expand_pattern("pkg*", &names), vec!["pkg-1", "pkg-2", "pkg-3"]);
+        assert_eq!(
+            expand_pattern("pkg*", &names),
+            vec!["pkg-1", "pkg-2", "pkg-3"]
+        );
     }
 
     #[test]

@@ -1,7 +1,7 @@
+use super::constants;
+use anyhow::{Context, Result};
 use std::fs;
 use std::path::Path;
-use anyhow::{Result, Context};
-use super::constants;
 
 #[derive(Clone, Debug)]
 pub struct MappedConfigEntry {
@@ -28,21 +28,31 @@ impl MappedConfig {
         let content = fs::read_to_string(path)
             .with_context(|| format!("Failed to read config file: {:?}", path))?;
         let generation = next_generation();
-        let mut parser = ConfigParser { input: &content, pos: 0 };
-        Ok(Self { generation, sections: parser.parse_all() })
+        let mut parser = ConfigParser {
+            input: &content,
+            pos: 0,
+        };
+        Ok(Self {
+            generation,
+            sections: parser.parse_all(),
+        })
     }
 
-    pub fn generation(&self) -> usize { self.generation }
+    pub fn generation(&self) -> usize {
+        self.generation
+    }
 
     pub fn get(&self, section: &str, key: &str) -> Option<&str> {
-        self.sections.iter()
+        self.sections
+            .iter()
             .find(|s| s.key == section)
             .and_then(|s| s.entries.iter().find(|e| e.key == key))
             .map(|e| e.value.as_str())
     }
 
     pub fn get_section(&self, section: &str) -> Option<&[MappedConfigEntry]> {
-        self.sections.iter()
+        self.sections
+            .iter()
             .find(|s| s.key == section)
             .map(|s| s.entries.as_slice())
     }
@@ -65,8 +75,11 @@ impl MappedConfig {
 
     pub fn get_bool(&self, section: &str, key: &str) -> Option<bool> {
         self.get(section, key).map(|s| {
-            s.eq_ignore_ascii_case("true") || s == "1" || s.eq_ignore_ascii_case("yes")
-                || s.eq_ignore_ascii_case("enabled") || s.eq_ignore_ascii_case("on")
+            s.eq_ignore_ascii_case("true")
+                || s == "1"
+                || s.eq_ignore_ascii_case("yes")
+                || s.eq_ignore_ascii_case("enabled")
+                || s.eq_ignore_ascii_case("on")
         })
     }
 }
@@ -87,7 +100,9 @@ impl<'a> ConfigParser<'a> {
         let mut sections = Vec::new();
         loop {
             self.skip_whitespace_and_newlines();
-            if self.pos >= self.input.len() { break; }
+            if self.pos >= self.input.len() {
+                break;
+            }
             if self.peek() == Some('[') {
                 if let Some(section) = self.parse_section() {
                     sections.push(section);
@@ -102,11 +117,15 @@ impl<'a> ConfigParser<'a> {
     }
 
     fn parse_section(&mut self) -> Option<MappedConfigSection> {
-        if self.peek() != Some('[') { return None; }
+        if self.peek() != Some('[') {
+            return None;
+        }
         self.pos += 1;
         let start = self.pos;
         while let Some(c) = self.peek() {
-            if c == ']' { break; }
+            if c == ']' {
+                break;
+            }
             self.pos += 1;
         }
         if self.pos > start && self.pos < self.input.len() {
@@ -115,7 +134,8 @@ impl<'a> ConfigParser<'a> {
             MappedConfigSection {
                 key,
                 entries: self.parse_entries_until_next_section(),
-            }.into()
+            }
+            .into()
         } else {
             None
         }
@@ -128,7 +148,9 @@ impl<'a> ConfigParser<'a> {
             match self.peek() {
                 None => break,
                 Some('[') => break,
-                Some('#') | Some(';') => { self.skip_line(); }
+                Some('#') | Some(';') => {
+                    self.skip_line();
+                }
                 _ => {
                     if let Some(entry) = self.parse_entry() {
                         entries.push(entry);
@@ -142,7 +164,9 @@ impl<'a> ConfigParser<'a> {
     fn parse_entry(&mut self) -> Option<MappedConfigEntry> {
         let start = self.pos;
         while let Some(c) = self.peek() {
-            if c == '=' || c == '\n' { break; }
+            if c == '=' || c == '\n' {
+                break;
+            }
             self.pos += 1;
         }
         if self.peek() != Some('=') {
@@ -154,7 +178,9 @@ impl<'a> ConfigParser<'a> {
         self.pos += 1; // consume '='
         let value_start = self.pos;
         while let Some(c) = self.peek() {
-            if c == '\n' { break; }
+            if c == '\n' {
+                break;
+            }
             self.pos += 1;
         }
         let value = self.input[value_start..self.pos].trim().to_string();
@@ -163,20 +189,30 @@ impl<'a> ConfigParser<'a> {
 
     fn skip_whitespace_and_newlines(&mut self) {
         while let Some(c) = self.peek() {
-            if c.is_whitespace() { self.pos += 1; } else { break; }
+            if c.is_whitespace() {
+                self.pos += 1;
+            } else {
+                break;
+            }
         }
     }
 
     fn skip_whitespace_only(&mut self) {
         while let Some(c) = self.peek() {
-            if c == ' ' || c == '\t' { self.pos += 1; } else { break; }
+            if c == ' ' || c == '\t' {
+                self.pos += 1;
+            } else {
+                break;
+            }
         }
     }
 
     fn skip_line(&mut self) {
         while let Some(c) = self.peek() {
             self.pos += 1;
-            if c == '\n' { break; }
+            if c == '\n' {
+                break;
+            }
         }
     }
 
@@ -210,7 +246,10 @@ impl ConfigManager {
         let local_config = MappedConfig::from_file(&local_path)?;
         let repo_config = MappedConfig::from_file(&repo_path)?;
 
-        Ok(Self { local_config, repo_config })
+        Ok(Self {
+            local_config,
+            repo_config,
+        })
     }
 
     pub fn local(&self) -> &MappedConfig {

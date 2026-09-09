@@ -1,5 +1,5 @@
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use serde::{Serialize, Deserialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ComponentPriority {
@@ -80,7 +80,12 @@ pub struct ComponentFilter {
 
 impl ComponentFilter {
     pub fn none() -> Self {
-        Self { include: Vec::new(), exclude: Vec::new(), minimal: false, include_dev: false }
+        Self {
+            include: Vec::new(),
+            exclude: Vec::new(),
+            minimal: false,
+            include_dev: false,
+        }
     }
 
     pub fn should_install_component(&self, component: &Component) -> bool {
@@ -91,7 +96,9 @@ impl ComponentFilter {
             return self.include.contains(&component.name)
                 || component.priority == ComponentPriority::Required;
         }
-        component.priority.should_install(self.minimal, self.include_dev)
+        component
+            .priority
+            .should_install(self.minimal, self.include_dev)
     }
 }
 
@@ -134,7 +141,9 @@ pub fn validate_components(components: &[Component]) -> Result<(), String> {
         }
     }
 
-    let has_required = components.iter().any(|c| c.priority == ComponentPriority::Required);
+    let has_required = components
+        .iter()
+        .any(|c| c.priority == ComponentPriority::Required);
     if !has_required && !components.is_empty() {
         return Err("Package must have at least one Required component".to_string());
     }
@@ -170,12 +179,18 @@ mod tests {
     fn test_component_filter() {
         let filter = ComponentFilter::none();
         let req = Component {
-            name: "core".into(), priority: ComponentPriority::Required,
-            files: vec![], dependencies: vec![], description: String::new(),
+            name: "core".into(),
+            priority: ComponentPriority::Required,
+            files: vec![],
+            dependencies: vec![],
+            description: String::new(),
         };
         let opt = Component {
-            name: "extras".into(), priority: ComponentPriority::Optional,
-            files: vec![], dependencies: vec![], description: String::new(),
+            name: "extras".into(),
+            priority: ComponentPriority::Optional,
+            files: vec![],
+            dependencies: vec![],
+            description: String::new(),
         };
         assert!(filter.should_install_component(&req));
         assert!(!filter.should_install_component(&opt));
@@ -185,24 +200,32 @@ mod tests {
     fn test_validate_components() {
         let components = vec![
             Component {
-                name: "core".into(), priority: ComponentPriority::Required,
-                files: vec![], dependencies: vec![], description: String::new(),
+                name: "core".into(),
+                priority: ComponentPriority::Required,
+                files: vec![],
+                dependencies: vec![],
+                description: String::new(),
             },
             Component {
-                name: "dev".into(), priority: ComponentPriority::Development,
-                files: vec![], dependencies: vec![ComponentDependency {
-                    package: "self".into(), component: "core".into(),
-                }], description: String::new(),
+                name: "dev".into(),
+                priority: ComponentPriority::Development,
+                files: vec![],
+                dependencies: vec![ComponentDependency {
+                    package: "self".into(),
+                    component: "core".into(),
+                }],
+                description: String::new(),
             },
         ];
         assert!(validate_components(&components).is_ok());
 
-        let bad = vec![
-            Component {
-                name: "core".into(), priority: ComponentPriority::Optional,
-                files: vec![], dependencies: vec![], description: String::new(),
-            },
-        ];
+        let bad = vec![Component {
+            name: "core".into(),
+            priority: ComponentPriority::Optional,
+            files: vec![],
+            dependencies: vec![],
+            description: String::new(),
+        }];
         assert!(validate_components(&bad).is_err());
     }
 }

@@ -1,13 +1,34 @@
-use anyhow::Result;
 use crate::core::db::Database;
+use anyhow::Result;
 
 /// Canonical mcx subcommands (mirrors the Cli enum in main.rs).
 const SUBCOMMANDS: &[&str] = &[
-    "install", "add", "remove", "purge", "search", "update", "upgrade",
-    "query", "clean", "verify", "fix", "config", "history", "build",
-    "repo-add", "repo-remove", "repo-list", "repo-sync", "repo-enable",
-    "repo-disable", "repo-info", "self-update", "vendor", "completion",
-    "cgroup", "mode",
+    "install",
+    "add",
+    "remove",
+    "purge",
+    "search",
+    "update",
+    "upgrade",
+    "query",
+    "clean",
+    "verify",
+    "fix",
+    "config",
+    "history",
+    "build",
+    "repo-add",
+    "repo-remove",
+    "repo-list",
+    "repo-sync",
+    "repo-enable",
+    "repo-disable",
+    "repo-info",
+    "self-update",
+    "vendor",
+    "completion",
+    "cgroup",
+    "mode",
 ];
 
 pub struct CompletionEngine {
@@ -52,7 +73,10 @@ impl CompletionEngine {
             "bash" => Ok(self.bash_template()),
             "zsh" => Ok(self.zsh_template()),
             "fish" => Ok(self.fish_template()),
-            _ => Err(anyhow::anyhow!("Unsupported shell type '{}' (expected bash, zsh, or fish)", shell_type)),
+            _ => Err(anyhow::anyhow!(
+                "Unsupported shell type '{}' (expected bash, zsh, or fish)",
+                shell_type
+            )),
         }
     }
 
@@ -73,7 +97,9 @@ complete -F _mcx_completions mcx"#
     }
 
     fn zsh_template(&self) -> String {
-        let mut out = String::from("#compdef mcx\n_mcx_commands() {\n    local -a commands\n    commands=(\n");
+        let mut out = String::from(
+            "#compdef mcx\n_mcx_commands() {\n    local -a commands\n    commands=(\n",
+        );
         for cmd in SUBCOMMANDS {
             out.push_str(&format!("        '{cmd}'\n"));
         }
@@ -89,7 +115,9 @@ _mcx"#,
     fn fish_template(&self) -> String {
         let mut out = String::from("complete -c mcx -f\n");
         for cmd in SUBCOMMANDS {
-            out.push_str(&format!("complete -c mcx -n \"__fish_use_subcommand\" -a {cmd}\n"));
+            out.push_str(&format!(
+                "complete -c mcx -n \"__fish_use_subcommand\" -a {cmd}\n"
+            ));
         }
         out
     }
@@ -112,24 +140,45 @@ mod tests {
         let engine = CompletionEngine::new(test_db(&root));
         let all = engine.complete_subcommand("");
         for expected in ["install", "remove", "repo-add", "self-update", "cgroup"] {
-            assert!(all.iter().any(|c| c == expected), "missing subcommand {}", expected);
+            assert!(
+                all.iter().any(|c| c == expected),
+                "missing subcommand {}",
+                expected
+            );
         }
         // Phantom commands from the old templates must be gone.
         for phantom in ["generate", "rebuild", "audit", "fix-deps"] {
-            assert!(!all.iter().any(|c| c == phantom), "phantom subcommand {}", phantom);
+            assert!(
+                !all.iter().any(|c| c == phantom),
+                "phantom subcommand {}",
+                phantom
+            );
         }
         let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
     fn test_shell_templates_contain_real_subcommands() {
-        let root = std::env::temp_dir().join(format!("mcx_test_completion_tpl_{}", std::process::id()));
+        let root =
+            std::env::temp_dir().join(format!("mcx_test_completion_tpl_{}", std::process::id()));
         let engine = CompletionEngine::new(test_db(&root));
         for shell in ["bash", "zsh", "fish"] {
             let script = engine.generate_shell_blueprint(shell).expect(shell);
-            assert!(script.contains("repo-sync"), "{} template missing repo-sync", shell);
-            assert!(script.contains("self-update"), "{} template missing self-update", shell);
-            assert!(!script.contains("fix-deps"), "{} template contains phantom fix-deps", shell);
+            assert!(
+                script.contains("repo-sync"),
+                "{} template missing repo-sync",
+                shell
+            );
+            assert!(
+                script.contains("self-update"),
+                "{} template missing self-update",
+                shell
+            );
+            assert!(
+                !script.contains("fix-deps"),
+                "{} template contains phantom fix-deps",
+                shell
+            );
         }
         assert!(engine.generate_shell_blueprint("tcsh").is_err());
         let _ = fs::remove_dir_all(&root);

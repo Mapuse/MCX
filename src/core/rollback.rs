@@ -1,7 +1,7 @@
+use crate::core::constants;
+use anyhow::{Context, Result};
 use std::fs;
 use std::path::{Path, PathBuf};
-use anyhow::{Result, Context};
-use crate::core::constants;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct GenerationId(pub u64);
@@ -27,7 +27,11 @@ impl RollbackManager {
         Ok(())
     }
 
-    pub fn enable_atomic_rollback(&self, pkg_name: &str, source_dir: &Path) -> Result<GenerationId> {
+    pub fn enable_atomic_rollback(
+        &self,
+        pkg_name: &str,
+        source_dir: &Path,
+    ) -> Result<GenerationId> {
         let pkg_dir = self.generations_dir.join(sanitise(pkg_name));
         fs::create_dir_all(&pkg_dir)?;
 
@@ -35,8 +39,9 @@ impl RollbackManager {
         let target = pkg_dir.join(next_id.to_string());
 
         if source_dir.exists() {
-            Self::copy_hardlinks(source_dir, &target)
-                .with_context(|| format!("Failed to create generation snapshot for {}", pkg_name))?;
+            Self::copy_hardlinks(source_dir, &target).with_context(|| {
+                format!("Failed to create generation snapshot for {}", pkg_name)
+            })?;
         } else {
             fs::create_dir_all(&target)?;
         }
@@ -49,8 +54,9 @@ impl RollbackManager {
         }
         #[cfg(unix)]
         {
-            std::os::unix::fs::symlink(&relative_target, &active_symlink)
-                .with_context(|| format!("Failed to create active symlink: {:?}", active_symlink))?;
+            std::os::unix::fs::symlink(&relative_target, &active_symlink).with_context(|| {
+                format!("Failed to create active symlink: {:?}", active_symlink)
+            })?;
         }
 
         Ok(GenerationId(next_id))
@@ -60,7 +66,11 @@ impl RollbackManager {
         let pkg_dir = self.generations_dir.join(sanitise(pkg_name));
         let target = pkg_dir.join(generation.0.to_string());
         if !target.exists() {
-            anyhow::bail!("Generation {} not found for package {}", generation.0, pkg_name);
+            anyhow::bail!(
+                "Generation {} not found for package {}",
+                generation.0,
+                pkg_name
+            );
         }
 
         let active_symlink = self.active_dir.join(sanitise(pkg_name));
@@ -89,9 +99,10 @@ impl RollbackManager {
             let path = entry.path();
             if path.is_dir()
                 && let Some(name) = path.file_name().and_then(|n| n.to_str())
-                    && let Ok(id) = name.parse::<u64>() {
-                        ids.push(GenerationId(id));
-                    }
+                && let Ok(id) = name.parse::<u64>()
+            {
+                ids.push(GenerationId(id));
+            }
         }
         ids.sort();
         Ok(ids)
@@ -104,9 +115,10 @@ impl RollbackManager {
         }
         let target = fs::read_link(&active_symlink)?;
         if let Some(gen_str) = target.file_name().and_then(|n| n.to_str())
-            && let Ok(id) = gen_str.parse::<u64>() {
-                return Ok(Some(GenerationId(id)));
-            }
+            && let Ok(id) = gen_str.parse::<u64>()
+        {
+            return Ok(Some(GenerationId(id)));
+        }
         Ok(None)
     }
 
@@ -147,9 +159,10 @@ impl RollbackManager {
                 let path = entry.path();
                 if path.is_dir()
                     && let Some(name) = path.file_name().and_then(|n| n.to_str())
-                        && let Ok(id) = name.parse::<u64>() {
-                            max_id = max_id.max(id);
-                        }
+                    && let Ok(id) = name.parse::<u64>()
+                {
+                    max_id = max_id.max(id);
+                }
             }
         }
         max_id + 1
@@ -160,7 +173,8 @@ impl RollbackManager {
         for entry in fs::read_dir(src)? {
             let entry = entry?;
             let path = entry.path();
-            let rel = path.strip_prefix(src)
+            let rel = path
+                .strip_prefix(src)
                 .map_err(|_| anyhow::anyhow!("Path strip error"))?;
             let dest = dst.join(rel);
 
@@ -180,5 +194,13 @@ impl RollbackManager {
 }
 
 fn sanitise(name: &str) -> String {
-    name.chars().map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' }).collect()
+    name.chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
 }

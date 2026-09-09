@@ -1,15 +1,15 @@
-use std::fs;
-use std::io::{self, Write};
-use std::path::PathBuf;
-use std::time::Duration;
-use anyhow::{Result, Context};
+use anyhow::{Context, Result};
 use crossterm::{
     cursor,
     event::{self, Event, KeyCode, KeyModifiers},
     execute,
+    style::{Color, Print, ResetColor, SetBackgroundColor, SetForegroundColor},
     terminal::{self, EnterAlternateScreen, LeaveAlternateScreen},
-    style::{Color, SetBackgroundColor, SetForegroundColor, ResetColor, Print},
 };
+use std::fs;
+use std::io::{self, Write};
+use std::path::PathBuf;
+use std::time::Duration;
 
 pub enum ConfigTarget {
     EngineConfig,
@@ -68,7 +68,9 @@ impl ConfigEditorCommand {
         };
 
         let mut lines: Vec<String> = content.lines().map(|s| s.to_string()).collect();
-        if lines.is_empty() { lines.push(String::new()); }
+        if lines.is_empty() {
+            lines.push(String::new());
+        }
 
         let mut stdout = io::stdout();
         terminal::enable_raw_mode()?;
@@ -103,10 +105,21 @@ impl ConfigEditorCommand {
 
             execute!(stdout, cursor::Hide, cursor::MoveTo(0, 0))?;
 
-            execute!(stdout, SetBackgroundColor(Color::Black), SetForegroundColor(Color::White))?;
+            execute!(
+                stdout,
+                SetBackgroundColor(Color::Black),
+                SetForegroundColor(Color::White)
+            )?;
             let modified_tag = if is_dirty { " *MODIFIED* " } else { " " };
-            let header_text = format!(" MCX Configuration Editor | MCX v7.0.0 |{}{:?}", modified_tag, self.config_path);
-            execute!(stdout, Print(format!("{:width$}\r\n", header_text, width = text_width)), ResetColor)?;
+            let header_text = format!(
+                " MCX Configuration Editor | MCX v7.0.0 |{}{:?}",
+                modified_tag, self.config_path
+            );
+            execute!(
+                stdout,
+                Print(format!("{:width$}\r\n", header_text, width = text_width)),
+                ResetColor
+            )?;
 
             for i in 0..text_height {
                 let file_y = scroll_y + i;
@@ -123,22 +136,42 @@ impl ConfigEditorCommand {
                 print!("\r\n");
             }
 
-            let status_bg = if is_dirty { Color::Grey } else { Color::DarkGrey };
-            execute!(stdout, SetBackgroundColor(status_bg), SetForegroundColor(Color::White))?;
+            let status_bg = if is_dirty {
+                Color::Grey
+            } else {
+                Color::DarkGrey
+            };
+            execute!(
+                stdout,
+                SetBackgroundColor(status_bg),
+                SetForegroundColor(Color::White)
+            )?;
 
             let position_indicator = format!("Ln {}, Col {}", cursor_y + 1, cursor_x + 1);
-            let free_space = text_width.saturating_sub(status_message.len() + position_indicator.len() + 2);
-            let status_bar = format!(" {}{:free_space$}{} ", status_message, "", position_indicator);
+            let free_space =
+                text_width.saturating_sub(status_message.len() + position_indicator.len() + 2);
+            let status_bar = format!(
+                " {}{:free_space$}{} ",
+                status_message, "", position_indicator
+            );
             execute!(stdout, Print(format!("{}\r\n", status_bar)), ResetColor)?;
 
-            execute!(stdout, terminal::Clear(terminal::ClearType::CurrentLine), SetForegroundColor(Color::Cyan))?;
+            execute!(
+                stdout,
+                terminal::Clear(terminal::ClearType::CurrentLine),
+                SetForegroundColor(Color::Cyan)
+            )?;
             if quit_confirm {
                 print!(" Unsaved changes! Quit anyway? (y/N)\r\n");
             } else {
-                print!(" Ctrl+X: Quit  |  Ctrl+S/Ctrl+O: Save  |  Ctrl+K: Cut Line  |  Ctrl+U: Paste Line\r\n");
+                print!(
+                    " Ctrl+X: Quit  |  Ctrl+S/Ctrl+O: Save  |  Ctrl+K: Cut Line  |  Ctrl+U: Paste Line\r\n"
+                );
             }
             execute!(stdout, terminal::Clear(terminal::ClearType::CurrentLine))?;
-            print!(" Ctrl+Y: Prev Line  |  Ctrl+V: Next Line  |  Tab: Insert 4 spaces  |  Ctrl+C: Cancel\r\n");
+            print!(
+                " Ctrl+Y: Prev Line  |  Ctrl+V: Next Line  |  Tab: Insert 4 spaces  |  Ctrl+C: Cancel\r\n"
+            );
             execute!(stdout, ResetColor)?;
 
             let screen_x = (cursor_x - scroll_x) as u16;
@@ -154,7 +187,8 @@ impl ConfigEditorCommand {
                                 KeyCode::Char('x') => {
                                     if is_dirty {
                                         quit_confirm = true;
-                                        status_message = "Unsaved changes! Quit anyway? (y/N)".to_string();
+                                        status_message =
+                                            "Unsaved changes! Quit anyway? (y/N)".to_string();
                                         continue;
                                     }
                                     return self.exit_editor();
@@ -168,8 +202,13 @@ impl ConfigEditorCommand {
                                 KeyCode::Char('k') => {
                                     if lines.len() > 1 {
                                         cut_buffer = Some(lines.remove(cursor_y));
-                                        if cursor_y >= lines.len() { cursor_y = lines.len() - 1; }
-                                        cursor_x = floor_char_boundary(&lines[cursor_y], cursor_x.min(lines[cursor_y].len()));
+                                        if cursor_y >= lines.len() {
+                                            cursor_y = lines.len() - 1;
+                                        }
+                                        cursor_x = floor_char_boundary(
+                                            &lines[cursor_y],
+                                            cursor_x.min(lines[cursor_y].len()),
+                                        );
                                     } else {
                                         cut_buffer = Some(lines[0].clone());
                                         lines[0].clear();
@@ -191,14 +230,20 @@ impl ConfigEditorCommand {
                                 KeyCode::Char('y') => {
                                     if cursor_y > 0 {
                                         cursor_y -= 1;
-                                        cursor_x = floor_char_boundary(&lines[cursor_y], cursor_x.min(lines[cursor_y].len()));
+                                        cursor_x = floor_char_boundary(
+                                            &lines[cursor_y],
+                                            cursor_x.min(lines[cursor_y].len()),
+                                        );
                                     }
                                     quit_confirm = false;
                                 }
                                 KeyCode::Char('v') => {
                                     if cursor_y + 1 < lines.len() {
                                         cursor_y += 1;
-                                        cursor_x = floor_char_boundary(&lines[cursor_y], cursor_x.min(lines[cursor_y].len()));
+                                        cursor_x = floor_char_boundary(
+                                            &lines[cursor_y],
+                                            cursor_x.min(lines[cursor_y].len()),
+                                        );
                                     }
                                     quit_confirm = false;
                                 }
@@ -214,19 +259,39 @@ impl ConfigEditorCommand {
 
                         if quit_confirm {
                             match key_event.code {
-                                KeyCode::Char('y') | KeyCode::Char('Y') => return self.exit_editor(),
+                                KeyCode::Char('y') | KeyCode::Char('Y') => {
+                                    return self.exit_editor();
+                                }
                                 KeyCode::Char('n') | KeyCode::Char('N') => {
                                     quit_confirm = false;
                                     status_message = "Return to editor.".to_string();
                                     continue;
                                 }
-                                _ => { continue; }
+                                _ => {
+                                    continue;
+                                }
                             }
                         }
 
                         match key_event.code {
-                            KeyCode::Up => if cursor_y > 0 { cursor_y -= 1; cursor_x = floor_char_boundary(&lines[cursor_y], cursor_x.min(lines[cursor_y].len())); },
-                            KeyCode::Down => if cursor_y + 1 < lines.len() { cursor_y += 1; cursor_x = floor_char_boundary(&lines[cursor_y], cursor_x.min(lines[cursor_y].len())); },
+                            KeyCode::Up => {
+                                if cursor_y > 0 {
+                                    cursor_y -= 1;
+                                    cursor_x = floor_char_boundary(
+                                        &lines[cursor_y],
+                                        cursor_x.min(lines[cursor_y].len()),
+                                    );
+                                }
+                            }
+                            KeyCode::Down => {
+                                if cursor_y + 1 < lines.len() {
+                                    cursor_y += 1;
+                                    cursor_x = floor_char_boundary(
+                                        &lines[cursor_y],
+                                        cursor_x.min(lines[cursor_y].len()),
+                                    );
+                                }
+                            }
                             KeyCode::Left => {
                                 if cursor_x > 0 {
                                     cursor_x = prev_char_boundary(&lines[cursor_y], cursor_x);
@@ -244,7 +309,10 @@ impl ConfigEditorCommand {
                                 }
                             }
                             KeyCode::PageUp => cursor_y = cursor_y.saturating_sub(text_height),
-                            KeyCode::PageDown => cursor_y = (cursor_y + text_height).min(lines.len().saturating_sub(1)),
+                            KeyCode::PageDown => {
+                                cursor_y =
+                                    (cursor_y + text_height).min(lines.len().saturating_sub(1))
+                            }
                             KeyCode::Home => cursor_x = 0,
                             KeyCode::End => cursor_x = lines[cursor_y].len(),
                             KeyCode::Char(c) => {
@@ -299,7 +367,9 @@ impl ConfigEditorCommand {
                                 is_dirty = true;
                                 quit_confirm = false;
                             }
-                            _ => { quit_confirm = false; }
+                            _ => {
+                                quit_confirm = false;
+                            }
                         }
                     }
                     Event::Resize(_, _) => {
@@ -308,7 +378,9 @@ impl ConfigEditorCommand {
                     Event::FocusGained | Event::FocusLost | Event::Paste(_) => {
                         quit_confirm = false;
                     }
-                    _ => { quit_confirm = false; }
+                    _ => {
+                        quit_confirm = false;
+                    }
                 }
             } else {
                 // Timeout - just continue the loop (allows periodic re-render)
@@ -318,7 +390,9 @@ impl ConfigEditorCommand {
 
     fn save_file(&self, lines: &[String]) -> Result<()> {
         let mut payload = lines.join("\n");
-        if !payload.ends_with('\n') { payload.push('\n'); }
+        if !payload.ends_with('\n') {
+            payload.push('\n');
+        }
         fs::write(&self.config_path, payload)?;
         Ok(())
     }

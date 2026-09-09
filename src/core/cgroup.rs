@@ -1,7 +1,7 @@
+use crate::core::constants;
+use anyhow::{Context, Result};
 use std::fs;
 use std::path::PathBuf;
-use anyhow::{Result, Context};
-use crate::core::constants;
 
 pub struct CgroupController {
     base_path: PathBuf,
@@ -21,11 +21,15 @@ impl CgroupController {
     }
 
     pub fn initialize(&self) -> Result<()> {
-        fs::create_dir_all(&self.base_path)
-            .context("Failed to allocate cgroup v2 base hierarchy")
+        fs::create_dir_all(&self.base_path).context("Failed to allocate cgroup v2 base hierarchy")
     }
 
-    pub fn enforce_resource_limits(&self, pkg_name: &str, max_memory_mb: u64, max_cpu_percent: u8) -> Result<()> {
+    pub fn enforce_resource_limits(
+        &self,
+        pkg_name: &str,
+        max_memory_mb: u64,
+        max_cpu_percent: u8,
+    ) -> Result<()> {
         let cgroup_path = self.base_path.join(sanitise(pkg_name));
         fs::create_dir_all(&cgroup_path)
             .with_context(|| format!("Failed to create cgroup directory: {:?}", cgroup_path))?;
@@ -37,8 +41,11 @@ impl CgroupController {
 
         let cpu_quota = (max_cpu_percent as u64) * constants::CGROUP_CPU_QUOTA_FACTOR;
         let cpu_max_path = cgroup_path.join("cpu.max");
-        fs::write(&cpu_max_path, format!("{} {}", cpu_quota, constants::CGROUP_PERIOD_US))
-            .with_context(|| format!("Failed to write cpu.max to {:?}", cpu_max_path))?;
+        fs::write(
+            &cpu_max_path,
+            format!("{} {}", cpu_quota, constants::CGROUP_PERIOD_US),
+        )
+        .with_context(|| format!("Failed to write cpu.max to {:?}", cpu_max_path))?;
 
         Ok(())
     }
@@ -69,7 +76,14 @@ impl CgroupController {
         let cgroup_path = self.base_path.join(sanitise(pkg_name));
         fs::create_dir_all(&cgroup_path)?;
         let cpu_max_path = cgroup_path.join("cpu.max");
-        fs::write(&cpu_max_path, format!("{} {}", (max_cpu_percent as u64) * constants::CGROUP_CPU_QUOTA_FACTOR, constants::CGROUP_PERIOD_US))?;
+        fs::write(
+            &cpu_max_path,
+            format!(
+                "{} {}",
+                (max_cpu_percent as u64) * constants::CGROUP_CPU_QUOTA_FACTOR,
+                constants::CGROUP_PERIOD_US
+            ),
+        )?;
         Ok(())
     }
 
@@ -79,5 +93,13 @@ impl CgroupController {
 }
 
 fn sanitise(name: &str) -> String {
-    name.chars().map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' }).collect()
+    name.chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
 }

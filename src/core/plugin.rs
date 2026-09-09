@@ -1,13 +1,12 @@
+use super::constants;
+use anyhow::{Context, Result, anyhow};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::sync::RwLock;
-use anyhow::{Result, Context, anyhow};
-use serde::{Serialize, Deserialize};
-use super::constants;
-
 
 // ── PluginSlot: hot-swappable wrapper ──────────────────────────────────────
 
@@ -17,7 +16,9 @@ pub struct PluginSlot<T: ?Sized + Send + Sync> {
 
 impl<T: ?Sized + Send + Sync> PluginSlot<T> {
     pub fn new(plugin: Arc<T>) -> Self {
-        Self { inner: RwLock::new(plugin) }
+        Self {
+            inner: RwLock::new(plugin),
+        }
     }
 
     pub fn load(&self) -> Arc<T> {
@@ -138,7 +139,11 @@ pub struct PluginEntry {
 /// Runs a command to completion with a hard timeout. Input is written to the
 /// child's stdin; stdout/stderr are drained concurrently so large outputs
 /// cannot deadlock the pipe buffers. On expiry the child is killed.
-fn run_with_timeout(cmd: &mut Command, input: &[u8], timeout: std::time::Duration) -> Result<std::process::Output> {
+fn run_with_timeout(
+    cmd: &mut Command,
+    input: &[u8],
+    timeout: std::time::Duration,
+) -> Result<std::process::Output> {
     use std::io::{Read, Write};
     use std::time::Instant;
 
@@ -185,7 +190,11 @@ fn run_with_timeout(cmd: &mut Command, input: &[u8], timeout: std::time::Duratio
 
         let stdout_buf = out_thread.join().unwrap_or_default();
         let stderr_buf = err_thread.join().unwrap_or_default();
-        Ok(std::process::Output { status, stdout: stdout_buf, stderr: stderr_buf })
+        Ok(std::process::Output {
+            status,
+            stdout: stdout_buf,
+            stderr: stderr_buf,
+        })
     })
 }
 
@@ -238,7 +247,8 @@ impl PythonPlugin {
             .copied()
             .collect();
 
-        let file_stem = path.file_stem()
+        let file_stem = path
+            .file_stem()
             .unwrap_or_default()
             .to_string_lossy()
             .to_string();
@@ -255,11 +265,17 @@ impl PythonPlugin {
         self
     }
 
-    pub fn name(&self) -> &str { &self.name }
-    pub fn path(&self) -> &Path { &self.path }
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
 
     /// The set of hooks this plugin implements.
-    pub fn hooks(&self) -> &std::collections::HashSet<PluginHook> { &self.hooks }
+    pub fn hooks(&self) -> &std::collections::HashSet<PluginHook> {
+        &self.hooks
+    }
 
     /// True when the plugin defines the handler for `hook`.
     pub fn supports_hook(&self, hook: PluginHook) -> bool {
@@ -275,7 +291,12 @@ impl PythonPlugin {
             "sys.path.insert(0, sys.argv[1])\n",
             "exec(compile(open(sys.argv[2], encoding='utf-8').read(), sys.argv[2], 'exec'))\n",
         );
-        let plugin_dir = self.path.parent().unwrap_or(Path::new(".")).to_string_lossy().to_string();
+        let plugin_dir = self
+            .path
+            .parent()
+            .unwrap_or(Path::new("."))
+            .to_string_lossy()
+            .to_string();
 
         let mut cmd = Command::new(constants::TOOL_PYTHON3);
         cmd.arg("-c")
@@ -323,7 +344,8 @@ impl PythonPlugin {
             "package": event.package,
             "root": event.root,
             "timestamp": event.timestamp,
-        })).unwrap_or_default();
+        }))
+        .unwrap_or_default();
         self.run(&event_dict)
     }
 }
@@ -385,7 +407,10 @@ impl PluginManager {
                     loaded.push(plugin);
                 }
                 Err(e) => {
-                    eprintln!("Warning: failed to load plugin '{}' from {:?}: {}", entry.name, path, e);
+                    eprintln!(
+                        "Warning: failed to load plugin '{}' from {:?}: {}",
+                        entry.name, path, e
+                    );
                 }
             }
         }
@@ -442,9 +467,10 @@ impl PluginManager {
 
     fn resolve_path(path_str: &str) -> PathBuf {
         if path_str.starts_with("~/")
-            && let Ok(home) = std::env::var("HOME") {
-                return PathBuf::from(home).join(&path_str[2..]);
-            }
+            && let Ok(home) = std::env::var("HOME")
+        {
+            return PathBuf::from(home).join(&path_str[2..]);
+        }
         PathBuf::from(path_str)
     }
 
@@ -481,7 +507,10 @@ impl PluginManager {
                     new_count += 1;
                 }
                 Err(e) => {
-                    eprintln!("Warning: failed to load plugin '{}' from {:?}: {}", entry.name, path, e);
+                    eprintln!(
+                        "Warning: failed to load plugin '{}' from {:?}: {}",
+                        entry.name, path, e
+                    );
                 }
             }
         }
@@ -506,24 +535,30 @@ impl PluginManager {
         }
         for idx in indices {
             if let Ok(inner) = self.inner.read()
-                && let Some(plugin) = inner.plugins.get(idx) {
-                    match plugin.run_hook(event) {
-                        Ok(result) => {
-                            if !result.success {
-                                eprintln!("Plugin '{}' failed: {}", plugin.name(),
-                                    result.message.as_deref().unwrap_or("unknown error"));
-                            }
-                        }
-                        Err(e) => {
-                            eprintln!("Plugin '{}' error: {}", plugin.name(), e);
+                && let Some(plugin) = inner.plugins.get(idx)
+            {
+                match plugin.run_hook(event) {
+                    Ok(result) => {
+                        if !result.success {
+                            eprintln!(
+                                "Plugin '{}' failed: {}",
+                                plugin.name(),
+                                result.message.as_deref().unwrap_or("unknown error")
+                            );
                         }
                     }
+                    Err(e) => {
+                        eprintln!("Plugin '{}' error: {}", plugin.name(), e);
+                    }
                 }
+            }
         }
     }
 
     pub fn run_plugin_once(&self, name: &str, event: &PluginEvent) -> Result<PluginResult> {
-        let plugin = self.find(name).ok_or_else(|| anyhow!("Plugin '{}' not found", name))?;
+        let plugin = self
+            .find(name)
+            .ok_or_else(|| anyhow!("Plugin '{}' not found", name))?;
         plugin.run_hook(event)
     }
 }
@@ -577,7 +612,8 @@ mod tests {
             eprintln!("skipping: python3 not available");
             return;
         }
-        let dir = std::env::temp_dir().join(format!("mcx_test_plugin_probe_{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("mcx_test_plugin_probe_{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         let py = dir.join("probe.py");
@@ -589,7 +625,10 @@ mod tests {
 
         let plugin = PythonPlugin::load(&py).expect("load plugin");
         assert!(plugin.supports_hook(PluginHook::PreInstall));
-        assert!(!plugin.supports_hook(PluginHook::PostInstall), "unimplemented hooks must not be registered");
+        assert!(
+            !plugin.supports_hook(PluginHook::PostInstall),
+            "unimplemented hooks must not be registered"
+        );
 
         let _ = fs::remove_dir_all(&dir);
     }
@@ -600,7 +639,8 @@ mod tests {
             eprintln!("skipping: python3 not available");
             return;
         }
-        let dir = std::env::temp_dir().join(format!("mcx_test_plugin_syntax_{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("mcx_test_plugin_syntax_{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         let py = dir.join("broken.py");
@@ -646,7 +686,8 @@ mod tests {
             eprintln!("skipping: python3 not available");
             return;
         }
-        let dir = std::env::temp_dir().join(format!("mcx_test_plugin_refuse_{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("mcx_test_plugin_refuse_{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         let py = dir.join("noop.py");
@@ -658,7 +699,9 @@ mod tests {
             root: "/".to_string(),
             timestamp: "t".to_string(),
         };
-        let err = plugin.run_hook(&event).expect_err("missing handler must be refused");
+        let err = plugin
+            .run_hook(&event)
+            .expect_err("missing handler must be refused");
         assert!(err.to_string().contains("does not implement"));
         let _ = fs::remove_dir_all(&dir);
     }
@@ -692,8 +735,14 @@ mod tests {
 
     #[test]
     fn test_plugin_hook_normalizes_dashes_and_underscores() {
-        assert_eq!(PluginHook::from_str("pre_install"), Some(PluginHook::PreInstall));
-        assert_eq!(PluginHook::from_str("post_install"), Some(PluginHook::PostInstall));
+        assert_eq!(
+            PluginHook::from_str("pre_install"),
+            Some(PluginHook::PreInstall)
+        );
+        assert_eq!(
+            PluginHook::from_str("post_install"),
+            Some(PluginHook::PostInstall)
+        );
     }
 
     #[test]
@@ -719,7 +768,8 @@ mod tests {
 
     #[test]
     fn test_python_plugin_load_invalid_syntax() {
-        let dir = std::env::temp_dir().join(format!("mcx_test_pyplugin_bad_{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("mcx_test_pyplugin_bad_{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).expect("create temp dir");
         fs::write(dir.join("bad.py"), "def foo(\n").expect("write temp plugin");
@@ -730,21 +780,27 @@ mod tests {
 
     #[test]
     fn test_python_plugin_load_nonexistent() {
-        let err = PythonPlugin::load(Path::new("/nonexistent/plugin.py")).expect_err("load missing plugin");
+        let err = PythonPlugin::load(Path::new("/nonexistent/plugin.py"))
+            .expect_err("load missing plugin");
         assert!(err.to_string().contains("not found"));
     }
 
     #[test]
     fn test_python_plugin_load_arbitrary_code() {
-        let dir = std::env::temp_dir().join(format!("mcx_test_pyplugin_any_{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("mcx_test_pyplugin_any_{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).expect("create temp dir");
-        fs::write(dir.join("anything.py"), r#"
+        fs::write(
+            dir.join("anything.py"),
+            r#"
 import os, sys, json
 class MyTool:
     def run(self):
         return "hello"
-"#).expect("write temp plugin");
+"#,
+        )
+        .expect("write temp plugin");
         let plugin = PythonPlugin::load(&dir.join("anything.py")).expect("load test plugin");
         assert_eq!(plugin.name(), "anything");
         let _ = fs::remove_dir_all(&dir);
@@ -761,7 +817,13 @@ class MyTool:
         let plugin = PythonPlugin::load(&dir.join("runner.py")).expect("load test plugin");
         let result = plugin.run("{}").expect("run test plugin");
         assert!(result.success);
-        assert!(result.message.as_deref().expect("plugin message present").contains("plugin-output"));
+        assert!(
+            result
+                .message
+                .as_deref()
+                .expect("plugin message present")
+                .contains("plugin-output")
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -770,10 +832,14 @@ class MyTool:
         let dir = std::env::temp_dir().join(format!("mcx_test_pyrun_evt_{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).expect("create temp dir");
-        fs::write(dir.join("evt.py"), r#"
+        fs::write(
+            dir.join("evt.py"),
+            r#"
 import json
 print(json.dumps({"hook_received": MCX_EVENT.get("hook", "none")}))
-"#).expect("write temp plugin");
+"#,
+        )
+        .expect("write temp plugin");
         let plugin = PythonPlugin::load(&dir.join("evt.py")).expect("load test plugin");
         let event_json = r#"{"hook": "post-install", "package": null, "root": "/test", "timestamp": "2026-01-01T00:00:00Z"}"#;
         let result = plugin.run(event_json).expect("run test plugin");
@@ -786,11 +852,18 @@ print(json.dumps({"hook_received": MCX_EVENT.get("hook", "none")}))
         let dir = std::env::temp_dir().join(format!("mcx_test_pyrun_err_{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).expect("create temp dir");
-        fs::write(dir.join("err.py"), "raise ValueError('intentional')\n").expect("write temp plugin");
+        fs::write(dir.join("err.py"), "raise ValueError('intentional')\n")
+            .expect("write temp plugin");
         let plugin = PythonPlugin::load(&dir.join("err.py")).expect("load test plugin");
         let result = plugin.run("{}").expect("run test plugin");
         assert!(!result.success);
-        assert!(result.message.as_deref().expect("plugin message present").contains("intentional"));
+        assert!(
+            result
+                .message
+                .as_deref()
+                .expect("plugin message present")
+                .contains("intentional")
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -871,9 +944,21 @@ path = "/opt/plugins/mine.py"
         assert_eq!(list.len(), 2);
         assert!(list.iter().any(|p| p.name() == "Plugin A"));
         assert!(list.iter().any(|p| p.name() == "Plugin B"));
-        let plugin_a = list.iter().find(|p| p.name() == "Plugin A").expect("plugin A present");
-        assert_eq!(plugin_a.aliases.get("ls").expect("ls alias present"), "ls -la");
-        assert_eq!(plugin_a.aliases.get("update").expect("update alias present"), "mcx -u && mcx -U");
+        let plugin_a = list
+            .iter()
+            .find(|p| p.name() == "Plugin A")
+            .expect("plugin A present");
+        assert_eq!(
+            plugin_a.aliases.get("ls").expect("ls alias present"),
+            "ls -la"
+        );
+        assert_eq!(
+            plugin_a
+                .aliases
+                .get("update")
+                .expect("update alias present"),
+            "mcx -u && mcx -U"
+        );
         assert!(!plugin_a.aliases.is_empty());
 
         let _ = fs::remove_dir_all(&root);
@@ -891,8 +976,11 @@ path = "/opt/plugins/mine.py"
         fs::write(plugin_dir.join("a.py"), "print('a')\n").expect("write temp plugin");
 
         let a_path = plugin_dir.join("a.py").to_string_lossy().to_string();
-        fs::write(config_dir.join("p.desc"),
-            format!("[plugin.a]\nname = \"A\"\npath = \"{}\"\n", a_path)).expect("write plugin config");
+        fs::write(
+            config_dir.join("p.desc"),
+            format!("[plugin.a]\nname = \"A\"\npath = \"{}\"\n", a_path),
+        )
+        .expect("write plugin config");
 
         let mgr = PluginManager::new(&root);
         assert_eq!(mgr.list().len(), 1);

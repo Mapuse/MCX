@@ -1,8 +1,8 @@
+use anyhow::{Context, Result, anyhow};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use serde::{Serialize, Deserialize};
-use anyhow::{Result, Context, anyhow};
 
 /// Service names become file names (`{name}.ini`) and process arguments;
 /// keep them strictly limited to safe characters.
@@ -10,7 +10,9 @@ pub fn validate_service_name(name: &str) -> Result<()> {
     let valid = !name.is_empty()
         && name.len() <= 255
         && !name.chars().all(|c| c == '.')
-        && name.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'));
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'));
     if valid {
         Ok(())
     } else {
@@ -26,7 +28,8 @@ pub struct CesarService {
     pub name: String,
     pub exec: String,
     #[serde(default)]
-    pub requires: String,    #[serde(default = "default_restart")]
+    pub requires: String,
+    #[serde(default = "default_restart")]
     pub restart: String,
     #[serde(default)]
     pub description: String,
@@ -83,7 +86,9 @@ impl CesarService {
                 in_service = line.eq_ignore_ascii_case("[service]");
                 continue;
             }
-            if !in_service { continue; }
+            if !in_service {
+                continue;
+            }
             if let Some((key, value)) = line.split_once('=') {
                 let k = key.trim().to_lowercase();
                 let v = value.trim().to_string();
@@ -110,7 +115,16 @@ impl CesarService {
         }
         validate_service_name(&name)?;
 
-        Ok(CesarService { name, exec, requires, restart, description, environment, working_directory, socket })
+        Ok(CesarService {
+            name,
+            exec,
+            requires,
+            restart,
+            description,
+            environment,
+            working_directory,
+            socket,
+        })
     }
 
     pub fn from_systemd_unit(content: &str) -> Result<Self> {
@@ -136,7 +150,7 @@ fn systemd_to_cesar(content: &str) -> Result<CesarService> {
             continue;
         }
         if line.starts_with('[') && line.ends_with(']') {
-            current_section = line[1..line.len()-1].to_lowercase();
+            current_section = line[1..line.len() - 1].to_lowercase();
             continue;
         }
         if let Some((key, value)) = line.split_once('=') {
@@ -148,7 +162,9 @@ fn systemd_to_cesar(content: &str) -> Result<CesarService> {
                 ("unit", "wants") => wants.push(v.to_string()),
                 ("unit", "after") => _after = v.to_string(),
                 ("service", "execstart") => {
-                    if exec.is_empty() { exec = v.to_string(); }
+                    if exec.is_empty() {
+                        exec = v.to_string();
+                    }
                 }
                 ("service", "execstartpre") => {}
                 ("service", "execstartpost") => {}
@@ -180,7 +196,11 @@ fn systemd_to_cesar(content: &str) -> Result<CesarService> {
 
     let mut all_requires = Vec::new();
     if !requires.is_empty() {
-        all_requires.extend(requires.split_whitespace().map(|s| s.trim_end_matches('.').to_string()));
+        all_requires.extend(
+            requires
+                .split_whitespace()
+                .map(|s| s.trim_end_matches('.').to_string()),
+        );
     }
     for w in &wants {
         let cleaned = w.trim_end_matches('.');
@@ -189,12 +209,20 @@ fn systemd_to_cesar(content: &str) -> Result<CesarService> {
         }
     }
 
-    let name = description.split_whitespace().next()
+    let name = description
+        .split_whitespace()
+        .next()
         .unwrap_or("unknown")
         .to_string()
         .to_lowercase()
         .chars()
-        .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '-' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '-'
+            }
+        })
         .collect();
 
     Ok(CesarService {
@@ -300,7 +328,10 @@ WantedBy=multi-user.target
         let cesar = CesarService::from_systemd_unit(systemd).expect("parse systemd unit");
         assert_eq!(cesar.exec, "/usr/sbin/dhclient");
         assert_eq!(cesar.restart, "on-failure");
-        assert_eq!(cesar.environment.get("INTERFACE").expect("INTERFACE set"), "eth0");
+        assert_eq!(
+            cesar.environment.get("INTERFACE").expect("INTERFACE set"),
+            "eth0"
+        );
         assert!(cesar.requires.contains("network"));
     }
 

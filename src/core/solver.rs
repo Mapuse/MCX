@@ -1,14 +1,14 @@
+use crate::core::arch::package_matches_host;
+use crate::core::constants;
+use crate::core::database::{Database, Dependency, PackageMetadata};
+use crate::core::graph::DepGraph;
+use anyhow::{Result, anyhow};
+use memmap2::Mmap;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use anyhow::{Result, anyhow};
-use memmap2::Mmap;
-use crate::core::constants;
-use crate::core::arch::package_matches_host;
-use crate::core::database::{Database, PackageMetadata, Dependency};
-use crate::core::graph::DepGraph;
 
 #[derive(Debug, Clone)]
 pub struct UpgradeEdge {
@@ -42,7 +42,10 @@ pub struct DependencySolver {
 
 impl DependencySolver {
     pub fn new(db: Arc<Database>) -> Self {
-        Self { db, targets: Vec::new() }
+        Self {
+            db,
+            targets: Vec::new(),
+        }
     }
 
     pub fn add_target(mut self, package_name: &str) -> Self {
@@ -71,11 +74,20 @@ impl DependencySolver {
 
         for target in targets {
             if let Err(e) = self.resolve_node(
-                target, &mut graph, &mut resolved, &mut visiting,
-                &mut provided_virtuals, &index, &mut cycles_broken,
+                target,
+                &mut graph,
+                &mut resolved,
+                &mut visiting,
+                &mut provided_virtuals,
+                &index,
+                &mut cycles_broken,
             ) {
                 deadlocks_detected.push(format!("{}: {}", target, e));
-                return Err(anyhow!("Dependency resolution failed for target '{}': {}", target, e));
+                return Err(anyhow!(
+                    "Dependency resolution failed for target '{}': {}",
+                    target,
+                    e
+                ));
             }
         }
 
@@ -126,18 +138,28 @@ impl DependencySolver {
                 for prov in provides {
                     let normalized = normalize_library(prov);
                     for n in normalized {
-                        lib_to_pkgs.entry(n).or_default().push(meta.pkg_name.clone());
+                        lib_to_pkgs
+                            .entry(n)
+                            .or_default()
+                            .push(meta.pkg_name.clone());
                     }
                 }
             }
             for file in &meta.files {
                 if let Some(fname) = file.file_name().and_then(|n| n.to_str())
-                    && (fname.contains(".so") || fname.ends_with(".dll") || fname.ends_with(".dylib") || fname.ends_with(".a")) {
-                        let normalized = normalize_library(fname);
-                        for n in normalized {
-                            lib_to_pkgs.entry(n).or_default().push(meta.pkg_name.clone());
-                        }
+                    && (fname.contains(".so")
+                        || fname.ends_with(".dll")
+                        || fname.ends_with(".dylib")
+                        || fname.ends_with(".a"))
+                {
+                    let normalized = normalize_library(fname);
+                    for n in normalized {
+                        lib_to_pkgs
+                            .entry(n)
+                            .or_default()
+                            .push(meta.pkg_name.clone());
                     }
+                }
             }
         }
 
@@ -160,7 +182,8 @@ impl DependencySolver {
         index: &LibraryIndex,
         cycles_broken: &mut usize,
     ) -> Result<()> {
-        let pkg_name = provided.get(target)
+        let pkg_name = provided
+            .get(target)
             .cloned()
             .unwrap_or_else(|| target.to_string());
 
@@ -173,11 +196,14 @@ impl DependencySolver {
                 return Ok(());
             }
             return Err(anyhow!(
-                "Cyclic dependency detected involving '{}'", pkg_name
+                "Cyclic dependency detected involving '{}'",
+                pkg_name
             ));
         }
 
-        let meta = self.db.get_package_manifest(&pkg_name)
+        let meta = self
+            .db
+            .get_package_manifest(&pkg_name)
             .map_err(|_| anyhow!("Package '{}' not found in registry", pkg_name))?;
 
         if let Some(provides) = &meta.provides {
@@ -189,9 +215,19 @@ impl DependencySolver {
         let resolved_deps = self.resolve_dependencies(&meta, index, provided)?;
 
         for dep in &resolved_deps {
-            if dep.name == pkg_name { continue; }
+            if dep.name == pkg_name {
+                continue;
+            }
             graph.add_edge(&pkg_name, &dep.name);
-            self.resolve_node(&dep.name, graph, resolved, visiting, provided, index, cycles_broken)?;
+            self.resolve_node(
+                &dep.name,
+                graph,
+                resolved,
+                visiting,
+                provided,
+                index,
+                cycles_broken,
+            )?;
         }
 
         let consolidated = self.consolidate_dependencies(resolved_deps);
@@ -272,11 +308,16 @@ impl DependencySolver {
                     if let Some(fname) = file.file_name().and_then(|n| n.to_str()) {
                         let fname_normalized = normalize_library(fname);
                         let lib_normalized = normalize_library(library);
-                        if (fname_normalized.iter().any(|fn_item| lib_normalized.contains(fn_item))
-                            || lib_normalized.iter().any(|ln_item| fname_normalized.contains(ln_item)))
-                            && !matches.contains(&pkg.pkg_name) {
-                                matches.push(pkg.pkg_name.clone());
-                            }
+                        if (fname_normalized
+                            .iter()
+                            .any(|fn_item| lib_normalized.contains(fn_item))
+                            || lib_normalized
+                                .iter()
+                                .any(|ln_item| fname_normalized.contains(ln_item)))
+                            && !matches.contains(&pkg.pkg_name)
+                        {
+                            matches.push(pkg.pkg_name.clone());
+                        }
                     }
                 }
             }
@@ -286,8 +327,13 @@ impl DependencySolver {
             0 => Err(anyhow!("No package provides library '{}'", library)),
             1 => Ok(matches.into_iter().next().expect("single match present")),
             _ => {
-                let installed: HashSet<String> = self.db.get_all_installed_packages()
-                    .unwrap_or_default().into_iter().map(|p| p.pkg_name).collect();
+                let installed: HashSet<String> = self
+                    .db
+                    .get_all_installed_packages()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|p| p.pkg_name)
+                    .collect();
                 if let Some(preferred) = matches.iter().find(|m| installed.contains(*m)) {
                     Ok(preferred.clone())
                 } else {
@@ -306,14 +352,18 @@ impl DependencySolver {
             let is_library = dep.dep_type.starts_with("Library");
             if is_library {
                 if let Some(libs) = &dep.libraries {
-                    let entry = pkg_deps.entry(dep.name.clone()).or_insert_with(|| (dep.dep_type.clone(), Vec::new()));
+                    let entry = pkg_deps
+                        .entry(dep.name.clone())
+                        .or_insert_with(|| (dep.dep_type.clone(), Vec::new()));
                     for lib in libs {
                         if !entry.1.contains(lib) {
                             entry.1.push(lib.clone());
                         }
                     }
                 } else {
-                    pkg_deps.entry(dep.name.clone()).or_insert_with(|| (dep.dep_type.clone(), Vec::new()));
+                    pkg_deps
+                        .entry(dep.name.clone())
+                        .or_insert_with(|| (dep.dep_type.clone(), Vec::new()));
                 }
             } else {
                 lone_deps.push(dep);
@@ -353,7 +403,9 @@ impl DependencySolver {
                 for conflict in conflicts {
                     if active_pkgs.contains(conflict) {
                         return Err(anyhow!(
-                            "Conflict: '{}' conflicts with '{}'", meta.pkg_name, conflict
+                            "Conflict: '{}' conflicts with '{}'",
+                            meta.pkg_name,
+                            conflict
                         ));
                     }
                 }
@@ -363,53 +415,61 @@ impl DependencySolver {
             for installed_pkg in &installed {
                 if !active_pkgs.contains(&installed_pkg.pkg_name)
                     && let Some(conflicts) = &installed_pkg.conflicts
-                        && conflicts.contains(&meta.pkg_name) {
-                            return Err(anyhow!(
-                                "Conflict: installed '{}' conflicts with '{}'",
-                                installed_pkg.pkg_name, meta.pkg_name
-                            ));
-                        }
+                    && conflicts.contains(&meta.pkg_name)
+                {
+                    return Err(anyhow!(
+                        "Conflict: installed '{}' conflicts with '{}'",
+                        installed_pkg.pkg_name,
+                        meta.pkg_name
+                    ));
+                }
             }
         }
 
         Ok(())
     }
 
-    fn compute_upgrade_paths(&self, plan: &[PackageMetadata], targets: &[String]) -> Result<Vec<UpgradePath>> {
+    fn compute_upgrade_paths(
+        &self,
+        plan: &[PackageMetadata],
+        targets: &[String],
+    ) -> Result<Vec<UpgradePath>> {
         let mut paths = Vec::new();
         let installed = self.db.get_all_installed_packages().unwrap_or_default();
-        let installed_map: HashMap<&str, &PackageMetadata> = installed.iter()
-            .map(|p| (p.pkg_name.as_str(), p)).collect();
+        let installed_map: HashMap<&str, &PackageMetadata> =
+            installed.iter().map(|p| (p.pkg_name.as_str(), p)).collect();
 
         for meta in plan {
             if targets.contains(&meta.pkg_name)
                 && let Some(current) = installed_map.get(meta.pkg_name.as_str())
-                    && current.version != meta.version {
-                        paths.push(UpgradePath {
-                            package: meta.pkg_name.clone(),
-                            from_version: current.version.clone(),
-                            to_version: meta.version.clone(),
-                            steps: vec![UpgradeEdge {
-                                from_version: current.version.clone(),
-                                to_version: meta.version.clone(),
-                                stability_index: 1.0,
-                            }],
-                            conflict_free: !self.has_conflicts_with_installed(meta),
-                        });
-                    }
+                && current.version != meta.version
+            {
+                paths.push(UpgradePath {
+                    package: meta.pkg_name.clone(),
+                    from_version: current.version.clone(),
+                    to_version: meta.version.clone(),
+                    steps: vec![UpgradeEdge {
+                        from_version: current.version.clone(),
+                        to_version: meta.version.clone(),
+                        stability_index: 1.0,
+                    }],
+                    conflict_free: !self.has_conflicts_with_installed(meta),
+                });
+            }
         }
         Ok(paths)
     }
 
     fn has_conflicts_with_installed(&self, pkg: &PackageMetadata) -> bool {
         if let Some(conflicts) = &pkg.conflicts
-            && let Ok(installed) = self.db.get_all_installed_packages() {
-                for installed_pkg in &installed {
-                    if conflicts.contains(&installed_pkg.pkg_name) {
-                        return true;
-                    }
+            && let Ok(installed) = self.db.get_all_installed_packages()
+        {
+            for installed_pkg in &installed {
+                if conflicts.contains(&installed_pkg.pkg_name) {
+                    return true;
                 }
             }
+        }
         false
     }
 
@@ -448,7 +508,9 @@ impl DependencySolver {
             let dlopen = scan_elf_strings(elf_path)?;
 
             for lib in needed.iter().chain(dlopen.iter()) {
-                if is_core_system_lib(lib) { continue; }
+                if is_core_system_lib(lib) {
+                    continue;
+                }
 
                 let normalized = normalize_library(lib);
 
@@ -456,16 +518,27 @@ impl DependencySolver {
                 for candidate in &normalized {
                     if let Some(pkgs) = index.lib_to_pkgs.get(candidate) {
                         for pkg_name in pkgs {
-                            if pkg_name == "_self" { continue; }
-                            deps_map.entry(pkg_name.clone()).or_default().insert(format!("Library ({})", lib));
-                            pkg_libs.entry(pkg_name.clone()).or_default().push(lib.clone());
+                            if pkg_name == "_self" {
+                                continue;
+                            }
+                            deps_map
+                                .entry(pkg_name.clone())
+                                .or_default()
+                                .insert(format!("Library ({})", lib));
+                            pkg_libs
+                                .entry(pkg_name.clone())
+                                .or_default()
+                                .push(lib.clone());
                             resolved = true;
                         }
                     }
                 }
 
                 if !resolved {
-                    deps_map.entry(lib.clone()).or_default().insert("Library".to_string());
+                    deps_map
+                        .entry(lib.clone())
+                        .or_default()
+                        .insert("Library".to_string());
                 }
             }
         }
@@ -480,7 +553,9 @@ impl DependencySolver {
                     sorted.sort();
                     sorted.dedup();
                     Some(sorted)
-                } else { None }
+                } else {
+                    None
+                }
             });
             results.push(Dependency {
                 name,
@@ -503,10 +578,9 @@ impl DependencySolver {
                     let path = entry.path();
                     if path.is_dir() {
                         stack.push(path);
-                    } else if path.is_file()
-                        && is_elf_file(&path) {
-                            results.push(path);
-                        }
+                    } else if path.is_file() && is_elf_file(&path) {
+                        results.push(path);
+                    }
                 }
             }
         }
@@ -518,15 +592,16 @@ impl DependencySolver {
 fn is_elf_file(path: &Path) -> bool {
     let mut buf = [0u8; 4];
     if let Ok(mut f) = fs::File::open(path)
-        && f.read_exact(&mut buf).is_ok() {
-            return buf == constants::ELF_MAGIC;
-        }
+        && f.read_exact(&mut buf).is_ok()
+    {
+        return buf == constants::ELF_MAGIC;
+    }
     false
 }
 
 fn read_elf_needed(path: &Path) -> Result<Vec<String>> {
-    let file = fs::File::open(path)
-        .map_err(|e| anyhow!("Failed to open {}: {}", path.display(), e))?;
+    let file =
+        fs::File::open(path).map_err(|e| anyhow!("Failed to open {}: {}", path.display(), e))?;
     let mmap = unsafe { Mmap::map(&file) }
         .map_err(|e| anyhow!("Failed to mmap {}: {}", path.display(), e))?;
     let data = &mmap[..];
@@ -550,11 +625,19 @@ fn read_elf_needed(path: &Path) -> Result<Vec<String>> {
     for i in 0..phnum as u64 {
         let offset = phoff.saturating_add(i.saturating_mul(phentsize as u64));
         let off = offset as usize;
-        if off.saturating_add(phentsize as usize) > data.len() { break; }
+        if off.saturating_add(phentsize as usize) > data.len() {
+            break;
+        }
 
         let p_type = read_u32(data.get(off..off.saturating_add(4)).unwrap_or(&[]));
-        let p_vaddr = read_u64(data.get(off.saturating_add(16)..off.saturating_add(24)).unwrap_or(&[]));
-        let p_filesz = read_u64(data.get(off.saturating_add(32)..off.saturating_add(40)).unwrap_or(&[]));
+        let p_vaddr = read_u64(
+            data.get(off.saturating_add(16)..off.saturating_add(24))
+                .unwrap_or(&[]),
+        );
+        let p_filesz = read_u64(
+            data.get(off.saturating_add(32)..off.saturating_add(40))
+                .unwrap_or(&[]),
+        );
 
         if p_type == constants::ELF_PT_DYNAMIC {
             dyn_vaddr = Some(p_vaddr);
@@ -570,14 +653,18 @@ fn read_elf_needed(path: &Path) -> Result<Vec<String>> {
     let dyn_file_off = find_file_offset(data, phoff, phentsize, phnum, dyn_vaddr)?;
     let dyn_start = dyn_file_off as usize;
     let dyn_end = dyn_start.saturating_add(dyn_size as usize);
-    if dyn_end > data.len() { return Ok(Vec::new()); }
+    if dyn_end > data.len() {
+        return Ok(Vec::new());
+    }
 
     let mut strtab_vaddr: Option<u64> = None;
     let mut strtab_size: Option<u64> = None;
     let mut str_offsets: Vec<u64> = Vec::new();
 
     for off in (dyn_start..dyn_end).step_by(constants::ELF_DYN_ENTRY_SIZE) {
-        if off.saturating_add(constants::ELF_DYN_ENTRY_SIZE) > data.len() { break; }
+        if off.saturating_add(constants::ELF_DYN_ENTRY_SIZE) > data.len() {
+            break;
+        }
         let d_tag = read_u64(&data[off..off + 8]);
         let d_val = read_u64(&data[off + 8..off + 16]);
 
@@ -607,39 +694,68 @@ fn read_elf_needed(path: &Path) -> Result<Vec<String>> {
     for str_off in str_offsets {
         let s = str_off as usize;
         if s < strtab.len() {
-            let end = strtab[s..].iter().position(|&b| b == 0).unwrap_or(strtab.len() - s);
+            let end = strtab[s..]
+                .iter()
+                .position(|&b| b == 0)
+                .unwrap_or(strtab.len() - s);
             if end >= 4
-                && let Ok(name) = std::str::from_utf8(&strtab[s..s + end]) {
-                    result.push(name.to_string());
-                }
+                && let Ok(name) = std::str::from_utf8(&strtab[s..s + end])
+            {
+                result.push(name.to_string());
+            }
         }
     }
 
     Ok(result)
 }
-fn find_file_offset(data: &[u8], phoff: u64, phentsize: u16, phnum: u16, vaddr: u64) -> Result<u64> {
+fn find_file_offset(
+    data: &[u8],
+    phoff: u64,
+    phentsize: u16,
+    phnum: u16,
+    vaddr: u64,
+) -> Result<u64> {
     for i in 0..phnum as u64 {
         let offset = phoff.saturating_add(i.saturating_mul(phentsize as u64));
         let off = offset as usize;
-        if off.saturating_add(phentsize as usize) > data.len() { break; }
+        if off.saturating_add(phentsize as usize) > data.len() {
+            break;
+        }
 
         let p_type = read_u32(data.get(off..off.saturating_add(4)).unwrap_or(&[]));
-        let p_vaddr = read_u64(data.get(off.saturating_add(16)..off.saturating_add(24)).unwrap_or(&[]));
-        let _p_filesz = read_u64(data.get(off.saturating_add(32)..off.saturating_add(40)).unwrap_or(&[]));
-        let p_offset = read_u64(data.get(off.saturating_add(8)..off.saturating_add(16)).unwrap_or(&[]));
-        let p_memsz = read_u64(data.get(off.saturating_add(40)..off.saturating_add(48)).unwrap_or(&[]));
+        let p_vaddr = read_u64(
+            data.get(off.saturating_add(16)..off.saturating_add(24))
+                .unwrap_or(&[]),
+        );
+        let _p_filesz = read_u64(
+            data.get(off.saturating_add(32)..off.saturating_add(40))
+                .unwrap_or(&[]),
+        );
+        let p_offset = read_u64(
+            data.get(off.saturating_add(8)..off.saturating_add(16))
+                .unwrap_or(&[]),
+        );
+        let p_memsz = read_u64(
+            data.get(off.saturating_add(40)..off.saturating_add(48))
+                .unwrap_or(&[]),
+        );
 
         if (p_type == constants::ELF_PT_LOAD || p_type == constants::ELF_PT_DYNAMIC)
-            && vaddr >= p_vaddr && vaddr < p_vaddr.saturating_add(p_memsz) {
-                return Ok(p_offset.saturating_add(vaddr - p_vaddr));
-            }
+            && vaddr >= p_vaddr
+            && vaddr < p_vaddr.saturating_add(p_memsz)
+        {
+            return Ok(p_offset.saturating_add(vaddr - p_vaddr));
+        }
     }
-    Err(anyhow!("Cannot resolve virtual address {:#x} to file offset", vaddr))
+    Err(anyhow!(
+        "Cannot resolve virtual address {:#x} to file offset",
+        vaddr
+    ))
 }
 
 fn scan_elf_strings(path: &Path) -> Result<Vec<String>> {
-    let file = fs::File::open(path)
-        .map_err(|e| anyhow!("Failed to open {}: {}", path.display(), e))?;
+    let file =
+        fs::File::open(path).map_err(|e| anyhow!("Failed to open {}: {}", path.display(), e))?;
     let mmap = unsafe { Mmap::map(&file) }
         .map_err(|e| anyhow!("Failed to mmap {}: {}", path.display(), e))?;
     let data = &mmap[..];
@@ -648,29 +764,41 @@ fn scan_elf_strings(path: &Path) -> Result<Vec<String>> {
     let mut current = Vec::new();
 
     for &byte in data.iter() {
-        if byte.is_ascii_graphic() || byte == b'/' || byte == b'.' || byte == b'-' || byte == b'_' || byte == b' ' {
+        if byte.is_ascii_graphic()
+            || byte == b'/'
+            || byte == b'.'
+            || byte == b'-'
+            || byte == b'_'
+            || byte == b' '
+        {
             current.push(byte);
         } else {
             if current.len() >= 4
-                && let Ok(s) = String::from_utf8(current.clone()) {
-                    let trimmed = s.trim();
-                    if !trimmed.is_empty() && !trimmed.chars().all(|c| c.is_ascii_digit() || c == '.')
-                        && (trimmed.contains(".so") || trimmed.contains("lib")) {
-                            strings.push(trimmed.to_string());
-                        }
+                && let Ok(s) = String::from_utf8(current.clone())
+            {
+                let trimmed = s.trim();
+                if !trimmed.is_empty()
+                    && !trimmed.chars().all(|c| c.is_ascii_digit() || c == '.')
+                    && (trimmed.contains(".so") || trimmed.contains("lib"))
+                {
+                    strings.push(trimmed.to_string());
                 }
+            }
             current.clear();
         }
     }
 
     if current.len() >= 4
-        && let Ok(s) = String::from_utf8(current) {
-            let trimmed = s.trim();
-            if !trimmed.is_empty() && !trimmed.chars().all(|c| c.is_ascii_digit() || c == '.')
-                && (trimmed.contains(".so") || trimmed.contains("lib")) {
-                    strings.push(trimmed.to_string());
-                }
+        && let Ok(s) = String::from_utf8(current)
+    {
+        let trimmed = s.trim();
+        if !trimmed.is_empty()
+            && !trimmed.chars().all(|c| c.is_ascii_digit() || c == '.')
+            && (trimmed.contains(".so") || trimmed.contains("lib"))
+        {
+            strings.push(trimmed.to_string());
         }
+    }
 
     strings.sort();
     strings.dedup();
@@ -699,24 +827,72 @@ fn normalize_library(lib: &str) -> Vec<String> {
 
 fn is_core_system_lib(lib: &str) -> bool {
     let core_prefixes = [
-        "libc.so", "libm.so", "libpthread.so", "libdl.so", "librt.so", "libutil.so",
-        "libstdc++.so", "libgcc_s.so", "libatomic.so", "libgomp.so", "libquadmath.so",
-        "libasan.so", "libubsan.so", "liblsan.so", "libtsan.so",
-        "libz.so", "libzstd.so", "liblzma.so", "libbz2.so",
-        "libssl.so", "libcrypto.so",
-        "libpcre.so", "libpcre2.so", "libexpat.so", "libffi.so",
-        "libiconv.so", "libintl.so",
-        "libncurses.so", "libtinfo.so", "libreadline.so", "libhistory.so",
-        "ld-linux", "ld-musl",
-        "libnss_", "libnss3.so", "libnssutil3.so",
-        "libselinux.so", "libsepol.so", "libpam.so", "libcap.so",
-        "libacl.so", "libattr.so", "libmount.so", "libblkid.so", "libuuid.so",
-        "libjson-c.so", "libdbus-1.so",
-        "libEGL.so", "libGL.so", "libdrm_", "libX11.so", "libxcb.so", "libwayland-",
-        "libpulse.so", "libasound.so", "libsndfile.so",
-        "libfreetype.so", "libfontconfig.so", "libharfbuzz.so",
-        "libpng", "libjpeg", "libwebp", "libtiff", "libgif",
-        "libpython", "libperl.so",
+        "libc.so",
+        "libm.so",
+        "libpthread.so",
+        "libdl.so",
+        "librt.so",
+        "libutil.so",
+        "libstdc++.so",
+        "libgcc_s.so",
+        "libatomic.so",
+        "libgomp.so",
+        "libquadmath.so",
+        "libasan.so",
+        "libubsan.so",
+        "liblsan.so",
+        "libtsan.so",
+        "libz.so",
+        "libzstd.so",
+        "liblzma.so",
+        "libbz2.so",
+        "libssl.so",
+        "libcrypto.so",
+        "libpcre.so",
+        "libpcre2.so",
+        "libexpat.so",
+        "libffi.so",
+        "libiconv.so",
+        "libintl.so",
+        "libncurses.so",
+        "libtinfo.so",
+        "libreadline.so",
+        "libhistory.so",
+        "ld-linux",
+        "ld-musl",
+        "libnss_",
+        "libnss3.so",
+        "libnssutil3.so",
+        "libselinux.so",
+        "libsepol.so",
+        "libpam.so",
+        "libcap.so",
+        "libacl.so",
+        "libattr.so",
+        "libmount.so",
+        "libblkid.so",
+        "libuuid.so",
+        "libjson-c.so",
+        "libdbus-1.so",
+        "libEGL.so",
+        "libGL.so",
+        "libdrm_",
+        "libX11.so",
+        "libxcb.so",
+        "libwayland-",
+        "libpulse.so",
+        "libasound.so",
+        "libsndfile.so",
+        "libfreetype.so",
+        "libfontconfig.so",
+        "libharfbuzz.so",
+        "libpng",
+        "libjpeg",
+        "libwebp",
+        "libtiff",
+        "libgif",
+        "libpython",
+        "libperl.so",
         "libsqlite3.so",
     ];
 
@@ -733,19 +909,24 @@ struct LibraryIndex {
 }
 
 fn read_u32(buf: &[u8]) -> u32 {
-    if buf.len() < 4 { return 0; }
+    if buf.len() < 4 {
+        return 0;
+    }
     u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]])
 }
 
 fn read_u64(buf: &[u8]) -> u64 {
-    if buf.len() < 8 { return 0; }
+    if buf.len() < 8 {
+        return 0;
+    }
     u64::from_le_bytes([
-        buf[0], buf[1], buf[2], buf[3],
-        buf[4], buf[5], buf[6], buf[7],
+        buf[0], buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7],
     ])
 }
 
 fn read_u16(buf: &[u8]) -> u16 {
-    if buf.len() < 2 { return 0; }
+    if buf.len() < 2 {
+        return 0;
+    }
     u16::from_le_bytes([buf[0], buf[1]])
 }

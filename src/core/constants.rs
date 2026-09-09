@@ -134,7 +134,8 @@ pub const PATH_LOCAL_SRC_OUT: &str = "var/lib/mcx/localsrc/out";
 pub const PATH_LOCAL_SRC_DOWNLOADS: &str = "var/lib/mcx/localsrc/downloads";
 pub const PATH_LOCAL_SRC_WORK: &str = "var/lib/mcx/localsrc/work";
 pub const OUS_BIN_ENV: &str = "OUS_BIN";
-pub const OUS_BINARY_CANDIDATES: &[&str] = &["/usr/bin/ous", "/usr/local/bin/ous", "/bin/ous", "ous"];
+pub const OUS_BINARY_CANDIDATES: &[&str] =
+    &["/usr/bin/ous", "/usr/local/bin/ous", "/bin/ous", "ous"];
 
 // ── Shared library directories for CAS deduplication ────────────────────
 pub const LIB_DIRS: &[&str] = &["usr/lib", "lib", "usr/lib64", "lib64"];
@@ -149,8 +150,7 @@ pub const LIB_PATH_PREFIXES: &[&str] = &["/system/lib/", "/usr/lib/", "/lib/"];
 pub const CARGO_BUILD_TARGET_ENV: &str = "CUDANE_TARGET";
 pub const CARGO_RUST_TARGET_ENV: &str = "CUDANE_RUST_TARGET";
 pub const CARGO_SYSROOT: &str = "/system";
-pub const RUSTFLAGS_TEMPLATE: &str =
-    "-C linker=clang -C link-arg=-target -C link-arg={target} \
+pub const RUSTFLAGS_TEMPLATE: &str = "-C linker=clang -C link-arg=-target -C link-arg={target} \
      -C link-arg=--sysroot={sysroot} -C target-feature=+crt-static";
 
 // ── Build skip keywords ─────────────────────────────────────────────────

@@ -1,5 +1,5 @@
-use std::collections::{HashMap, HashSet};
 use anyhow::{Result, anyhow};
+use std::collections::{HashMap, HashSet};
 
 pub struct DepGraph {
     nodes: HashMap<String, Vec<String>>,
@@ -19,7 +19,10 @@ impl DepGraph {
     }
 
     pub fn add_edge(&mut self, from: &str, to: &str) {
-        self.nodes.entry(from.to_string()).or_default().push(to.to_string());
+        self.nodes
+            .entry(from.to_string())
+            .or_default()
+            .push(to.to_string());
         self.nodes.entry(to.to_string()).or_default();
     }
 
@@ -40,15 +43,21 @@ impl DepGraph {
         let mut rec_stack = HashSet::new();
         for node in self.nodes.keys() {
             if !visited.contains(node)
-                && self.dfs_sort(node, &mut visited, &mut rec_stack, &mut order) {
-                    return Err(anyhow!("Circular structural dependency loop detected"));
-                }
+                && self.dfs_sort(node, &mut visited, &mut rec_stack, &mut order)
+            {
+                return Err(anyhow!("Circular structural dependency loop detected"));
+            }
         }
         order.reverse();
         Ok(order)
     }
 
-    fn dfs_cycle(&self, node: &str, visited: &mut HashSet<String>, rec_stack: &mut HashSet<String>) -> bool {
+    fn dfs_cycle(
+        &self,
+        node: &str,
+        visited: &mut HashSet<String>,
+        rec_stack: &mut HashSet<String>,
+    ) -> bool {
         if rec_stack.contains(node) {
             return true;
         }
@@ -68,7 +77,13 @@ impl DepGraph {
         false
     }
 
-    fn dfs_sort(&self, node: &str, visited: &mut HashSet<String>, rec_stack: &mut HashSet<String>, order: &mut Vec<String>) -> bool {
+    fn dfs_sort(
+        &self,
+        node: &str,
+        visited: &mut HashSet<String>,
+        rec_stack: &mut HashSet<String>,
+        order: &mut Vec<String>,
+    ) -> bool {
         if rec_stack.contains(node) {
             return true;
         }

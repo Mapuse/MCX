@@ -1,8 +1,8 @@
-use std::fs;
-use std::path::Path;
-use std::time::{Instant, Duration};
 use crate::core::arch::Architecture;
 use crate::core::constants;
+use std::fs;
+use std::path::Path;
+use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone)]
 pub struct SystemProfile {
@@ -82,28 +82,42 @@ impl SystemProfile {
         let is_musl = Self::detect_musl();
         let has_sandbox = Self::detect_sandbox();
         let architecture = Architecture::host();
-        Self { cpu_count, cpu_model, total_ram_mb, available_ram_mb, kernel, os_name, is_musl, has_sandbox, architecture }
+        Self {
+            cpu_count,
+            cpu_model,
+            total_ram_mb,
+            available_ram_mb,
+            kernel,
+            os_name,
+            is_musl,
+            has_sandbox,
+            architecture,
+        }
     }
 
     fn read_cpu_model() -> String {
         fs::read_to_string("/proc/cpuinfo")
             .ok()
-            .and_then(|s| s.lines()
-                .find(|l| l.starts_with("model name"))
-                .and_then(|l| l.split(':').nth(1))
-                .map(|s| s.trim().to_string()))
+            .and_then(|s| {
+                s.lines()
+                    .find(|l| l.starts_with("model name"))
+                    .and_then(|l| l.split(':').nth(1))
+                    .map(|s| s.trim().to_string())
+            })
             .unwrap_or_else(|| "unknown".into())
     }
 
     fn read_memory() -> (u64, u64) {
         let info = fs::read_to_string("/proc/meminfo").unwrap_or_default();
-        let total = info.lines()
+        let total = info
+            .lines()
             .find(|l| l.starts_with("MemTotal:"))
             .and_then(|l| l.split_whitespace().nth(1))
             .and_then(|s| s.parse::<u64>().ok())
             .map(|kb| kb / 1024)
             .unwrap_or(0);
-        let available = info.lines()
+        let available = info
+            .lines()
             .find(|l| l.starts_with("MemAvailable:"))
             .and_then(|l| l.split_whitespace().nth(1))
             .and_then(|s| s.parse::<u64>().ok())
@@ -114,17 +128,25 @@ impl SystemProfile {
 
     fn read_kernel() -> String {
         let content = fs::read_to_string("/proc/version").unwrap_or_default();
-        content.split_whitespace().nth(2).map(|s| s.to_string()).unwrap_or_else(|| "unknown".into())
+        content
+            .split_whitespace()
+            .nth(2)
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "unknown".into())
     }
 
     fn read_os() -> String {
         fs::read_to_string("/etc/os-release")
             .ok()
-            .and_then(|s| s.lines()
-                .find(|l| l.starts_with("PRETTY_NAME="))
-                .and_then(|l| l.split('=').nth(1))
-                .map(|s| s.trim_matches('"').to_string()))
-            .unwrap_or_else(|| fs::read_to_string("/etc/lsb-release").unwrap_or_else(|_| "unknown".into()))
+            .and_then(|s| {
+                s.lines()
+                    .find(|l| l.starts_with("PRETTY_NAME="))
+                    .and_then(|l| l.split('=').nth(1))
+                    .map(|s| s.trim_matches('"').to_string())
+            })
+            .unwrap_or_else(|| {
+                fs::read_to_string("/etc/lsb-release").unwrap_or_else(|_| "unknown".into())
+            })
     }
 
     fn detect_musl() -> bool {
@@ -139,7 +161,6 @@ impl SystemProfile {
                 .map(|s| s.contains("docker") || s.contains("pod") || s.contains("lxc"))
                 .unwrap_or(false)
     }
-
 }
 
 pub struct NetworkProber;
@@ -166,8 +187,14 @@ impl NetworkProber {
             }
         });
         let samples: Vec<f64> = join_all(futures).await;
-        let latency_ms = if samples.is_empty() { constants::DEFAULT_FALLBACK_LATENCY } else { samples.iter().sum::<f64>() / samples.len() as f64 };
-        let rtt_jitter_ms = if samples.len() < 2 { 0.0 } else {
+        let latency_ms = if samples.is_empty() {
+            constants::DEFAULT_FALLBACK_LATENCY
+        } else {
+            samples.iter().sum::<f64>() / samples.len() as f64
+        };
+        let rtt_jitter_ms = if samples.len() < 2 {
+            0.0
+        } else {
             let mean = latency_ms;
             samples.iter().map(|s| (s - mean).abs()).sum::<f64>() / samples.len() as f64
         };
@@ -183,19 +210,28 @@ impl NetworkProber {
 pub struct DecisionEngine;
 
 impl DecisionEngine {
-    pub fn evaluate_thread_strategy(sys: &SystemProfile, net: &NetworkProfile, params: &CalibratedParams) -> Vec<DecisionMatrix> {
+    pub fn evaluate_thread_strategy(
+        sys: &SystemProfile,
+        net: &NetworkProfile,
+        params: &CalibratedParams,
+    ) -> Vec<DecisionMatrix> {
         let mut decisions = Vec::new();
 
         let latency_ratio = net.latency_ms / params.latency_threshold_ms as f64;
 
         decisions.push({
-            if sys.cpu_count >= constants::CPU_THRESHOLD_MEDIUM && sys.available_ram_mb >= constants::RAM_THRESHOLD_HIGH_MB && latency_ratio < constants::LATENCY_RATIO_PARALLEL {
+            if sys.cpu_count >= constants::CPU_THRESHOLD_MEDIUM
+                && sys.available_ram_mb >= constants::RAM_THRESHOLD_HIGH_MB
+                && latency_ratio < constants::LATENCY_RATIO_PARALLEL
+            {
                 DecisionMatrix {
                     verdict: HeuristicVerdict::UseParallel,
                     confidence: constants::DECISION_CONFIDENCE_HIGH,
                     rationale: "CPU cores >= 8, RAM >= 2GB, low network latency",
                 }
-            } else if sys.cpu_count >= constants::CPU_THRESHOLD_LOW && latency_ratio < constants::LATENCY_RATIO_SEQUENTIAL {
+            } else if sys.cpu_count >= constants::CPU_THRESHOLD_LOW
+                && latency_ratio < constants::LATENCY_RATIO_SEQUENTIAL
+            {
                 DecisionMatrix {
                     verdict: HeuristicVerdict::UseParallel,
                     confidence: constants::DECISION_CONFIDENCE_MEDIUM,
@@ -211,7 +247,10 @@ impl DecisionEngine {
         });
 
         decisions.push({
-            if net.latency_ms > params.latency_threshold_ms as f64 * constants::LATENCY_SPIKE_CRITICAL || net.bandwidth_kbps < params.bandwidth_threshold_kbps / 2 {
+            if net.latency_ms
+                > params.latency_threshold_ms as f64 * constants::LATENCY_SPIKE_CRITICAL
+                || net.bandwidth_kbps < params.bandwidth_threshold_kbps / 2
+            {
                 DecisionMatrix {
                     verdict: HeuristicVerdict::UseFallbackRepo,
                     confidence: constants::DECISION_CONFIDENCE_MEDIUM,
@@ -252,7 +291,11 @@ impl DecisionEngine {
     }
 
     pub fn should_use_parallel(decisions: &[DecisionMatrix]) -> bool {
-        decisions.iter().any(|d| d.verdict == HeuristicVerdict::UseParallel)
-            && !decisions.iter().any(|d| d.verdict == HeuristicVerdict::UseSequential)
+        decisions
+            .iter()
+            .any(|d| d.verdict == HeuristicVerdict::UseParallel)
+            && !decisions
+                .iter()
+                .any(|d| d.verdict == HeuristicVerdict::UseSequential)
     }
 }

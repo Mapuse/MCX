@@ -1,8 +1,8 @@
-use std::path::{Path, PathBuf};
+use crate::core::changelog::{ActionKind, ChangelogManager};
+use anyhow::{Context, Result, anyhow};
+use serde::{Deserialize, Serialize};
 use std::fs;
-use anyhow::{Result, anyhow, Context};
-use serde::{Serialize, Deserialize};
-use crate::core::changelog::{ChangelogManager, ActionKind};
+use std::path::{Path, PathBuf};
 
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
 pub enum TransactionState {
@@ -75,7 +75,9 @@ impl PackageTransaction {
     /// `finalize_commit` to mark the intent complete.
     pub fn prepare_commit(&mut self) -> Result<u64> {
         self.ensure_active()?;
-        self.id = self.changelog.record_transaction(self.action_kind.clone(), self.affected_packages.clone())?;
+        self.id = self
+            .changelog
+            .record_transaction(self.action_kind.clone(), self.affected_packages.clone())?;
         Ok(self.id)
     }
 
@@ -159,8 +161,8 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
 /// symlinks or directories as source, syncs file data before renaming and
 /// flushes the parent directory entry afterwards.
 pub(crate) fn atomic_copy(src: &Path, dst: &Path) -> Result<()> {
-    let src_metadata = fs::symlink_metadata(src)
-        .with_context(|| format!("Failed to inspect {:?}", src))?;
+    let src_metadata =
+        fs::symlink_metadata(src).with_context(|| format!("Failed to inspect {:?}", src))?;
     if !src_metadata.is_file() {
         return Err(anyhow!(
             "Refusing to copy non-regular file {:?} to {:?}",
@@ -217,7 +219,10 @@ mod tests {
 
         atomic_copy(&src, &dst).unwrap();
         assert_eq!(fs::read_to_string(&dst).unwrap(), "payload");
-        assert!(atomic_copy(&src, &dst).is_ok(), "overwriting an existing destination must succeed");
+        assert!(
+            atomic_copy(&src, &dst).is_ok(),
+            "overwriting an existing destination must succeed"
+        );
     }
 
     #[test]
@@ -234,11 +239,19 @@ mod tests {
 
         // Simulate an install overwriting the file mid-transaction.
         fs::write(&live, b"new").unwrap();
-        tx.record_staged_file(PathBuf::from("usr/bin/extra")).unwrap();
+        tx.record_staged_file(PathBuf::from("usr/bin/extra"))
+            .unwrap();
         fs::write(root.join("usr/bin/extra"), b"x").unwrap();
 
         tx.rollback().unwrap();
-        assert_eq!(fs::read_to_string(&live).unwrap(), "old", "backup must be restored on rollback");
-        assert!(!root.join("usr/bin/extra").exists(), "staged files must be removed on rollback");
+        assert_eq!(
+            fs::read_to_string(&live).unwrap(),
+            "old",
+            "backup must be restored on rollback"
+        );
+        assert!(
+            !root.join("usr/bin/extra").exists(),
+            "staged files must be removed on rollback"
+        );
     }
 }

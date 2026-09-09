@@ -1,27 +1,34 @@
+use mcx::core::cas::CasStore;
+use mcx::core::cgroup::CgroupController;
+use mcx::core::completion::CompletionEngine;
+use mcx::core::database::{ChecksumData, Database, Dependency, PackageMetadata};
+use mcx::core::declarative::ProfileValidator;
+use mcx::core::lifecycle::{DependencyGraph, LifecycleEngine, OrphanSet, PackageState};
+use mcx::core::rollback::RollbackManager;
+use mcx::core::security::SecurityMonitor;
+use mcx::utils::ui::UserInterface;
 use std::fs;
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use mcx::utils::ui::UserInterface;
-use mcx::core::database::{Database, PackageMetadata, ChecksumData, Dependency};
-use mcx::core::completion::CompletionEngine;
-use mcx::core::security::SecurityMonitor;
-use mcx::core::declarative::ProfileValidator;
-use mcx::core::cgroup::CgroupController;
-use mcx::core::cas::CasStore;
-use mcx::core::rollback::RollbackManager;
-use mcx::core::lifecycle::{LifecycleEngine, DependencyGraph, PackageState, OrphanSet};
 
 use mcx::commands::add::AddLocalCommand;
+use mcx::commands::configuration::ConfigTarget;
+use mcx::commands::install::InstallCommand;
 use mcx::commands::localsrc::LocalSourceCommand;
 use mcx::commands::remove::RemoveCommand;
-use mcx::commands::install::InstallCommand;
-use mcx::commands::configuration::ConfigTarget;
 use mcx::network::download::Downloader;
 
 fn create_temporary_root(identifier: &str) -> PathBuf {
     let mut path = std::env::temp_dir();
-    path.push(format!("mcx_test_{}_{}", identifier, std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("system clock").as_nanos()));
+    path.push(format!(
+        "mcx_test_{}_{}",
+        identifier,
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock")
+            .as_nanos()
+    ));
     fs::create_dir_all(&path).expect("create temp root");
     path
 }
@@ -34,11 +41,18 @@ async fn test_atomic_database_write_and_conflict_prevention() {
     let db = Database::open(&root).expect("open test database");
 
     let package_a = PackageMetadata {
-        pkg_name: "package-a".to_string(), version: "1.0.0".to_string(),
-        license: "MIT".to_string(), source: "https://example.com/a".to_string(),
-        checksum: ChecksumData { kind: "sha256".to_string(), value: "a591a6d40bf420404a011733cfb7b190d62c65bf0bcda32b57b277d9ad9f146e".to_string() },
-        dependencies: vec![], files: vec![PathBuf::from("usr/bin/shared-binary")],
-        provides: Some(vec![]), conflicts: Some(vec![]),
+        pkg_name: "package-a".to_string(),
+        version: "1.0.0".to_string(),
+        license: "MIT".to_string(),
+        source: "https://example.com/a".to_string(),
+        checksum: ChecksumData {
+            kind: "sha256".to_string(),
+            value: "a591a6d40bf420404a011733cfb7b190d62c65bf0bcda32b57b277d9ad9f146e".to_string(),
+        },
+        dependencies: vec![],
+        files: vec![PathBuf::from("usr/bin/shared-binary")],
+        provides: Some(vec![]),
+        conflicts: Some(vec![]),
         architecture: "native".to_string(),
         components: Vec::new(),
         services: Vec::new(),
@@ -48,16 +62,27 @@ async fn test_atomic_database_write_and_conflict_prevention() {
     };
 
     let mut tx_a = db.begin_transaction().expect("begin transaction");
-    tx_a.register_package_placement(&package_a).expect("register package placement");
+    tx_a.register_package_placement(&package_a)
+        .expect("register package placement");
     tx_a.commit().expect("commit transaction");
-    assert!(db.is_package_installed("package-a").expect("package-a installed"));
+    assert!(
+        db.is_package_installed("package-a")
+            .expect("package-a installed")
+    );
 
     let package_b = PackageMetadata {
-        pkg_name: "package-b".to_string(), version: "2.0.0".to_string(),
-        license: "Apache-2.0".to_string(), source: "https://example.com/b".to_string(),
-        checksum: ChecksumData { kind: "sha256".to_string(), value: "5891a6d40bf420404a011733cfb7b190d62c65bf0bcda32b57b277d9ad9f146f".to_string() },
-        dependencies: vec![], files: vec![PathBuf::from("usr/bin/shared-binary")],
-        provides: Some(vec![]), conflicts: Some(vec![]),
+        pkg_name: "package-b".to_string(),
+        version: "2.0.0".to_string(),
+        license: "Apache-2.0".to_string(),
+        source: "https://example.com/b".to_string(),
+        checksum: ChecksumData {
+            kind: "sha256".to_string(),
+            value: "5891a6d40bf420404a011733cfb7b190d62c65bf0bcda32b57b277d9ad9f146f".to_string(),
+        },
+        dependencies: vec![],
+        files: vec![PathBuf::from("usr/bin/shared-binary")],
+        provides: Some(vec![]),
+        conflicts: Some(vec![]),
         architecture: "native".to_string(),
         components: Vec::new(),
         services: Vec::new(),
@@ -110,11 +135,18 @@ async fn test_package_removal_and_filesystem_cleanup() {
 
     let db = Database::open(&root).expect("open test database");
     let package = PackageMetadata {
-        pkg_name: "app".to_string(), version: "1.5.2".to_string(),
-        license: "GPL-3.0".to_string(), source: "https://example.com/app".to_string(),
-        checksum: ChecksumData { kind: "sha256".to_string(), value: "9ee6a6d40bf420404a011733cfb7b190d62c65bf0bcda32b57b277d9ad9f146a".to_string() },
-        dependencies: vec![], files: vec![PathBuf::from("usr/bin/app-binary")],
-        provides: Some(vec![]), conflicts: Some(vec![]),
+        pkg_name: "app".to_string(),
+        version: "1.5.2".to_string(),
+        license: "GPL-3.0".to_string(),
+        source: "https://example.com/app".to_string(),
+        checksum: ChecksumData {
+            kind: "sha256".to_string(),
+            value: "9ee6a6d40bf420404a011733cfb7b190d62c65bf0bcda32b57b277d9ad9f146a".to_string(),
+        },
+        dependencies: vec![],
+        files: vec![PathBuf::from("usr/bin/app-binary")],
+        provides: Some(vec![]),
+        conflicts: Some(vec![]),
         architecture: "native".to_string(),
         components: Vec::new(),
         services: Vec::new(),
@@ -124,16 +156,23 @@ async fn test_package_removal_and_filesystem_cleanup() {
     };
 
     let mut tx = db.begin_transaction().expect("begin transaction");
-    tx.register_package_placement(&package).expect("register package placement");
+    tx.register_package_placement(&package)
+        .expect("register package placement");
     tx.commit().expect("commit transaction");
 
     let db_share = Arc::new(db);
     let command = RemoveCommand::new(root.to_string_lossy().into_owned(), db_share.clone());
     let cg = mcx::CgroupController::new();
     let sm = mcx::SecurityMonitor::new();
-    command.execute(&["app".to_string()], &cg, &sm).expect("execute remove command");
+    command
+        .execute(&["app".to_string()], &cg, &sm)
+        .expect("execute remove command");
 
-    assert!(!db_share.is_package_installed("app").expect("app not installed"));
+    assert!(
+        !db_share
+            .is_package_installed("app")
+            .expect("app not installed")
+    );
     assert!(!binary_file.exists());
     fs::remove_dir_all(&root).expect("remove temp root");
 }
@@ -146,10 +185,18 @@ async fn test_shell_completion_engine_querying() {
     let db = Database::open(&root).expect("open test database");
 
     let package = PackageMetadata {
-        pkg_name: "neovim".to_string(), version: "0.9.0".to_string(),
-        license: "Apache-2.0".to_string(), source: "https://example.com/nvim".to_string(),
-        checksum: ChecksumData { kind: "sha256".to_string(), value: "1111a6d40bf420404a011733cfb7b190d62c65bf0bcda32b57b277d9ad9f146e".to_string() },
-        dependencies: vec![], files: vec![], provides: Some(vec![]),         conflicts: Some(vec![]),
+        pkg_name: "neovim".to_string(),
+        version: "0.9.0".to_string(),
+        license: "Apache-2.0".to_string(),
+        source: "https://example.com/nvim".to_string(),
+        checksum: ChecksumData {
+            kind: "sha256".to_string(),
+            value: "1111a6d40bf420404a011733cfb7b190d62c65bf0bcda32b57b277d9ad9f146e".to_string(),
+        },
+        dependencies: vec![],
+        files: vec![],
+        provides: Some(vec![]),
+        conflicts: Some(vec![]),
         architecture: "native".to_string(),
         components: Vec::new(),
         services: Vec::new(),
@@ -159,14 +206,17 @@ async fn test_shell_completion_engine_querying() {
     };
 
     let mut tx = db.begin_transaction().expect("begin transaction");
-    tx.register_package_placement(&package).expect("register package placement");
+    tx.register_package_placement(&package)
+        .expect("register package placement");
     tx.commit().expect("commit transaction");
 
     let engine = CompletionEngine::new(Arc::new(db));
     let subcommands = engine.complete_subcommand("inst");
     assert!(subcommands.contains(&"install".to_string()));
 
-    let packages = engine.complete_installed_package("neo").expect("complete package");
+    let packages = engine
+        .complete_installed_package("neo")
+        .expect("complete package");
     assert!(packages.contains(&"neovim".to_string()));
 
     fs::remove_dir_all(&root).expect("remove temp root");
@@ -205,7 +255,11 @@ fn test_config_init_generates_defaults() {
     fs::create_dir_all(&config_dir).expect("create config dir");
 
     // mark config.ini as "already exists" to test skip-behaviour
-    fs::write(config_dir.join("config.ini"), b"[engine]\nthread_pool_mode = auto\n").expect("write config file");
+    fs::write(
+        config_dir.join("config.ini"),
+        b"[engine]\nthread_pool_mode = auto\n",
+    )
+    .expect("write config file");
 
     let config_ini = config_dir.join("config.ini");
     let repo_ini = config_dir.join("repo.ini");
@@ -224,7 +278,11 @@ fn test_config_init_generates_defaults() {
         fs::write(&repo_ini, b"[main]\nurl = https://packages.cudane.org\nenabled = true\npriority = 100\n\n[community]\nurl = https://community.cudane.org\nenabled = false\npriority = 200\n").expect("write config file");
     }
     if !profile_ini.exists() {
-        fs::write(&profile_ini, b"[profile]\nversion = 1.0.0\narchitecture = x86_64\npackages = \n").expect("write config file");
+        fs::write(
+            &profile_ini,
+            b"[profile]\nversion = 1.0.0\narchitecture = x86_64\npackages = \n",
+        )
+        .expect("write config file");
     }
 
     // config.ini content preserved (not overwritten)
@@ -253,14 +311,23 @@ async fn test_network_downloader_endpoint_handling() {
     let root = create_temporary_root("network_download");
     let downloader = Downloader::new();
 
-    let is_available = downloader.check_endpoint_availability("https://www.google.com").await;
+    let is_available = downloader
+        .check_endpoint_availability("https://www.google.com")
+        .await;
     assert!(is_available);
 
     let destination = root.join("test_download.html");
-    let result = downloader.package("https://www.google.com", &destination).await;
+    let result = downloader
+        .package("https://www.google.com", &destination)
+        .await;
     assert!(result.is_ok());
     assert!(destination.exists());
-    assert!(fs::metadata(&destination).expect("destination metadata").len() > 0);
+    assert!(
+        fs::metadata(&destination)
+            .expect("destination metadata")
+            .len()
+            > 0
+    );
 
     fs::remove_dir_all(&root).expect("remove temp root");
 }
@@ -276,7 +343,9 @@ async fn test_network_downloader_transient_failure_recovery() {
     let result = downloader.package(invalid_endpoint, &destination).await;
     assert!(result.is_err());
 
-    let availability = downloader.check_endpoint_availability(invalid_endpoint).await;
+    let availability = downloader
+        .check_endpoint_availability(invalid_endpoint)
+        .await;
     assert!(!availability);
 
     fs::remove_dir_all(&root).expect("remove temp root");
@@ -290,10 +359,18 @@ async fn test_database_dependency_graph_relations() {
     let db = Database::open(&root).expect("open test database");
 
     let base_package = PackageMetadata {
-        pkg_name: "openssl".to_string(), version: "5.0.0".to_string(),
-        license: "Apache-2.0".to_string(), source: "https://example.com/ssl".to_string(),
-        checksum: ChecksumData { kind: "sha256".to_string(), value: "1234a6d40bf420404a011733cfb7b190d62c65bf0bcda32b57b277d9ad9f146e".to_string() },
-        dependencies: vec![], files: vec![], provides: Some(vec![]),         conflicts: Some(vec![]),
+        pkg_name: "openssl".to_string(),
+        version: "5.0.0".to_string(),
+        license: "Apache-2.0".to_string(),
+        source: "https://example.com/ssl".to_string(),
+        checksum: ChecksumData {
+            kind: "sha256".to_string(),
+            value: "1234a6d40bf420404a011733cfb7b190d62c65bf0bcda32b57b277d9ad9f146e".to_string(),
+        },
+        dependencies: vec![],
+        files: vec![],
+        provides: Some(vec![]),
+        conflicts: Some(vec![]),
         architecture: "native".to_string(),
         components: Vec::new(),
         services: Vec::new(),
@@ -303,15 +380,27 @@ async fn test_database_dependency_graph_relations() {
     };
 
     let mut tx = db.begin_transaction().expect("begin transaction");
-    tx.register_package_placement(&base_package).expect("register package placement");
+    tx.register_package_placement(&base_package)
+        .expect("register package placement");
     tx.commit().expect("commit transaction");
 
     let dependent_package = PackageMetadata {
-        pkg_name: "curl".to_string(), version: "8.0.0".to_string(),
-        license: "MIT".to_string(), source: "https://example.com/curl".to_string(),
-        checksum: ChecksumData { kind: "sha256".to_string(), value: "5678a6d40bf420404a011733cfb7b190d62c65bf0bcda32b57b277d9ad9f146e".to_string() },
-        dependencies: vec![Dependency { name: "openssl".to_string(), dep_type: "runtime".to_string(), libraries: None }],
-        files: vec![], provides: Some(vec![]),         conflicts: Some(vec![]),
+        pkg_name: "curl".to_string(),
+        version: "8.0.0".to_string(),
+        license: "MIT".to_string(),
+        source: "https://example.com/curl".to_string(),
+        checksum: ChecksumData {
+            kind: "sha256".to_string(),
+            value: "5678a6d40bf420404a011733cfb7b190d62c65bf0bcda32b57b277d9ad9f146e".to_string(),
+        },
+        dependencies: vec![Dependency {
+            name: "openssl".to_string(),
+            dep_type: "runtime".to_string(),
+            libraries: None,
+        }],
+        files: vec![],
+        provides: Some(vec![]),
+        conflicts: Some(vec![]),
         architecture: "native".to_string(),
         components: Vec::new(),
         services: Vec::new(),
@@ -321,11 +410,18 @@ async fn test_database_dependency_graph_relations() {
     };
 
     let mut tx2 = db.begin_transaction().expect("begin transaction");
-    tx2.register_package_placement(&dependent_package).expect("register package placement");
+    tx2.register_package_placement(&dependent_package)
+        .expect("register package placement");
     tx2.commit().expect("commit transaction");
 
-    assert!(db.has_dependent_packages("openssl").expect("openssl has dependents"));
-    assert!(!db.has_dependent_packages("curl").expect("curl has no dependents"));
+    assert!(
+        db.has_dependent_packages("openssl")
+            .expect("openssl has dependents")
+    );
+    assert!(
+        !db.has_dependent_packages("curl")
+            .expect("curl has no dependents")
+    );
 
     fs::remove_dir_all(&root).expect("remove temp root");
 }
@@ -338,11 +434,22 @@ async fn test_cyclic_dependency_deadlock_breaking() {
     let db = Database::open(&root).expect("open test database");
 
     let node_x = PackageMetadata {
-        pkg_name: "node-x".to_string(), version: "1.0.0".to_string(),
-        license: "Apache".to_string(), source: "https://example.com/x".to_string(),
-        checksum: ChecksumData { kind: "sha256".to_string(), value: "0000".to_string() },
-        dependencies: vec![Dependency { name: "node-y".to_string(), dep_type: "runtime".to_string(), libraries: None }],
-        files: vec![], provides: Some(vec![]),         conflicts: Some(vec![]),
+        pkg_name: "node-x".to_string(),
+        version: "1.0.0".to_string(),
+        license: "Apache".to_string(),
+        source: "https://example.com/x".to_string(),
+        checksum: ChecksumData {
+            kind: "sha256".to_string(),
+            value: "0000".to_string(),
+        },
+        dependencies: vec![Dependency {
+            name: "node-y".to_string(),
+            dep_type: "runtime".to_string(),
+            libraries: None,
+        }],
+        files: vec![],
+        provides: Some(vec![]),
+        conflicts: Some(vec![]),
         architecture: "native".to_string(),
         components: Vec::new(),
         services: Vec::new(),
@@ -352,11 +459,22 @@ async fn test_cyclic_dependency_deadlock_breaking() {
     };
 
     let node_y = PackageMetadata {
-        pkg_name: "node-y".to_string(), version: "1.0.0".to_string(),
-        license: "Apache".to_string(), source: "https://example.com/y".to_string(),
-        checksum: ChecksumData { kind: "sha256".to_string(), value: "0000".to_string() },
-        dependencies: vec![Dependency { name: "node-x".to_string(), dep_type: "runtime".to_string(), libraries: None }],
-        files: vec![], provides: Some(vec![]),         conflicts: Some(vec![]),
+        pkg_name: "node-y".to_string(),
+        version: "1.0.0".to_string(),
+        license: "Apache".to_string(),
+        source: "https://example.com/y".to_string(),
+        checksum: ChecksumData {
+            kind: "sha256".to_string(),
+            value: "0000".to_string(),
+        },
+        dependencies: vec![Dependency {
+            name: "node-x".to_string(),
+            dep_type: "runtime".to_string(),
+            libraries: None,
+        }],
+        files: vec![],
+        provides: Some(vec![]),
+        conflicts: Some(vec![]),
         architecture: "native".to_string(),
         components: Vec::new(),
         services: Vec::new(),
@@ -366,15 +484,20 @@ async fn test_cyclic_dependency_deadlock_breaking() {
     };
 
     let mut tx = db.begin_transaction().expect("begin transaction");
-    tx.register_package_placement(&node_x).expect("register package placement");
-    tx.register_package_placement(&node_y).expect("register package placement");
+    tx.register_package_placement(&node_x)
+        .expect("register package placement");
+    tx.register_package_placement(&node_y)
+        .expect("register package placement");
     tx.commit().expect("commit transaction");
 
     let solver = mcx::core::solver::DependencySolver::new(Arc::new(db)).add_target("node-x");
     let resolve_result = solver.solve_with_analysis();
     assert!(resolve_result.is_ok());
     let verdict = resolve_result.expect("solver result");
-    assert!(verdict.cycles_broken > 0, "Expected cycle to be detected and broken");
+    assert!(
+        verdict.cycles_broken > 0,
+        "Expected cycle to be detected and broken"
+    );
 
     fs::remove_dir_all(&root).expect("remove temp root");
 }
@@ -385,10 +508,18 @@ async fn test_dependency_solver_topological_sorting_and_resolution() {
     let db = Database::open(&root).expect("open test database");
 
     let dep_b = PackageMetadata {
-        pkg_name: "library-b".to_string(), version: "1.0.0".to_string(),
-        license: "MIT".to_string(), source: "https://example.com/b".to_string(),
-        checksum: ChecksumData { kind: "sha256".to_string(), value: "0000".to_string() },
-        dependencies: vec![], files: vec![], provides: Some(vec![]),         conflicts: Some(vec![]),
+        pkg_name: "library-b".to_string(),
+        version: "1.0.0".to_string(),
+        license: "MIT".to_string(),
+        source: "https://example.com/b".to_string(),
+        checksum: ChecksumData {
+            kind: "sha256".to_string(),
+            value: "0000".to_string(),
+        },
+        dependencies: vec![],
+        files: vec![],
+        provides: Some(vec![]),
+        conflicts: Some(vec![]),
         architecture: "native".to_string(),
         components: Vec::new(),
         services: Vec::new(),
@@ -398,11 +529,22 @@ async fn test_dependency_solver_topological_sorting_and_resolution() {
     };
 
     let dep_a = PackageMetadata {
-        pkg_name: "library-a".to_string(), version: "1.0.0".to_string(),
-        license: "MIT".to_string(), source: "https://example.com/a".to_string(),
-        checksum: ChecksumData { kind: "sha256".to_string(), value: "0000".to_string() },
-        dependencies: vec![Dependency { name: "library-b".to_string(), dep_type: "runtime".to_string(), libraries: None }],
-        files: vec![], provides: Some(vec![]),         conflicts: Some(vec![]),
+        pkg_name: "library-a".to_string(),
+        version: "1.0.0".to_string(),
+        license: "MIT".to_string(),
+        source: "https://example.com/a".to_string(),
+        checksum: ChecksumData {
+            kind: "sha256".to_string(),
+            value: "0000".to_string(),
+        },
+        dependencies: vec![Dependency {
+            name: "library-b".to_string(),
+            dep_type: "runtime".to_string(),
+            libraries: None,
+        }],
+        files: vec![],
+        provides: Some(vec![]),
+        conflicts: Some(vec![]),
         architecture: "native".to_string(),
         components: Vec::new(),
         services: Vec::new(),
@@ -412,11 +554,22 @@ async fn test_dependency_solver_topological_sorting_and_resolution() {
     };
 
     let target_pkg = PackageMetadata {
-        pkg_name: "main-app".to_string(), version: "2.0.0".to_string(),
-        license: "GPL".to_string(), source: "https://example.com/app".to_string(),
-        checksum: ChecksumData { kind: "sha256".to_string(), value: "0000".to_string() },
-        dependencies: vec![Dependency { name: "library-a".to_string(), dep_type: "runtime".to_string(), libraries: None }],
-        files: vec![], provides: Some(vec![]),         conflicts: Some(vec![]),
+        pkg_name: "main-app".to_string(),
+        version: "2.0.0".to_string(),
+        license: "GPL".to_string(),
+        source: "https://example.com/app".to_string(),
+        checksum: ChecksumData {
+            kind: "sha256".to_string(),
+            value: "0000".to_string(),
+        },
+        dependencies: vec![Dependency {
+            name: "library-a".to_string(),
+            dep_type: "runtime".to_string(),
+            libraries: None,
+        }],
+        files: vec![],
+        provides: Some(vec![]),
+        conflicts: Some(vec![]),
         architecture: "native".to_string(),
         components: Vec::new(),
         services: Vec::new(),
@@ -426,9 +579,12 @@ async fn test_dependency_solver_topological_sorting_and_resolution() {
     };
 
     let mut tx = db.begin_transaction().expect("begin transaction");
-    tx.register_package_placement(&dep_b).expect("register package placement");
-    tx.register_package_placement(&dep_a).expect("register package placement");
-    tx.register_package_placement(&target_pkg).expect("register package placement");
+    tx.register_package_placement(&dep_b)
+        .expect("register package placement");
+    tx.register_package_placement(&dep_a)
+        .expect("register package placement");
+    tx.register_package_placement(&target_pkg)
+        .expect("register package placement");
     tx.commit().expect("commit transaction");
 
     let solver = mcx::core::solver::DependencySolver::new(Arc::new(db)).add_target("main-app");
@@ -448,11 +604,18 @@ async fn test_dependency_solver_library_provider_resolution() {
     let db = Database::open(&root).expect("open test database");
 
     let provider_pkg = PackageMetadata {
-        pkg_name: "gio-2.0".to_string(), version: "1.0.0".to_string(),
-        license: "LGPL".to_string(), source: "https://example.com/gio".to_string(),
-        checksum: ChecksumData { kind: "sha256".to_string(), value: "0000".to_string() },
-        dependencies: vec![], files: vec![PathBuf::from("usr/lib/libgio-2.0.so.0")],
-        provides: Some(vec!["libgio-2.0.so.0".to_string()]),         conflicts: Some(vec![]),
+        pkg_name: "gio-2.0".to_string(),
+        version: "1.0.0".to_string(),
+        license: "LGPL".to_string(),
+        source: "https://example.com/gio".to_string(),
+        checksum: ChecksumData {
+            kind: "sha256".to_string(),
+            value: "0000".to_string(),
+        },
+        dependencies: vec![],
+        files: vec![PathBuf::from("usr/lib/libgio-2.0.so.0")],
+        provides: Some(vec!["libgio-2.0.so.0".to_string()]),
+        conflicts: Some(vec![]),
         architecture: "native".to_string(),
         components: Vec::new(),
         services: Vec::new(),
@@ -462,10 +625,18 @@ async fn test_dependency_solver_library_provider_resolution() {
     };
 
     let build_dep_pkg = PackageMetadata {
-        pkg_name: "glib-2.0".to_string(), version: "2.0.0".to_string(),
-        license: "LGPL".to_string(), source: "https://example.com/glib".to_string(),
-        checksum: ChecksumData { kind: "sha256".to_string(), value: "1111".to_string() },
-        dependencies: vec![], files: vec![], provides: Some(vec![]),         conflicts: Some(vec![]),
+        pkg_name: "glib-2.0".to_string(),
+        version: "2.0.0".to_string(),
+        license: "LGPL".to_string(),
+        source: "https://example.com/glib".to_string(),
+        checksum: ChecksumData {
+            kind: "sha256".to_string(),
+            value: "1111".to_string(),
+        },
+        dependencies: vec![],
+        files: vec![],
+        provides: Some(vec![]),
+        conflicts: Some(vec![]),
         architecture: "native".to_string(),
         components: Vec::new(),
         services: Vec::new(),
@@ -475,14 +646,29 @@ async fn test_dependency_solver_library_provider_resolution() {
     };
 
     let json_glib_pkg = PackageMetadata {
-        pkg_name: "json-glib".to_string(), version: "1.8.0".to_string(),
-        license: "MPL".to_string(), source: "https://example.com/json-glib".to_string(),
-        checksum: ChecksumData { kind: "sha256".to_string(), value: "2222".to_string() },
+        pkg_name: "json-glib".to_string(),
+        version: "1.8.0".to_string(),
+        license: "MPL".to_string(),
+        source: "https://example.com/json-glib".to_string(),
+        checksum: ChecksumData {
+            kind: "sha256".to_string(),
+            value: "2222".to_string(),
+        },
         dependencies: vec![
-            Dependency { name: "glib-2.0".to_string(), dep_type: "Build".to_string(), libraries: None },
-            Dependency { name: "libgio-2.0.so.0".to_string(), dep_type: "Library".to_string(), libraries: None },
+            Dependency {
+                name: "glib-2.0".to_string(),
+                dep_type: "Build".to_string(),
+                libraries: None,
+            },
+            Dependency {
+                name: "libgio-2.0.so.0".to_string(),
+                dep_type: "Library".to_string(),
+                libraries: None,
+            },
         ],
-        files: vec![], provides: Some(vec![]),         conflicts: Some(vec![]),
+        files: vec![],
+        provides: Some(vec![]),
+        conflicts: Some(vec![]),
         architecture: "native".to_string(),
         components: Vec::new(),
         services: Vec::new(),
@@ -492,9 +678,12 @@ async fn test_dependency_solver_library_provider_resolution() {
     };
 
     let mut tx = db.begin_transaction().expect("begin transaction");
-    tx.register_package_placement(&provider_pkg).expect("register package placement");
-    tx.register_package_placement(&build_dep_pkg).expect("register package placement");
-    tx.register_package_placement(&json_glib_pkg).expect("register package placement");
+    tx.register_package_placement(&provider_pkg)
+        .expect("register package placement");
+    tx.register_package_placement(&build_dep_pkg)
+        .expect("register package placement");
+    tx.register_package_placement(&json_glib_pkg)
+        .expect("register package placement");
     tx.commit().expect("commit transaction");
 
     let solver = mcx::core::solver::DependencySolver::new(Arc::new(db)).add_target("json-glib");
@@ -520,7 +709,11 @@ async fn test_corrupted_archive_hash_verification_failure() {
     fs::write(&archive_file, b"corrupted payload data").expect("write temp file");
 
     let expected_valid_hash = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
-    let verification_result = mcx::archive::hash::HashVerifier::verify_integrity(&archive_file, "sha256", expected_valid_hash);
+    let verification_result = mcx::archive::hash::HashVerifier::verify_integrity(
+        &archive_file,
+        "sha256",
+        expected_valid_hash,
+    );
     assert!(verification_result.is_err());
 
     fs::remove_dir_all(&root).expect("remove temp root");
@@ -537,14 +730,23 @@ async fn test_temporal_history_ledger_rollback() {
     let history_engine = mcx::core::history::HistoryEngine::new(&root, Arc::clone(&db_arc));
 
     let state_file = root.join("var/lib/mcx/history.json");
-    fs::create_dir_all(state_file.parent().expect("state file has parent")).expect("create state dir");
+    fs::create_dir_all(state_file.parent().expect("state file has parent"))
+        .expect("create state dir");
     fs::write(&state_file, b"[]").expect("write state file");
 
     let mutated_pkg = PackageMetadata {
-        pkg_name: "ephemeral-module".to_string(), version: "1.0.0".to_string(),
-        license: "MIT".to_string(), source: "https://example.com/eph".to_string(),
-        checksum: ChecksumData { kind: "sha256".to_string(), value: "0000".to_string() },
-        dependencies: vec![], files: vec![], provides: Some(vec![]),         conflicts: Some(vec![]),
+        pkg_name: "ephemeral-module".to_string(),
+        version: "1.0.0".to_string(),
+        license: "MIT".to_string(),
+        source: "https://example.com/eph".to_string(),
+        checksum: ChecksumData {
+            kind: "sha256".to_string(),
+            value: "0000".to_string(),
+        },
+        dependencies: vec![],
+        files: vec![],
+        provides: Some(vec![]),
+        conflicts: Some(vec![]),
         architecture: "native".to_string(),
         components: Vec::new(),
         services: Vec::new(),
@@ -554,15 +756,26 @@ async fn test_temporal_history_ledger_rollback() {
     };
 
     let mut tx = db_arc.begin_transaction().expect("begin transaction");
-    tx.register_package_placement(&mutated_pkg).expect("register package placement");
+    tx.register_package_placement(&mutated_pkg)
+        .expect("register package placement");
     tx.commit().expect("commit transaction");
-    assert!(db_arc.is_package_installed("ephemeral-module").expect("ephemeral-module installed"));
+    assert!(
+        db_arc
+            .is_package_installed("ephemeral-module")
+            .expect("ephemeral-module installed")
+    );
 
     fs::write(&state_file, b"[]").expect("write state file");
     let mut tx_rollback = db_arc.begin_transaction().expect("begin transaction");
-    tx_rollback.stage_package_removal("ephemeral-module").expect("stage package removal");
+    tx_rollback
+        .stage_package_removal("ephemeral-module")
+        .expect("stage package removal");
     tx_rollback.commit().expect("commit transaction");
-    assert!(!db_arc.is_package_installed("ephemeral-module").expect("ephemeral-module removed"));
+    assert!(
+        !db_arc
+            .is_package_installed("ephemeral-module")
+            .expect("ephemeral-module removed")
+    );
     let _ = history_engine;
 
     fs::remove_dir_all(&root).expect("remove temp root");
@@ -627,7 +840,8 @@ fn test_profile_validator_load_and_diff() {
     let root = create_temporary_root("profile_validator");
     let profile_path = root.join("profile.ini");
 
-    let profile_content = "[profile]\nversion = 1.0.0\narchitecture = x86_64\npackages = nginx, openssl, curl\n";
+    let profile_content =
+        "[profile]\nversion = 1.0.0\narchitecture = x86_64\npackages = nginx, openssl, curl\n";
     fs::write(&profile_path, profile_content).expect("write profile file");
 
     let profile = ProfileValidator::load_profile(&profile_path).expect("load profile");
@@ -635,7 +849,8 @@ fn test_profile_validator_load_and_diff() {
     assert_eq!(profile.packages.len(), 3);
 
     let current = vec!["nginx".to_string(), "curl".to_string()];
-    let (to_install, to_remove) = ProfileValidator::compile_profile_diff(&current, &profile.packages);
+    let (to_install, to_remove) =
+        ProfileValidator::compile_profile_diff(&current, &profile.packages);
     assert_eq!(to_install, vec!["openssl"]);
     assert!(to_remove.is_empty());
 
@@ -677,7 +892,9 @@ fn test_cas_store_deduplication() {
     fs::write(lib_dir.join("libbar.so.1"), b"different content").expect("write temp file");
 
     let cas = CasStore::new(&root);
-    let stats = cas.deduplicate_libraries(&root).expect("deduplicate libraries");
+    let stats = cas
+        .deduplicate_libraries(&root)
+        .expect("deduplicate libraries");
 
     assert_eq!(stats.unique_files, 2);
     assert_eq!(stats.total_files, 3);
@@ -697,7 +914,10 @@ async fn test_configuration_text_editor_spawning_and_mutation() {
     fs::write(&config_file, b"initial_key = initial_value\n").expect("write config file");
 
     let root_str = root.to_string_lossy();
-    let _editor_command = mcx::commands::configuration::ConfigEditorCommand::new(&root_str, ConfigTarget::EngineConfig);
+    let _editor_command = mcx::commands::configuration::ConfigEditorCommand::new(
+        &root_str,
+        ConfigTarget::EngineConfig,
+    );
 
     let result = fs::write(&config_file, b"initial_key = mutated_value\n");
     assert!(result.is_ok());
@@ -777,7 +997,10 @@ fn test_lifecycle_engine_state_machine_full_walk() {
     assert_eq!(eng.installed_count(), 2);
 
     // mark core-lib for removal and remove
-    assert!(eng.transition("core-lib", PackageState::MarkedForRemoval).is_ok());
+    assert!(
+        eng.transition("core-lib", PackageState::MarkedForRemoval)
+            .is_ok()
+    );
     assert_eq!(eng.state("core-lib"), Some(PackageState::MarkedForRemoval));
     assert!(eng.transition("core-lib", PackageState::Removed).is_ok());
     assert_eq!(eng.state("core-lib"), Some(PackageState::Removed));
@@ -792,7 +1015,9 @@ fn test_lifecycle_engine_state_machine_full_walk() {
     assert!(eng.transition("app", PackageState::Resolved).is_err());
 
     // transition to same state succeeds without error (returns id 0)
-    let noop = eng.transition("app", PackageState::Installed).expect("noop transition");
+    let noop = eng
+        .transition("app", PackageState::Installed)
+        .expect("noop transition");
     assert_eq!(noop, 0);
 
     // unregistered package
@@ -841,7 +1066,8 @@ fn test_lifecycle_engine_pre_and_post_hooks_fire() {
     assert!(!*pre_fired.lock().expect("pre fired lock"));
     assert!(!*post_fired.lock().expect("post fired lock"));
 
-    eng.transition("test-pkg", PackageState::Resolved).expect("resolve transition");
+    eng.transition("test-pkg", PackageState::Resolved)
+        .expect("resolve transition");
 
     assert!(*pre_fired.lock().expect("pre fired lock"));
     assert!(*post_fired.lock().expect("post fired lock"));
@@ -852,9 +1078,7 @@ fn test_lifecycle_engine_hook_rejection_aborts_transition() {
     let mut eng = LifecycleEngine::new();
     eng.register_package("blocked-pkg", "1.0.0");
 
-    eng.add_pre_hook(|_, _, _| {
-        Err(anyhow::anyhow!("hook blocked transition"))
-    });
+    eng.add_pre_hook(|_, _, _| Err(anyhow::anyhow!("hook blocked transition")));
 
     let result = eng.transition("blocked-pkg", PackageState::Resolved);
     assert!(result.is_err());
@@ -907,7 +1131,14 @@ fn test_dependency_graph_reachability_and_orphans() {
     assert!(reachable.contains(&"lib-b".to_string()));
     assert!(reachable.contains(&"lib-c".to_string()));
 
-    let OrphanSet { packages: orphans, reachable: reach, purged } = dg.orphans(roots, &all.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+    let OrphanSet {
+        packages: orphans,
+        reachable: reach,
+        purged,
+    } = dg.orphans(
+        roots,
+        &all.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+    );
 
     assert!(orphans.contains(&"unused-dep".to_string()));
     assert!(orphans.contains(&"abandoned".to_string()));
@@ -939,12 +1170,18 @@ async fn test_integrity_scanner_detects_missing_files() {
 
     let db = Database::open(&root).expect("open test database");
     let pkg = PackageMetadata {
-        pkg_name: "test-pkg".into(), version: "1.0".into(),
-        license: "MIT".into(), source: "https://example.com".into(),
-        checksum: ChecksumData { kind: "sha256".into(), value: "0000".into() },
+        pkg_name: "test-pkg".into(),
+        version: "1.0".into(),
+        license: "MIT".into(),
+        source: "https://example.com".into(),
+        checksum: ChecksumData {
+            kind: "sha256".into(),
+            value: "0000".into(),
+        },
         dependencies: vec![],
         files: vec![PathBuf::from("usr/bin/test-bin")],
-        provides: Some(vec![]),         conflicts: Some(vec![]),
+        provides: Some(vec![]),
+        conflicts: Some(vec![]),
         architecture: "native".to_string(),
         components: Vec::new(),
         services: Vec::new(),
@@ -953,7 +1190,8 @@ async fn test_integrity_scanner_detects_missing_files() {
         provenance: None,
     };
     let mut tx = db.begin_transaction().expect("begin transaction");
-    tx.register_package_placement(&pkg).expect("register package placement");
+    tx.register_package_placement(&pkg)
+        .expect("register package placement");
     tx.commit().expect("commit transaction");
 
     let scanner = mcx::core::integrity::IntegrityScanner::new(&root, Arc::new(db));
@@ -1006,7 +1244,9 @@ async fn test_plugin_manager_run_plugin_once() {
         root: root.to_string_lossy().into_owned(),
         timestamp: "now".into(),
     };
-    let result = mgr.run_plugin_once("greeter", &event).expect("run plugin once");
+    let result = mgr
+        .run_plugin_once("greeter", &event)
+        .expect("run plugin once");
     assert!(result.success);
     assert!(result.message.unwrap_or_default().contains("hello"));
 
@@ -1031,7 +1271,9 @@ async fn test_plugin_run_any_code() {
         root: root.to_string_lossy().into_owned(),
         timestamp: "now".into(),
     };
-    let result = mgr.run_plugin_once("arbitrary", &event).expect("run plugin once");
+    let result = mgr
+        .run_plugin_once("arbitrary", &event)
+        .expect("run plugin once");
     assert!(result.success);
 
     fs::remove_dir_all(&root).expect("remove temp root");
@@ -1047,24 +1289,39 @@ async fn test_changelog_two_phase_roundtrip_and_malformed_tolerance() {
     // Commit through the ordered transaction protocol: an intent is written
     // at prepare time and a completion marker at finalize time.
     let pkg = PackageMetadata {
-        pkg_name: "journal-pkg".into(), version: "1.0".into(),
-        license: "MIT".into(), source: "https://example.com".into(),
-        checksum: ChecksumData { kind: "sha256".into(), value: "00".into() },
-        dependencies: vec![], files: vec![], provides: Some(vec![]), conflicts: Some(vec![]),
-        architecture: "native".to_string(), components: Vec::new(),
-        services: Vec::new(), binaries: Vec::new(),
+        pkg_name: "journal-pkg".into(),
+        version: "1.0".into(),
+        license: "MIT".into(),
+        source: "https://example.com".into(),
+        checksum: ChecksumData {
+            kind: "sha256".into(),
+            value: "00".into(),
+        },
+        dependencies: vec![],
+        files: vec![],
+        provides: Some(vec![]),
+        conflicts: Some(vec![]),
+        architecture: "native".to_string(),
+        components: Vec::new(),
+        services: Vec::new(),
+        binaries: Vec::new(),
         file_hashes: std::collections::HashMap::new(),
         provenance: None,
     };
     let mut tx = db.begin_transaction().expect("begin transaction");
-    tx.register_package_placement(&pkg).expect("register placement");
+    tx.register_package_placement(&pkg)
+        .expect("register placement");
     tx.commit().expect("commit");
 
     let changelog = mcx::core::changelog::ChangelogManager::new(&root);
     let records = changelog.get_history().expect("read history");
-    let recorded = records.iter()
+    let recorded = records
+        .iter()
         .find(|r| r.targets.iter().any(|t| t == "journal-pkg"));
-    assert!(recorded.is_some(), "completed transaction must appear in history");
+    assert!(
+        recorded.is_some(),
+        "completed transaction must appear in history"
+    );
     let tx_id = recorded.unwrap().transaction_id;
 
     // A journal containing garbage lines must not break reads.
@@ -1074,8 +1331,10 @@ async fn test_changelog_two_phase_roundtrip_and_malformed_tolerance() {
         content.insert_str(0, "\x00{{{definitely not json\n");
         fs::write(&journal, content).unwrap();
         let records = changelog.get_history().expect("tolerates malformed lines");
-        assert!(records.iter().any(|r| r.transaction_id == tx_id),
-            "completed records survive malformed-line skipping");
+        assert!(
+            records.iter().any(|r| r.transaction_id == tx_id),
+            "completed records survive malformed-line skipping"
+        );
     }
 
     fs::remove_dir_all(&root).expect("remove temp root");
@@ -1089,15 +1348,15 @@ async fn test_solver_reports_failing_target_by_name() {
     let db = Arc::new(Database::open(&root).expect("open test database"));
     let solver = mcx::core::solver::DependencySolver::new(Arc::clone(&db));
 
-    let result = solver
-        .add_target("definitely-not-a-package-xyz")
-        .solve();
+    let result = solver.add_target("definitely-not-a-package-xyz").solve();
     match result {
         Ok(_) => panic!("resolution of unknown package must fail"),
         Err(e) => {
             let msg = format!("{}", e);
-            assert!(msg.contains("definitely-not-a-package-xyz"),
-                "error must name the failing target, got: {msg}");
+            assert!(
+                msg.contains("definitely-not-a-package-xyz"),
+                "error must name the failing target, got: {msg}"
+            );
         }
     }
 
@@ -1110,8 +1369,11 @@ async fn test_solver_reports_failing_target_by_name() {
 async fn test_service_ini_rejects_path_traversal_names() {
     for evil in ["../escape", "svc/../../evil", "..", "a b"] {
         let ini = format!("[Service]\nName = {}\nExec = /bin/true\n", evil);
-        assert!(mcx::core::service::CesarService::from_ini(&ini).is_err(),
-            "service name {:?} must be rejected", evil);
+        assert!(
+            mcx::core::service::CesarService::from_ini(&ini).is_err(),
+            "service name {:?} must be rejected",
+            evil
+        );
     }
     let ok = "[Service]\nName = my-svc_1.0\nExec = /bin/true\n";
     assert!(mcx::core::service::CesarService::from_ini(ok).is_ok());
@@ -1130,7 +1392,11 @@ async fn test_repo_add_rejects_traversal_and_empty_names() {
             checksum: None,
             enabled: true,
         };
-        assert!(mgr.add_repository(repo).is_err(), "repository name {:?} must be rejected", evil);
+        assert!(
+            mgr.add_repository(repo).is_err(),
+            "repository name {:?} must be rejected",
+            evil
+        );
     }
 
     let good = mcx::core::database::RepositoryInfo {
@@ -1152,7 +1418,12 @@ fn run_git_silent(dir: &PathBuf, args: &[&str]) {
         .current_dir(dir)
         .output()
         .expect("run git");
-    assert!(out.status.success(), "git {:?} failed: {}", args, String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "git {:?} failed: {}",
+        args,
+        String::from_utf8_lossy(&out.stderr)
+    );
 }
 
 /// Write a `.xcs` archive (zstd-compressed tar) from a flat payload list.
@@ -1168,7 +1439,9 @@ fn write_xcs(path: &PathBuf, files: &[(&str, &str)]) {
             header.set_mode(0o644);
             header.set_entry_type(tar::EntryType::Regular);
             header.set_path(rel).expect("set tar path");
-            builder.append_data(&mut header, rel, content.as_bytes()).expect("append tar entry");
+            builder
+                .append_data(&mut header, rel, content.as_bytes())
+                .expect("append tar entry");
         }
         builder.finish().expect("finish tar");
     }
@@ -1192,15 +1465,30 @@ fn write_payload(dir: &Path, files: &[(&str, &str)]) {
     }
 }
 
-fn package_meta(name: &str, version: &str, source: &str, checksum: &str, files: &[&str]) -> PackageMetadata {
+fn package_meta(
+    name: &str,
+    version: &str,
+    source: &str,
+    checksum: &str,
+    files: &[&str],
+) -> PackageMetadata {
     PackageMetadata {
-        pkg_name: name.to_string(), version: version.to_string(),
-        license: "MIT".to_string(), source: source.to_string(),
-        checksum: ChecksumData { kind: "sha256".to_string(), value: checksum.to_string() },
-        dependencies: vec![], files: files.iter().map(PathBuf::from).collect(),
-        provides: Some(vec![]), conflicts: Some(vec![]),
+        pkg_name: name.to_string(),
+        version: version.to_string(),
+        license: "MIT".to_string(),
+        source: source.to_string(),
+        checksum: ChecksumData {
+            kind: "sha256".to_string(),
+            value: checksum.to_string(),
+        },
+        dependencies: vec![],
+        files: files.iter().map(PathBuf::from).collect(),
+        provides: Some(vec![]),
+        conflicts: Some(vec![]),
         architecture: "native".to_string(),
-        components: Vec::new(), services: Vec::new(), binaries: Vec::new(),
+        components: Vec::new(),
+        services: Vec::new(),
+        binaries: Vec::new(),
         file_hashes: std::collections::HashMap::new(),
         provenance: None,
     }
@@ -1216,23 +1504,40 @@ fn setup_git_backed_package(identifier: &str) -> (PathBuf, Arc<Database>, PathBu
     // v1 archive placed straight into the cache so the first install never
     // hits the network.
     let archive_path = root.join("var/cache/mcx/git-hello-1.0.0.xcs");
-    write_xcs(&archive_path, &[
-        ("usr/bin/hello", "hello v1\n"),
-        ("usr/share/doc/hello/readme.txt", "readme v1\n"),
-    ]);
-    let archive_hash = mcx::archive::hash::HashVerifier::calculate(&archive_path, "sha256").expect("hash archive");
+    write_xcs(
+        &archive_path,
+        &[
+            ("usr/bin/hello", "hello v1\n"),
+            ("usr/share/doc/hello/readme.txt", "readme v1\n"),
+        ],
+    );
+    let archive_hash =
+        mcx::archive::hash::HashVerifier::calculate(&archive_path, "sha256").expect("hash archive");
 
     // The package's own git repository, tagged per released version.
     fs::create_dir_all(&remote).expect("create repo dir");
-    write_payload(&remote, &[
-        ("usr/bin/hello", "hello v1\n"),
-        ("usr/share/doc/hello/readme.txt", "readme v1\n"),
-    ]);
+    write_payload(
+        &remote,
+        &[
+            ("usr/bin/hello", "hello v1\n"),
+            ("usr/share/doc/hello/readme.txt", "readme v1\n"),
+        ],
+    );
     run_git_silent(&remote, &["init", "-b", "main"]);
     run_git_silent(&remote, &["symbolic-ref", "HEAD", "refs/heads/main"]);
     run_git_silent(&remote, &["add", "."]);
-    run_git_silent(&remote, &["-c", "user.name=Test", "-c", "user.email=test@example.com",
-        "commit", "-m", "v1.0.0"]);
+    run_git_silent(
+        &remote,
+        &[
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "-m",
+            "v1.0.0",
+        ],
+    );
     run_git_silent(&remote, &["tag", "v1.0.0"]);
 
     // Git registry sidecar: package -> its git repository.
@@ -1243,8 +1548,10 @@ fn setup_git_backed_package(identifier: &str) -> (PathBuf, Arc<Database>, PathBu
         serde_json::to_string_pretty(&std::collections::HashMap::from([(
             "git-hello".to_string(),
             format!("file://{}", remote.display()),
-        )])).expect("serialize registry"),
-    ).expect("write registry");
+        )]))
+        .expect("serialize registry"),
+    )
+    .expect("write registry");
 
     // Available index with v1 only.
     let db = Arc::new(Database::open(&root).expect("open test database"));
@@ -1252,15 +1559,21 @@ fn setup_git_backed_package(identifier: &str) -> (PathBuf, Arc<Database>, PathBu
     fs::create_dir_all(&index_dir).expect("create sync dir");
     let index = index_dir.join("test.json");
     let v1 = package_meta(
-        "git-hello", "1.0.0",
+        "git-hello",
+        "1.0.0",
         &format!("file://{}", archive_path.display()),
         &archive_hash,
         &["usr/bin/hello", "usr/share/doc/hello/readme.txt"],
     );
-    fs::write(&index, serde_json::to_string_pretty(&vec![&v1]).expect("serialize index")).expect("write index");
+    fs::write(
+        &index,
+        serde_json::to_string_pretty(&vec![&v1]).expect("serialize index"),
+    )
+    .expect("write index");
     {
         let mut tx = db.begin_transaction().expect("begin transaction");
-        tx.update_repository_index("test", index.to_str().expect("utf8 index path")).expect("load v1 index");
+        tx.update_repository_index("test", index.to_str().expect("utf8 index path"))
+            .expect("load v1 index");
         tx.commit().expect("commit transaction");
     }
 
@@ -1276,75 +1589,126 @@ async fn test_archive_diff_update_touches_only_changed_files() {
 
     // v1 archive + available index; install happens entirely from the archive.
     let v1_archive = root.join("var/cache/mcx/plain-pkg-1.0.0.xcs");
-    write_xcs(&v1_archive, &[
-        ("usr/bin/tool", "tool v1\n"),
-        ("etc/plain-pkg.conf", "conf v1\n"),
-        ("usr/share/doc/plain-pkg/readme.txt", "readme v1\n"),
-    ]);
-    let v1_hash = mcx::archive::hash::HashVerifier::calculate(&v1_archive, "sha256").expect("hash v1");
+    write_xcs(
+        &v1_archive,
+        &[
+            ("usr/bin/tool", "tool v1\n"),
+            ("etc/plain-pkg.conf", "conf v1\n"),
+            ("usr/share/doc/plain-pkg/readme.txt", "readme v1\n"),
+        ],
+    );
+    let v1_hash =
+        mcx::archive::hash::HashVerifier::calculate(&v1_archive, "sha256").expect("hash v1");
     let v1 = package_meta(
-        "plain-pkg", "1.0.0",
+        "plain-pkg",
+        "1.0.0",
         &format!("file://{}", v1_archive.display()),
         &v1_hash,
-        &["usr/bin/tool", "etc/plain-pkg.conf", "usr/share/doc/plain-pkg/readme.txt"],
+        &[
+            "usr/bin/tool",
+            "etc/plain-pkg.conf",
+            "usr/share/doc/plain-pkg/readme.txt",
+        ],
     );
     let index = index_dir.join("test.json");
-    fs::write(&index, serde_json::to_string_pretty(&vec![&v1]).expect("serialize v1")).expect("write index");
+    fs::write(
+        &index,
+        serde_json::to_string_pretty(&vec![&v1]).expect("serialize v1"),
+    )
+    .expect("write index");
     {
         let mut tx = db.begin_transaction().expect("begin transaction");
-        tx.update_repository_index("test", index.to_str().expect("utf8")).expect("load v1");
+        tx.update_repository_index("test", index.to_str().expect("utf8"))
+            .expect("load v1");
         tx.commit().expect("commit");
     }
 
     let cmd = InstallCommand::new(root.to_string_lossy().into_owned(), Arc::clone(&db));
-    cmd.execute(&["plain-pkg".to_string()]).await.expect("v1 install");
-    assert_eq!(fs::read_to_string(root.join("usr/bin/tool")).unwrap(), "tool v1\n");
+    cmd.execute(&["plain-pkg".to_string()])
+        .await
+        .expect("v1 install");
+    assert_eq!(
+        fs::read_to_string(root.join("usr/bin/tool")).unwrap(),
+        "tool v1\n"
+    );
 
     // v2: tool changed, tool-extra added, readme removed, conf payload-identical.
     tokio::time::sleep(std::time::Duration::from_millis(30)).await;
-    let before_conf = fs::metadata(root.join("etc/plain-pkg.conf")).expect("conf metadata")
-        .modified().expect("conf mtime");
-    let before_tool = fs::metadata(root.join("usr/bin/tool")).expect("tool metadata")
-        .modified().expect("tool mtime");
+    let before_conf = fs::metadata(root.join("etc/plain-pkg.conf"))
+        .expect("conf metadata")
+        .modified()
+        .expect("conf mtime");
+    let before_tool = fs::metadata(root.join("usr/bin/tool"))
+        .expect("tool metadata")
+        .modified()
+        .expect("tool mtime");
 
     let v2_archive = root.join("var/cache/mcx/plain-pkg-2.0.0.xcs");
-    write_xcs(&v2_archive, &[
-        ("usr/bin/tool", "tool v2\n"),
-        ("usr/bin/tool-extra", "tool-extra v2\n"),
-        ("etc/plain-pkg.conf", "conf v1\n"),
-    ]);
-    let v2_hash = mcx::archive::hash::HashVerifier::calculate(&v2_archive, "sha256").expect("hash v2");
+    write_xcs(
+        &v2_archive,
+        &[
+            ("usr/bin/tool", "tool v2\n"),
+            ("usr/bin/tool-extra", "tool-extra v2\n"),
+            ("etc/plain-pkg.conf", "conf v1\n"),
+        ],
+    );
+    let v2_hash =
+        mcx::archive::hash::HashVerifier::calculate(&v2_archive, "sha256").expect("hash v2");
     let v2 = package_meta(
-        "plain-pkg", "2.0.0",
+        "plain-pkg",
+        "2.0.0",
         &format!("file://{}", v2_archive.display()),
         &v2_hash,
         &["usr/bin/tool", "usr/bin/tool-extra", "etc/plain-pkg.conf"],
     );
-    fs::write(&index, serde_json::to_string_pretty(&vec![&v2]).expect("serialize v2")).expect("write index 2");
+    fs::write(
+        &index,
+        serde_json::to_string_pretty(&vec![&v2]).expect("serialize v2"),
+    )
+    .expect("write index 2");
     {
         let mut tx = db.begin_transaction().expect("begin transaction");
-        tx.update_repository_index("test", index.to_str().expect("utf8")).expect("load v2");
+        tx.update_repository_index("test", index.to_str().expect("utf8"))
+            .expect("load v2");
         tx.commit().expect("commit");
     }
 
     // No git registry entry => the diff is computed against the new archive.
     let cmd2 = InstallCommand::new(root.to_string_lossy().into_owned(), Arc::clone(&db));
-    cmd2.execute(&["plain-pkg".to_string()]).await.expect("v2 archive-diff update");
+    cmd2.execute(&["plain-pkg".to_string()])
+        .await
+        .expect("v2 archive-diff update");
 
     // Changed + added placed, removed gone.
-    assert_eq!(fs::read_to_string(root.join("usr/bin/tool")).unwrap(), "tool v2\n");
-    assert_eq!(fs::read_to_string(root.join("usr/bin/tool-extra")).unwrap(), "tool-extra v2\n");
-    assert!(!root.join("usr/share/doc/plain-pkg/readme.txt").exists(), "removed file deleted");
+    assert_eq!(
+        fs::read_to_string(root.join("usr/bin/tool")).unwrap(),
+        "tool v2\n"
+    );
+    assert_eq!(
+        fs::read_to_string(root.join("usr/bin/tool-extra")).unwrap(),
+        "tool-extra v2\n"
+    );
+    assert!(
+        !root.join("usr/share/doc/plain-pkg/readme.txt").exists(),
+        "removed file deleted"
+    );
 
     // Payload-identical file keeps original mtime: only the diff was applied.
-    let after_conf = fs::metadata(root.join("etc/plain-pkg.conf")).expect("conf metadata")
-        .modified().expect("conf mtime");
+    let after_conf = fs::metadata(root.join("etc/plain-pkg.conf"))
+        .expect("conf metadata")
+        .modified()
+        .expect("conf mtime");
     assert_eq!(after_conf, before_conf, "unchanged file not rewritten");
-    assert_eq!(fs::read_to_string(root.join("etc/plain-pkg.conf")).unwrap(), "conf v1\n");
+    assert_eq!(
+        fs::read_to_string(root.join("etc/plain-pkg.conf")).unwrap(),
+        "conf v1\n"
+    );
 
     // Rewritten file got a fresh timestamp.
-    let after_tool = fs::metadata(root.join("usr/bin/tool")).expect("tool metadata")
-        .modified().expect("tool mtime");
+    let after_tool = fs::metadata(root.join("usr/bin/tool"))
+        .expect("tool metadata")
+        .modified()
+        .expect("tool mtime");
     assert_ne!(after_tool, before_tool, "changed file rewritten");
 
     // Installed state + active mirror reflect v2.
@@ -1355,8 +1719,12 @@ async fn test_archive_diff_update_touches_only_changed_files() {
         "tool-extra v2\n",
         "active mirror updated with added file"
     );
-    assert!(!root.join("var/lib/mcx/active/plain-pkg/usr/share/doc/plain-pkg/readme.txt").exists(),
-        "active mirror drops removed file");
+    assert!(
+        !root
+            .join("var/lib/mcx/active/plain-pkg/usr/share/doc/plain-pkg/readme.txt")
+            .exists(),
+        "active mirror drops removed file"
+    );
 
     fs::remove_dir_all(&root).expect("remove temp root");
 }
@@ -1367,10 +1735,21 @@ async fn test_git_tracked_package_still_updates_from_archive() {
 
     // Fresh install comes from the `.xcs` archive, not from git.
     let cmd = InstallCommand::new(root.to_string_lossy().into_owned(), Arc::clone(&db));
-    cmd.execute(&["git-hello".to_string()]).await.expect("archive install");
-    assert_eq!(fs::read_to_string(root.join("usr/bin/hello")).unwrap(), "hello v1\n");
-    assert_eq!(fs::read_to_string(root.join("usr/share/doc/hello/readme.txt")).unwrap(), "readme v1\n");
-    assert!(!root.join("var/lib/mcx/gits/git-hello").exists(), "no git clone on install");
+    cmd.execute(&["git-hello".to_string()])
+        .await
+        .expect("archive install");
+    assert_eq!(
+        fs::read_to_string(root.join("usr/bin/hello")).unwrap(),
+        "hello v1\n"
+    );
+    assert_eq!(
+        fs::read_to_string(root.join("usr/share/doc/hello/readme.txt")).unwrap(),
+        "readme v1\n"
+    );
+    assert!(
+        !root.join("var/lib/mcx/gits/git-hello").exists(),
+        "no git clone on install"
+    );
 
     // Maintainer bumps the package's git remote to v2 and tags it — install
     // does not care: the update reads the new `.xcs` archive from source.
@@ -1378,44 +1757,87 @@ async fn test_git_tracked_package_still_updates_from_archive() {
     fs::write(remote.join("usr/bin/hello"), "hello v2\n").expect("modify hello");
     fs::write(remote.join("usr/bin/hello2"), "hello2 v2\n").expect("add hello2");
     run_git_silent(&remote, &["add", "-A"]);
-    run_git_silent(&remote, &["-c", "user.name=Test", "-c", "user.email=test@example.com",
-        "commit", "-m", "v2.0.0"]);
+    run_git_silent(
+        &remote,
+        &[
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "-m",
+            "v2.0.0",
+        ],
+    );
     run_git_silent(&remote, &["tag", "v2.0.0"]);
 
     // Publish a real v2 archive (read from source this time) and advertise it
     // in the available index with its real checksum.
     let v2_archive = root.join("var/cache/mcx/git-hello-2.0.0.xcs");
-    write_xcs(&v2_archive, &[
-        ("usr/bin/hello", "hello v2\n"),
-        ("usr/bin/hello2", "hello2 v2\n"),
-    ]);
-    let v2_hash = mcx::archive::hash::HashVerifier::calculate(&v2_archive, "sha256").expect("hash v2");
-    let v2 = package_meta("git-hello", "2.0.0",
+    write_xcs(
+        &v2_archive,
+        &[
+            ("usr/bin/hello", "hello v2\n"),
+            ("usr/bin/hello2", "hello2 v2\n"),
+        ],
+    );
+    let v2_hash =
+        mcx::archive::hash::HashVerifier::calculate(&v2_archive, "sha256").expect("hash v2");
+    let v2 = package_meta(
+        "git-hello",
+        "2.0.0",
         &format!("file://{}", v2_archive.display()),
         &v2_hash,
         &["usr/bin/hello", "usr/bin/hello2"],
     );
     {
         let index = root.join("var/lib/mcx/sync/test.json");
-        fs::write(&index, serde_json::to_string_pretty(&vec![&v2]).expect("serialize v2 index")).expect("write v2 index");
+        fs::write(
+            &index,
+            serde_json::to_string_pretty(&vec![&v2]).expect("serialize v2 index"),
+        )
+        .expect("write v2 index");
         let mut tx = db.begin_transaction().expect("begin transaction");
-        tx.update_repository_index("test", index.to_str().expect("utf8")).expect("load v2 index");
+        tx.update_repository_index("test", index.to_str().expect("utf8"))
+            .expect("load v2 index");
         tx.commit().expect("commit transaction");
     }
 
     // The update reads the archive from source and applies only the diff.
     let cmd2 = InstallCommand::new(root.to_string_lossy().into_owned(), Arc::clone(&db));
-    cmd2.execute(&["git-hello".to_string()]).await.expect("archive diff update");
+    cmd2.execute(&["git-hello".to_string()])
+        .await
+        .expect("archive diff update");
 
-    assert_eq!(fs::read_to_string(root.join("usr/bin/hello")).unwrap(), "hello v2\n", "changed file updated");
-    assert_eq!(fs::read_to_string(root.join("usr/bin/hello2")).unwrap(), "hello2 v2\n", "added file placed");
-    assert!(!root.join("usr/share/doc/hello/readme.txt").exists(), "removed file deleted");
+    assert_eq!(
+        fs::read_to_string(root.join("usr/bin/hello")).unwrap(),
+        "hello v2\n",
+        "changed file updated"
+    );
+    assert_eq!(
+        fs::read_to_string(root.join("usr/bin/hello2")).unwrap(),
+        "hello2 v2\n",
+        "added file placed"
+    );
+    assert!(
+        !root.join("usr/share/doc/hello/readme.txt").exists(),
+        "removed file deleted"
+    );
 
     // The git machinery is not consulted: no checkout, no worktree, no state.
-    assert!(!root.join("var/lib/mcx/gits/git-hello").exists(), "no git clone on update");
-    assert!(!root.join("var/lib/mcx/gits/git-hello.wt").exists(), "no worktree created");
+    assert!(
+        !root.join("var/lib/mcx/gits/git-hello").exists(),
+        "no git clone on update"
+    );
+    assert!(
+        !root.join("var/lib/mcx/gits/git-hello.wt").exists(),
+        "no worktree created"
+    );
     let git = mcx::core::gitpkg::GitPackageManager::new(&root);
-    assert!(git.read_state("git-hello").expect("read state").is_none(), "no git state written");
+    assert!(
+        git.read_state("git-hello").expect("read state").is_none(),
+        "no git state written"
+    );
 
     // Installed state + active mirror reflect v2.
     let installed = db.get_package_manifest("git-hello").expect("get manifest");
@@ -1434,22 +1856,39 @@ async fn test_git_package_purge_removes_checkout_and_worktree() {
     let (root, db, remote) = setup_git_backed_package("git_pkg_purge");
 
     let cmd = InstallCommand::new(root.to_string_lossy().into_owned(), Arc::clone(&db));
-    cmd.execute(&["git-hello".to_string()]).await.expect("archive install");
+    cmd.execute(&["git-hello".to_string()])
+        .await
+        .expect("archive install");
 
     // Simulate a git-updated package: clone + materialise a worktree.
     let git = mcx::core::gitpkg::GitPackageManager::new(&root);
-    git.ensure_clone("git-hello", &format!("file://{}", remote.display())).expect("clone");
+    git.ensure_clone("git-hello", &format!("file://{}", remote.display()))
+        .expect("clone");
     git.fetch("git-hello").expect("fetch");
-    let commit = git.resolve_commit("git-hello", "1.0.0").expect("resolve").expect("tag exists");
+    let commit = git
+        .resolve_commit("git-hello", "1.0.0")
+        .expect("resolve")
+        .expect("tag exists");
     let wt = git.create_worktree("git-hello", &commit).expect("worktree");
     assert!(wt.exists(), "worktree created");
 
-    assert!(root.join("var/lib/mcx/gits/git-hello/.git").exists(), "checkout exists");
+    assert!(
+        root.join("var/lib/mcx/gits/git-hello/.git").exists(),
+        "checkout exists"
+    );
 
     git.purge("git-hello").expect("purge git state");
-    assert!(!root.join("var/lib/mcx/gits/git-hello").exists(), "checkout purged");
+    assert!(
+        !root.join("var/lib/mcx/gits/git-hello").exists(),
+        "checkout purged"
+    );
     assert!(!wt.exists(), "worktree purged");
-    assert!(git.read_state("git-hello").expect("read state after purge").is_none(), "state purged");
+    assert!(
+        git.read_state("git-hello")
+            .expect("read state after purge")
+            .is_none(),
+        "state purged"
+    );
 
     fs::remove_dir_all(&root).expect("remove temp root");
 }
@@ -1462,7 +1901,10 @@ fn test_user_selection_round_trip_requires_fields() {
     let sel_path = root.join("etc/mcx/user.ini");
     fs::create_dir_all(sel_path.parent().unwrap()).expect("create config dir");
 
-    assert!(mcx::core::mode::read_user_selection_in(&sel_path).is_none(), "missing file has no selection");
+    assert!(
+        mcx::core::mode::read_user_selection_in(&sel_path).is_none(),
+        "missing file has no selection"
+    );
     fs::write(&sel_path, "[general]\nmode = user\n").expect("write selection without user");
     assert!(
         mcx::core::mode::read_user_selection_in(&sel_path).is_none(),
@@ -1485,16 +1927,26 @@ fn test_mode_config_patch_appends_general_without_selection() {
     let root = create_temporary_root("mode_defaults");
     let config_path = root.join("etc/mcx/config.ini");
     fs::create_dir_all(config_path.parent().unwrap()).expect("create config dir");
-    fs::write(&config_path, "[general]\nlog_level = debug\n\n[python]\nenabled = false\n").expect("write seed config");
+    fs::write(
+        &config_path,
+        "[general]\nlog_level = debug\n\n[python]\nenabled = false\n",
+    )
+    .expect("write seed config");
 
     mcx::core::mode::ensure_mode_fields_in(&config_path).expect("ensure root fields");
 
     let content = fs::read_to_string(&config_path).expect("read back");
     assert!(content.contains("user_root = ~/.mcx"), "user_root appended");
     assert!(content.contains("system_root = /"), "system_root appended");
-    assert!(content.contains("log_level = debug"), "other general keys preserved");
+    assert!(
+        content.contains("log_level = debug"),
+        "other general keys preserved"
+    );
     assert!(content.contains("[python]"), "seed section untouched");
-    assert!(!content.contains("user_mode"), "user selection never lives in root config");
+    assert!(
+        !content.contains("user_mode"),
+        "user selection never lives in root config"
+    );
 
     let cfg = mcx::core::mode::read_mode_config_in(&config_path);
     assert_eq!(cfg.user_root, "~/.mcx");
@@ -1512,15 +1964,18 @@ fn test_resolve_root_modes() {
     // User mode honors the configured per-user root and any explicit --root;
     // callers separately enforce that the user can read/write the directory.
     let cwd = std::env::current_dir().expect("cwd");
-    let user = mcx::core::mode::resolve_root(Some("/external"), mcx::core::mode::Mode::User, &cfg, false);
+    let user =
+        mcx::core::mode::resolve_root(Some("/external"), mcx::core::mode::Mode::User, &cfg, false);
     assert_eq!(user, std::path::PathBuf::from("/external"));
     let user_cfg = mcx::core::mode::resolve_root(None, mcx::core::mode::Mode::User, &cfg, false);
     assert_eq!(user_cfg, cwd.join("u-root"));
 
     // System mode honors explicit --root: absolute stays absolute, relative joins CWD.
-    let abs = mcx::core::mode::resolve_root(Some("/opt/mcx"), mcx::core::mode::Mode::System, &cfg, false);
+    let abs =
+        mcx::core::mode::resolve_root(Some("/opt/mcx"), mcx::core::mode::Mode::System, &cfg, false);
     assert_eq!(abs, std::path::PathBuf::from("/opt/mcx"));
-    let rel = mcx::core::mode::resolve_root(Some("my-root"), mcx::core::mode::Mode::System, &cfg, false);
+    let rel =
+        mcx::core::mode::resolve_root(Some("my-root"), mcx::core::mode::Mode::System, &cfg, false);
     assert_eq!(rel, cwd.join("my-root"));
 
     // System mode mutating targets the system root; read-only falls back to
@@ -1533,7 +1988,8 @@ fn test_resolve_root_modes() {
         .map(|o| String::from_utf8(o.stdout).unwrap_or_default().trim() == "0")
         .unwrap_or(false);
     if !is_root {
-        let readonly = mcx::core::mode::resolve_root(None, mcx::core::mode::Mode::System, &cfg, true);
+        let readonly =
+            mcx::core::mode::resolve_root(None, mcx::core::mode::Mode::System, &cfg, true);
         assert_eq!(readonly, cwd.join("u-root"));
     }
 }
@@ -1542,12 +1998,7 @@ fn test_resolve_root_modes() {
 
 #[test]
 fn test_wildcard_expand_from_library() {
-    let names = [
-        "pkg-tools-1",
-        "pkg-tools-2",
-        "pkg-libs",
-        "otherpkg",
-    ];
+    let names = ["pkg-tools-1", "pkg-tools-2", "pkg-libs", "otherpkg"];
 
     // Prefix glob: pkg* matches every pkg-tools and pkg-libs.
     let matched = mcx::core::wildcard::expand("pkg*", names.iter().copied());
@@ -1592,7 +2043,9 @@ async fn test_outsider_round_trip_local_install() {
         hdr.set_mode(0o755);
         hdr.set_entry_type(tar::EntryType::Regular);
         hdr.set_path("usr/bin/hello").unwrap();
-        builder.append_data(&mut hdr, "usr/bin/hello", &b"hello!"[..]).unwrap();
+        builder
+            .append_data(&mut hdr, "usr/bin/hello", &b"hello!"[..])
+            .unwrap();
 
         // metadata.json — Outsider's exact output shape.
         // The checksum value here is the hash of the UNCOMPRESSED tar stream
@@ -1613,7 +2066,9 @@ async fn test_outsider_round_trip_local_install() {
         mhdr.set_mode(0o644);
         mhdr.set_entry_type(tar::EntryType::Regular);
         mhdr.set_path("metadata.json").unwrap();
-        builder.append_data(&mut mhdr, "metadata.json", &*meta_bytes).unwrap();
+        builder
+            .append_data(&mut mhdr, "metadata.json", &*meta_bytes)
+            .unwrap();
 
         builder.finish().expect("finish tar");
     }
@@ -1634,7 +2089,8 @@ async fn test_outsider_round_trip_local_install() {
     fs::write(
         archive_path.with_file_name("hello-pkg-2.0.0.xcs.sha256"),
         format!("{}\n", sidecar_hash),
-    ).expect("write sidecar");
+    )
+    .expect("write sidecar");
 
     // ── (a) metadata.json deserializes from Outsider's checksum object ──
     let meta_json = {
@@ -1663,15 +2119,23 @@ async fn test_outsider_round_trip_local_install() {
 
     // ── (b) installed package has the correct architecture ──
     let pkg = db.get_package_manifest("hello-pkg").expect("manifest");
-    assert_eq!(pkg.architecture, "x86_64", "architecture consumed from metadata.json");
+    assert_eq!(
+        pkg.architecture, "x86_64",
+        "architecture consumed from metadata.json"
+    );
 
     // ── (c) checksum from metadata.json round-trips to DB (informational) ──
     assert_eq!(pkg.checksum.kind, "sha256", "checksum kind");
-    assert_eq!(pkg.checksum.value, "uncompressed-tar-hash-info-only",
-        "checksum value from metadata.json object (informational, not verified at install)");
+    assert_eq!(
+        pkg.checksum.value, "uncompressed-tar-hash-info-only",
+        "checksum value from metadata.json object (informational, not verified at install)"
+    );
 
     // ── (d) metadata.json does NOT land on the live root ──
-    assert!(!root.join("metadata.json").exists(), "metadata.json filtered from live root");
+    assert!(
+        !root.join("metadata.json").exists(),
+        "metadata.json filtered from live root"
+    );
 
     // ── (e) payload file was placed ──
     assert_eq!(
@@ -1681,10 +2145,14 @@ async fn test_outsider_round_trip_local_install() {
     );
 
     // ── (f) sidecar file is readable and matches the compressed archive hash ──
-    let sidecar_content = fs::read_to_string(
-        archive_path.with_file_name("hello-pkg-2.0.0.xcs.sha256")
-    ).expect("read sidecar");
-    assert_eq!(sidecar_content.trim(), sidecar_hash, "sidecar matches compressed hash");
+    let sidecar_content =
+        fs::read_to_string(archive_path.with_file_name("hello-pkg-2.0.0.xcs.sha256"))
+            .expect("read sidecar");
+    assert_eq!(
+        sidecar_content.trim(),
+        sidecar_hash,
+        "sidecar matches compressed hash"
+    );
 
     fs::remove_dir_all(&root).expect("remove temp root");
 }
@@ -1707,8 +2175,11 @@ fn test_manifest_parser_accepts_outsider_checksum_object() {
         "architecture": "aarch64",
         "checksum": {"kind": "sha256", "value": "abcdef0123456789"}
     });
-    fs::write(root.join("metadata.json"), serde_json::to_string_pretty(&outsider_meta).unwrap())
-        .expect("write outsider metadata");
+    fs::write(
+        root.join("metadata.json"),
+        serde_json::to_string_pretty(&outsider_meta).unwrap(),
+    )
+    .expect("write outsider metadata");
 
     let entity = mcx::core::manifest::ManifestParser::parse_embedded_manifest(root)
         .expect("parse Outsider-shaped metadata.json");
@@ -1726,8 +2197,11 @@ fn test_manifest_parser_accepts_outsider_checksum_object() {
         "architecture": "native",
         "checksum": "flat_hash_value"
     });
-    fs::write(root.join("metadata.json"), serde_json::to_string_pretty(&legacy_meta).unwrap())
-        .expect("write legacy metadata");
+    fs::write(
+        root.join("metadata.json"),
+        serde_json::to_string_pretty(&legacy_meta).unwrap(),
+    )
+    .expect("write legacy metadata");
 
     let entity2 = mcx::core::manifest::ManifestParser::parse_embedded_manifest(root)
         .expect("parse legacy metadata.json");
@@ -1756,7 +2230,11 @@ fn write_outsider_xcs(path: &PathBuf, pkg_name: &str, version: &str, files: &[(&
         "metadata.json".to_string(),
         serde_json::to_string(&metadata).expect("serialize metadata"),
     )];
-    entries.extend(files.iter().map(|(rel, content)| (rel.to_string(), content.to_string())));
+    entries.extend(
+        files
+            .iter()
+            .map(|(rel, content)| (rel.to_string(), content.to_string())),
+    );
     let flat: Vec<(&str, &str)> = entries
         .iter()
         .map(|(rel, content)| (rel.as_str(), content.as_str()))
@@ -1795,7 +2273,11 @@ fn write_outsider_xcs_with_provenance(
         "metadata.json".to_string(),
         serde_json::to_string(&metadata).expect("serialize metadata"),
     )];
-    entries.extend(files.iter().map(|(rel, content)| (rel.to_string(), content.to_string())));
+    entries.extend(
+        files
+            .iter()
+            .map(|(rel, content)| (rel.to_string(), content.to_string())),
+    );
     let flat: Vec<(&str, &str)> = entries
         .iter()
         .map(|(rel, content)| (rel.as_str(), content.as_str()))
@@ -1842,7 +2324,12 @@ async fn test_local_prebuilt_source_sync_and_fingerprint() {
     fs::create_dir_all(&prebuilt_dir).expect("create prebuilt dir");
 
     let archive_100 = prebuilt_dir.join("hello-pkg-1.0.0.xcs");
-    write_outsider_xcs(&archive_100, "hello-pkg", "1.0.0", &[("usr/bin/hello", "hello v1\n")]);
+    write_outsider_xcs(
+        &archive_100,
+        "hello-pkg",
+        "1.0.0",
+        &[("usr/bin/hello", "hello v1\n")],
+    );
 
     let db = Arc::new(mcx::core::database::Database::open(&root).expect("open db"));
     let cmd = LocalSourceCommand::new(&root, Arc::clone(&db));
@@ -1853,7 +2340,10 @@ async fn test_local_prebuilt_source_sync_and_fingerprint() {
     cmd.sync_local_sources().expect("first sync");
 
     assert!(db.is_package_installed("hello-pkg").expect("installed"));
-    assert_eq!(fs::read_to_string(root.join("usr/bin/hello")).unwrap(), "hello v1\n");
+    assert_eq!(
+        fs::read_to_string(root.join("usr/bin/hello")).unwrap(),
+        "hello v1\n"
+    );
 
     let mtime = fs::metadata(root.join("usr/bin/hello"))
         .expect("hello meta")
@@ -1871,18 +2361,30 @@ async fn test_local_prebuilt_source_sync_and_fingerprint() {
     );
 
     let archive_110 = prebuilt_dir.join("hello-pkg-1.1.0.xcs");
-    write_outsider_xcs(&archive_110, "hello-pkg", "1.1.0", &[("usr/bin/hello", "hello v1.1\n")]);
-    cmd.sync_local_sources().expect("third sync with new archive");
+    write_outsider_xcs(
+        &archive_110,
+        "hello-pkg",
+        "1.1.0",
+        &[("usr/bin/hello", "hello v1.1\n")],
+    );
+    cmd.sync_local_sources()
+        .expect("third sync with new archive");
 
     let meta = db.get_package_manifest("hello-pkg").expect("manifest");
     assert_eq!(meta.version, "1.1.0", "newer archive wins");
-    assert_eq!(fs::read_to_string(root.join("usr/bin/hello")).unwrap(), "hello v1.1\n");
+    assert_eq!(
+        fs::read_to_string(root.join("usr/bin/hello")).unwrap(),
+        "hello v1.1\n"
+    );
 
     let listed = cmd.list().expect("list sources");
     assert_eq!(listed.len(), 1);
     assert_eq!(listed[0].mode, mcx::core::localsrc::SourceMode::Prebuilt);
     assert!(listed[0].last_built.is_some(), "last_built was recorded");
-    assert!(root.join("etc/mcx/localsources.ini").exists(), "config written under etc/mcx");
+    assert!(
+        root.join("etc/mcx/localsources.ini").exists(),
+        "config written under etc/mcx"
+    );
 
     cmd.remove("prebuilt").expect("remove source");
     assert!(cmd.list().expect("list").is_empty());
@@ -1901,15 +2403,33 @@ async fn test_local_source_add_validation_and_skip_without_ous() {
     )
     .expect("write manifest");
     fs::create_dir_all(source_dir.join("payload")).expect("create payload");
-    fs::write(source_dir.join("payload/hello.c"), "int main(void) { return 0; }\n").expect("write source");
+    fs::write(
+        source_dir.join("payload/hello.c"),
+        "int main(void) { return 0; }\n",
+    )
+    .expect("write source");
 
     let db = Arc::new(mcx::core::database::Database::open(&root).expect("open db"));
     let cmd = LocalSourceCommand::new(&root, Arc::clone(&db));
 
-    assert!(cmd.add("../evil", source_dir.to_str().expect("str"), false, true).is_err());
-    assert!(cmd.add("prebuilt-url", "https://example.com/x.git", true, true).is_err());
+    assert!(
+        cmd.add("../evil", source_dir.to_str().expect("str"), false, true)
+            .is_err()
+    );
+    assert!(
+        cmd.add("prebuilt-url", "https://example.com/x.git", true, true)
+            .is_err()
+    );
     assert!(cmd.add("missing-dir", "/no/such/dir", true, true).is_err());
-    assert!(cmd.add("no-manifest", root.join("srv").to_str().expect("str"), false, true).is_err());
+    assert!(
+        cmd.add(
+            "no-manifest",
+            root.join("srv").to_str().expect("str"),
+            false,
+            true
+        )
+        .is_err()
+    );
 
     cmd.add("source", source_dir.to_str().expect("str"), false, true)
         .expect("register source source");
@@ -1958,23 +2478,43 @@ async fn test_local_source_add_cli_default_is_enabled() {
         "no-flag add failed: {}",
         String::from_utf8_lossy(&ok.stderr)
     );
-    let ini = fs::read_to_string(home.join(".mcx/etc/mcx/localsources.ini")).expect("localsources.ini");
+    let ini =
+        fs::read_to_string(home.join(".mcx/etc/mcx/localsources.ini")).expect("localsources.ini");
     assert!(ini.contains("[cli-a]"), "{ini}");
-    assert!(ini.contains("enabled = true"), "no flag must store enabled=true:\n{ini}");
+    assert!(
+        ini.contains("enabled = true"),
+        "no flag must store enabled=true:\n{ini}"
+    );
 
     // --enable also stores enabled=true.
     let ok = run(&["--user-mode", "local-source-add", "cli-b", src, "--enable"]);
-    assert!(ok.status.success(), "enable add failed: {}", String::from_utf8_lossy(&ok.stderr));
-    let ini = fs::read_to_string(home.join(".mcx/etc/mcx/localsources.ini")).expect("localsources.ini");
+    assert!(
+        ok.status.success(),
+        "enable add failed: {}",
+        String::from_utf8_lossy(&ok.stderr)
+    );
+    let ini =
+        fs::read_to_string(home.join(".mcx/etc/mcx/localsources.ini")).expect("localsources.ini");
     assert!(ini.contains("[cli-b]"), "{ini}");
-    assert!(ini.contains("enabled = true"), "--enable must store enabled=true:\n{ini}");
+    assert!(
+        ini.contains("enabled = true"),
+        "--enable must store enabled=true:\n{ini}"
+    );
 
     // --disable stores enabled=false.
     let ok = run(&["--user-mode", "local-source-add", "cli-c", src, "--disable"]);
-    assert!(ok.status.success(), "disable add failed: {}", String::from_utf8_lossy(&ok.stderr));
-    let ini = fs::read_to_string(home.join(".mcx/etc/mcx/localsources.ini")).expect("localsources.ini");
+    assert!(
+        ok.status.success(),
+        "disable add failed: {}",
+        String::from_utf8_lossy(&ok.stderr)
+    );
+    let ini =
+        fs::read_to_string(home.join(".mcx/etc/mcx/localsources.ini")).expect("localsources.ini");
     assert!(ini.contains("[cli-c]"), "{ini}");
-    assert!(ini.contains("enabled = false"), "--disable must store enabled=false:\n{ini}");
+    assert!(
+        ini.contains("enabled = false"),
+        "--disable must store enabled=false:\n{ini}"
+    );
 
     fs::remove_dir_all(&home).expect("cleanup");
 }
@@ -2007,7 +2547,9 @@ async fn test_local_source_build_with_real_ous_binary() {
         .expect("register source");
 
     let sources = cmd.list().expect("list");
-    let result = cmd.build_one(&sources[0], true, Some(&ous)).expect("build with real ous succeeded");
+    let result = cmd
+        .build_one(&sources[0], true, Some(&ous))
+        .expect("build with real ous succeeded");
     assert_eq!(result, mcx::core::localsrc::LocalSourceResult::Built);
 
     assert!(db.is_package_installed("hello-pkg").expect("installed"));
@@ -2043,7 +2585,10 @@ async fn test_local_add_handles_dot_prefix_archive_entries() {
         let f = fs::File::create(&tar_path).expect("create tar file");
         let mut builder = tar::Builder::new(f);
         for (rel, content) in [
-            ("./metadata.json", serde_json::to_string(&metadata).expect("serialize")),
+            (
+                "./metadata.json",
+                serde_json::to_string(&metadata).expect("serialize"),
+            ),
             ("./usr/bin/hello-dot", String::from("#!/bin/sh\necho hi\n")),
         ] {
             let mut header = tar::Header::new_gnu();
@@ -2051,7 +2596,9 @@ async fn test_local_add_handles_dot_prefix_archive_entries() {
             header.set_mode(0o644);
             header.set_entry_type(tar::EntryType::Regular);
             header.set_path(rel).expect("set tar path");
-            builder.append_data(&mut header, rel, content.as_bytes()).expect("append tar entry");
+            builder
+                .append_data(&mut header, rel, content.as_bytes())
+                .expect("append tar entry");
         }
         builder.finish().expect("finish tar");
     }
@@ -2065,15 +2612,16 @@ async fn test_local_add_handles_dot_prefix_archive_entries() {
     }
 
     let db = Arc::new(mcx::core::database::Database::open(&root).expect("open db"));
-    let add = mcx::commands::AddLocalCommand::new(
-        root.to_string_lossy().into_owned(),
-        Arc::clone(&db),
-    );
+    let add =
+        mcx::commands::AddLocalCommand::new(root.to_string_lossy().into_owned(), Arc::clone(&db));
     add.execute(&out.to_string_lossy()).expect("add succeeds");
 
     assert!(db.is_package_installed("hello-dot").expect("installed"));
     let meta = db.get_package_manifest("hello-dot").expect("manifest");
-    assert_eq!(meta.version, "1.0.0", "metadata read from ./-prefixed entry");
+    assert_eq!(
+        meta.version, "1.0.0",
+        "metadata read from ./-prefixed entry"
+    );
     assert_eq!(
         fs::read_to_string(root.join("usr/bin/hello-dot")).unwrap(),
         "#!/bin/sh\necho hi\n"
@@ -2106,7 +2654,8 @@ async fn test_local_source_archive_tarball_materialization_and_fingerprint() {
     let db = Arc::new(mcx::core::database::Database::open(&root).expect("open db"));
     let cmd = LocalSourceCommand::new(&root, Arc::clone(&db));
     let url = format!("file://{}", tarball.display());
-    cmd.add("archive-src", &url, false, true).expect("register archive source");
+    cmd.add("archive-src", &url, false, true)
+        .expect("register archive source");
 
     let mgr = mcx::core::localsrc::LocalSourceManager::new(&root);
     let sources = cmd.list().expect("list sources");
@@ -2125,8 +2674,16 @@ async fn test_local_source_archive_tarball_materialization_and_fingerprint() {
         materialized.manifest,
         mgr.work_dir().join("archive-src").join("manifest.json")
     );
-    assert!(materialized.manifest.exists(), "manifest extracted into work dir");
-    assert!(mgr.work_dir().join("archive-src").join("payload/hello.txt").exists());
+    assert!(
+        materialized.manifest.exists(),
+        "manifest extracted into work dir"
+    );
+    assert!(
+        mgr.work_dir()
+            .join("archive-src")
+            .join("payload/hello.txt")
+            .exists()
+    );
 
     // Changed artifact bytes => different fingerprint and re-extraction.
     write_tar_zst(
@@ -2209,8 +2766,7 @@ async fn test_local_source_archive_tarball_materialization_and_fingerprint() {
 #[tokio::test]
 async fn test_auto_link_origin_pool_url_adds_repo_and_disabled_source() {
     let root = create_temporary_root("auto_link_pool");
-    let pool_url =
-        "https://packages.example.org/repo/pool/x86_64/hello-pkg/hello-pkg-1.0.0.xcs";
+    let pool_url = "https://packages.example.org/repo/pool/x86_64/hello-pkg/hello-pkg-1.0.0.xcs";
     let archive = root.join("srv/mirror/hello-pkg-1.0.0.xcs");
     write_outsider_xcs_with_provenance(
         &archive,
@@ -2228,21 +2784,32 @@ async fn test_auto_link_origin_pool_url_adds_repo_and_disabled_source() {
 
     let db = Arc::new(mcx::core::database::Database::open(&root).expect("open db"));
     let add = AddLocalCommand::new(root.to_string_lossy().into_owned(), Arc::clone(&db));
-    add.execute(&archive.to_string_lossy()).expect("add succeeds");
+    add.execute(&archive.to_string_lossy())
+        .expect("add succeeds");
 
     assert!(db.is_package_installed("hello-pkg").expect("installed"));
 
     // Registry repo auto-added: section per host+path, enabled, pointing at base.
     let repo_ini = fs::read_to_string(root.join("etc/mcx/repo.ini")).expect("repo.ini");
-    assert!(repo_ini.contains("[packages.example.org.repo]"), "{repo_ini}");
-    assert!(repo_ini.contains("url = https://packages.example.org/repo"), "{repo_ini}");
+    assert!(
+        repo_ini.contains("[packages.example.org.repo]"),
+        "{repo_ini}"
+    );
+    assert!(
+        repo_ini.contains("url = https://packages.example.org/repo"),
+        "{repo_ini}"
+    );
     assert!(repo_ini.contains("enabled = true"), "{repo_ini}");
 
     // Local source recorded: provenance.source_url verbatim, mode=source,
     // disabled because the registry link drives updates.
-    let lsrc_ini = fs::read_to_string(root.join("etc/mcx/localsources.ini")).expect("localsources.ini");
+    let lsrc_ini =
+        fs::read_to_string(root.join("etc/mcx/localsources.ini")).expect("localsources.ini");
     assert!(lsrc_ini.contains("[hello-pkg]"), "{lsrc_ini}");
-    assert!(lsrc_ini.contains(&format!("path = {pool_url}")), "{lsrc_ini}");
+    assert!(
+        lsrc_ini.contains(&format!("path = {pool_url}")),
+        "{lsrc_ini}"
+    );
     assert!(lsrc_ini.contains("mode = source"), "{lsrc_ini}");
     assert!(lsrc_ini.contains("enabled = false"), "{lsrc_ini}");
 
@@ -2252,8 +2819,10 @@ async fn test_auto_link_origin_pool_url_adds_repo_and_disabled_source() {
         .matches("[packages.example.org.repo]")
         .count();
     assert_eq!(repo_count, 1, "repo section must not be duplicated");
-    add.execute(&archive.to_string_lossy()).expect("re-add succeeds");
-    let lsrc_ini2 = fs::read_to_string(root.join("etc/mcx/localsources.ini")).expect("localsources.ini");
+    add.execute(&archive.to_string_lossy())
+        .expect("re-add succeeds");
+    let lsrc_ini2 =
+        fs::read_to_string(root.join("etc/mcx/localsources.ini")).expect("localsources.ini");
     assert_eq!(
         lsrc_ini2.matches("[hello-pkg]").count(),
         1,
@@ -2263,7 +2832,10 @@ async fn test_auto_link_origin_pool_url_adds_repo_and_disabled_source() {
         .expect("repo.ini")
         .matches("[packages.example.org.repo]")
         .count();
-    assert_eq!(repo_count2, 1, "repo section must not be duplicated after re-add");
+    assert_eq!(
+        repo_count2, 1,
+        "repo section must not be duplicated after re-add"
+    );
 
     fs::remove_dir_all(&root).expect("cleanup");
 }
@@ -2290,7 +2862,8 @@ async fn test_auto_link_origin_no_pool_records_enabled_source() {
 
     let db = Arc::new(mcx::core::database::Database::open(&root).expect("open db"));
     let add = AddLocalCommand::new(root.to_string_lossy().into_owned(), Arc::clone(&db));
-    add.execute(&archive.to_string_lossy()).expect("add succeeds");
+    add.execute(&archive.to_string_lossy())
+        .expect("add succeeds");
 
     // No /pool/ in source_url: no registry repo write.
     assert!(
@@ -2299,9 +2872,13 @@ async fn test_auto_link_origin_no_pool_records_enabled_source() {
     );
 
     // Local source recorded enabled=true (no registry link), verbatim path.
-    let lsrc_ini = fs::read_to_string(root.join("etc/mcx/localsources.ini")).expect("localsources.ini");
+    let lsrc_ini =
+        fs::read_to_string(root.join("etc/mcx/localsources.ini")).expect("localsources.ini");
     assert!(lsrc_ini.contains("[hello-pkg]"), "{lsrc_ini}");
-    assert!(lsrc_ini.contains(&format!("path = {source_path}")), "{lsrc_ini}");
+    assert!(
+        lsrc_ini.contains(&format!("path = {source_path}")),
+        "{lsrc_ini}"
+    );
     assert!(lsrc_ini.contains("mode = source"), "{lsrc_ini}");
     assert!(lsrc_ini.contains("enabled = true"), "{lsrc_ini}");
 
@@ -2311,8 +2888,7 @@ async fn test_auto_link_origin_no_pool_records_enabled_source() {
 #[tokio::test]
 async fn test_auto_link_origin_metadata_source_pool_fallback_and_provenance_display() {
     let root = create_temporary_root("auto_link_meta_fallback");
-    let pool_url =
-        "https://mirror.example.net/pool/x86_64/legacy-pkg/legacy-pkg-1.0.0.xcs";
+    let pool_url = "https://mirror.example.net/pool/x86_64/legacy-pkg/legacy-pkg-1.0.0.xcs";
     let archive = root.join("srv/mirror/legacy-pkg-1.0.0.xcs");
     // No provenance block at all: auto-link must fall back to metadata.source.
     write_outsider_xcs_with_provenance(
@@ -2326,20 +2902,30 @@ async fn test_auto_link_origin_metadata_source_pool_fallback_and_provenance_disp
 
     let db = Arc::new(mcx::core::database::Database::open(&root).expect("open db"));
     let add = AddLocalCommand::new(root.to_string_lossy().into_owned(), Arc::clone(&db));
-    add.execute(&archive.to_string_lossy()).expect("add succeeds");
+    add.execute(&archive.to_string_lossy())
+        .expect("add succeeds");
 
     let repo_ini = fs::read_to_string(root.join("etc/mcx/repo.ini")).expect("repo.ini");
     assert!(repo_ini.contains("[mirror.example.net]"), "{repo_ini}");
 
     // metadata.source pool fallback: local source path = base without /pool/.
-    let lsrc_ini = fs::read_to_string(root.join("etc/mcx/localsources.ini")).expect("localsources.ini");
+    let lsrc_ini =
+        fs::read_to_string(root.join("etc/mcx/localsources.ini")).expect("localsources.ini");
     assert!(lsrc_ini.contains("[legacy-pkg]"), "{lsrc_ini}");
-    assert!(lsrc_ini.contains("path = https://mirror.example.net"), "{lsrc_ini}");
-    assert!(!lsrc_ini.contains("path = https://mirror.example.net/pool"), "{lsrc_ini}");
+    assert!(
+        lsrc_ini.contains("path = https://mirror.example.net"),
+        "{lsrc_ini}"
+    );
+    assert!(
+        !lsrc_ini.contains("path = https://mirror.example.net/pool"),
+        "{lsrc_ini}"
+    );
     assert!(lsrc_ini.contains("enabled = false"), "{lsrc_ini}");
 
     // Provenance recorded in the DB (from embedded metadata) and visible.
-    let meta = db.get_package_manifest("legacy-pkg").expect("legacy manifest");
+    let meta = db
+        .get_package_manifest("legacy-pkg")
+        .expect("legacy manifest");
     assert_eq!(meta.provenance, None, "old archive has no provenance block");
 
     let prov = serde_json::json!({
@@ -2358,8 +2944,11 @@ async fn test_auto_link_origin_metadata_source_pool_fallback_and_provenance_disp
         Some(prov.clone()),
         &[("usr/bin/modern", "modern\n")],
     );
-    add.execute(&archive2.to_string_lossy()).expect("add modern succeeds");
-    let meta2 = db.get_package_manifest("modern-pkg").expect("modern manifest");
+    add.execute(&archive2.to_string_lossy())
+        .expect("add modern succeeds");
+    let meta2 = db
+        .get_package_manifest("modern-pkg")
+        .expect("modern manifest");
     let embedded = meta2.provenance.expect("modern provenance embedded");
     assert_eq!(embedded.source_type, "git");
     assert_eq!(embedded.source_url, "https://git.example.com/srv/proj.git");
@@ -2367,7 +2956,8 @@ async fn test_auto_link_origin_metadata_source_pool_fallback_and_provenance_disp
     assert_eq!(embedded.builder.as_deref(), Some("ous-1.2.3"));
     // metadata.source is not a pool/URL -> nothing auto-linked, provenance
     // source_url is a git URL -> local source records it enabled.
-    let lsrc_ini2 = fs::read_to_string(root.join("etc/mcx/localsources.ini")).expect("localsources.ini");
+    let lsrc_ini2 =
+        fs::read_to_string(root.join("etc/mcx/localsources.ini")).expect("localsources.ini");
     assert!(
         lsrc_ini2.contains("path = https://git.example.com/srv/proj.git"),
         "{lsrc_ini2}"

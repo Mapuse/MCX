@@ -51,12 +51,12 @@ impl UserInterface {
         let width: usize = constants::UI_TABLE_WIDTH;
         let fill_len = width.saturating_sub(title.len() + 5);
         println!("\n  ┌── {} {}", title, "─".repeat(fill_len));
-        
+
         if items.is_empty() {
             println!("  └─ (none)");
             return;
         }
-        
+
         for (index, item) in items.iter().enumerate() {
             if index == items.len() - 1 {
                 println!("  └─ {}", item);
@@ -67,8 +67,10 @@ impl UserInterface {
     }
 
     pub fn table(title: &str, headers: &[&str], rows: &[Vec<String>]) {
-        if headers.is_empty() { return; }
-        
+        if headers.is_empty() {
+            return;
+        }
+
         let mut widths = vec![0; headers.len()];
         for (i, h) in headers.iter().enumerate() {
             widths[i] = h.len();
@@ -125,8 +127,10 @@ impl UserInterface {
     }
 
     pub fn render_key_values(title: &str, pairs: &[(&str, &str)]) {
-        if pairs.is_empty() { return; }
-        
+        if pairs.is_empty() {
+            return;
+        }
+
         let mut max_key_len = 0;
         for (k, _) in pairs {
             if k.len() > max_key_len {

@@ -1,7 +1,7 @@
-use serde::{Serialize, Deserialize};
-use std::path::PathBuf;
-use anyhow::{Result, anyhow};
 use crate::core::provenance::PackageProvenance;
+use anyhow::{Result, anyhow};
+use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PackageStatus {
@@ -30,7 +30,10 @@ mod flexible_checksum {
         match v {
             serde_json::Value::String(s) => Ok(s),
             serde_json::Value::Object(_) => {
-                let kind = v.pointer("/kind").and_then(|x| x.as_str()).unwrap_or("sha256");
+                let kind = v
+                    .pointer("/kind")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("sha256");
                 let value = v.pointer("/value").and_then(|x| x.as_str()).unwrap_or("");
                 if value.is_empty() {
                     Err(serde::de::Error::custom("checksum value is empty"))
@@ -38,7 +41,9 @@ mod flexible_checksum {
                     Ok(format!("{}:{}", kind, value))
                 }
             }
-            _ => Err(serde::de::Error::custom("checksum must be a string or {kind,value} object")),
+            _ => Err(serde::de::Error::custom(
+                "checksum must be a string or {kind,value} object",
+            )),
         }
     }
 
@@ -51,7 +56,11 @@ mod flexible_checksum {
         } else {
             ("sha256", checksum)
         };
-        ChecksumObj { kind: kind.to_string(), value: value.to_string() }.serialize(serializer)
+        ChecksumObj {
+            kind: kind.to_string(),
+            value: value.to_string(),
+        }
+        .serialize(serializer)
     }
 }
 
@@ -92,16 +101,16 @@ impl PackageEntity {
             "<=" => Ok(ordering != std::cmp::Ordering::Greater),
             ">" => Ok(ordering == std::cmp::Ordering::Greater),
             "<" => Ok(ordering == std::cmp::Ordering::Less),
-            _ => Err(anyhow!("Unsupported structural version evaluation operator: {}", operation)),
+            _ => Err(anyhow!(
+                "Unsupported structural version evaluation operator: {}",
+                operation
+            )),
         }
     }
 
     pub fn compute_relative_file_paths(&self, root_prefix: &str) -> Vec<PathBuf> {
         let base_path = std::path::Path::new(root_prefix);
-        self.files
-            .iter()
-            .map(|f| base_path.join(f))
-            .collect()
+        self.files.iter().map(|f| base_path.join(f)).collect()
     }
 }
 
@@ -188,25 +197,69 @@ mod tests {
 
     #[test]
     fn test_version_equality_pads_zeros() {
-        assert!(pkg("1.2").matches_constraint("==", "1.2.0").expect("constraint eval"));
-        assert!(pkg("1.2.0").matches_constraint("==", "1.2").expect("constraint eval"));
-        assert!(pkg("1.2").matches_constraint("==", "1.2").expect("constraint eval"));
+        assert!(
+            pkg("1.2")
+                .matches_constraint("==", "1.2.0")
+                .expect("constraint eval")
+        );
+        assert!(
+            pkg("1.2.0")
+                .matches_constraint("==", "1.2")
+                .expect("constraint eval")
+        );
+        assert!(
+            pkg("1.2")
+                .matches_constraint("==", "1.2")
+                .expect("constraint eval")
+        );
     }
 
     #[test]
     fn test_version_ordering() {
-        assert!(pkg("1.2").matches_constraint("<", "1.3").expect("constraint eval"));
-        assert!(pkg("1.10").matches_constraint(">", "1.9").expect("constraint eval"));
-        assert!(pkg("2.0").matches_constraint(">=", "1.99").expect("constraint eval"));
-        assert!(pkg("1.2").matches_constraint("<=", "1.2.0").expect("constraint eval"));
+        assert!(
+            pkg("1.2")
+                .matches_constraint("<", "1.3")
+                .expect("constraint eval")
+        );
+        assert!(
+            pkg("1.10")
+                .matches_constraint(">", "1.9")
+                .expect("constraint eval")
+        );
+        assert!(
+            pkg("2.0")
+                .matches_constraint(">=", "1.99")
+                .expect("constraint eval")
+        );
+        assert!(
+            pkg("1.2")
+                .matches_constraint("<=", "1.2.0")
+                .expect("constraint eval")
+        );
     }
 
     #[test]
     fn test_version_prerelease_ordering() {
-        assert!(pkg("1.2.0-rc1").matches_constraint("<", "1.2.0").expect("constraint eval"));
-        assert!(pkg("1.2.0-alpha").matches_constraint("<", "1.2.0-beta").expect("constraint eval"));
-        assert!(pkg("1.2.0-beta").matches_constraint("<", "1.2.0-rc1").expect("constraint eval"));
-        assert!(pkg("1.rc1").matches_constraint("<", "1.0").expect("constraint eval"));
+        assert!(
+            pkg("1.2.0-rc1")
+                .matches_constraint("<", "1.2.0")
+                .expect("constraint eval")
+        );
+        assert!(
+            pkg("1.2.0-alpha")
+                .matches_constraint("<", "1.2.0-beta")
+                .expect("constraint eval")
+        );
+        assert!(
+            pkg("1.2.0-beta")
+                .matches_constraint("<", "1.2.0-rc1")
+                .expect("constraint eval")
+        );
+        assert!(
+            pkg("1.rc1")
+                .matches_constraint("<", "1.0")
+                .expect("constraint eval")
+        );
     }
 
     /// Equivalence test for the consolidated implementation: the old
@@ -219,7 +272,8 @@ mod tests {
         // Old solver/install semantics: split on non-digits, compare tuples,
         // shorter tuple that is a prefix compares as Less (no zero padding).
         fn legacy_parse(version: &str) -> Vec<u64> {
-            version.trim_start_matches('v')
+            version
+                .trim_start_matches('v')
                 .split(|c: char| !c.is_ascii_digit())
                 .filter_map(|s| s.parse::<u64>().ok())
                 .collect()
@@ -229,8 +283,11 @@ mod tests {
         // (prefix-equality cases like 1.0 vs 1.0.0 are intentionally improved
         // below via zero padding).
         let cases = [
-            ("1.0", "1.0"), ("1.2", "1.10"),
-            ("2.1", "1.9"), ("v3.4", "3.4"), ("1.2.3", "1.2.4"),
+            ("1.0", "1.0"),
+            ("1.2", "1.10"),
+            ("2.1", "1.9"),
+            ("v3.4", "3.4"),
+            ("1.2.3", "1.2.4"),
         ];
         for (a, b) in cases {
             assert_eq!(

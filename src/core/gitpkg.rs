@@ -1,10 +1,10 @@
+use crate::core::constants;
+use crate::utils::ui::UserInterface;
+use anyhow::{Context, Result, anyhow};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use anyhow::{Result, anyhow, Context};
-use serde::{Serialize, Deserialize};
-use crate::core::constants;
-use crate::utils::ui::UserInterface;
 
 /// Per-package git tracking state persisted outside the LMDB database so the
 /// core registry schema is left untouched (git stays a layer on top). It
@@ -102,11 +102,13 @@ impl GitPackageManager {
     /// Detached worktrees used to materialise an arbitrary commit without
     /// disturbing the shared checkout.
     pub fn worktree_dir(&self, pkg_name: &str) -> PathBuf {
-        self.store_dir.join(format!("{}.wt", sanitize_name(pkg_name)))
+        self.store_dir
+            .join(format!("{}.wt", sanitize_name(pkg_name)))
     }
 
     fn state_file(&self, pkg_name: &str) -> PathBuf {
-        self.state_dir.join(format!("{}.json", sanitize_name(pkg_name)))
+        self.state_dir
+            .join(format!("{}.json", sanitize_name(pkg_name)))
     }
 
     fn registry_file(&self) -> PathBuf {
@@ -137,7 +139,9 @@ impl GitPackageManager {
     }
 
     pub fn git_source(&self, pkg_name: &str) -> Option<String> {
-        self.read_registry().ok().and_then(|r| r.get(pkg_name).cloned())
+        self.read_registry()
+            .ok()
+            .and_then(|r| r.get(pkg_name).cloned())
     }
 
     /// Refresh the git registry from every cached repository index file. An
@@ -155,7 +159,9 @@ impl GitPackageManager {
             if !path.is_file() || path.extension().map(|e| e != "json").unwrap_or(true) {
                 continue;
             }
-            let Ok(content) = fs::read_to_string(&path) else { continue };
+            let Ok(content) = fs::read_to_string(&path) else {
+                continue;
+            };
             let entries: Vec<IndexEntry> = match serde_json::from_str(&content) {
                 Ok(entries) => entries,
                 Err(_) => continue,
@@ -214,7 +220,13 @@ impl GitPackageManager {
         UserInterface::download(&format!("Fetching {} ({})", pkg_name, url));
         run_git_with_git_dir(
             &self.store_dir,
-            &["clone", "--no-checkout", "--", url, checkout.to_str().context("checkout path not UTF-8")?],
+            &[
+                "clone",
+                "--no-checkout",
+                "--",
+                url,
+                checkout.to_str().context("checkout path not UTF-8")?,
+            ],
         )
         .map_err(|e| anyhow!("Failed to clone {} from {}: {}", pkg_name, url, e))?;
         Ok(())
@@ -291,16 +303,20 @@ impl GitPackageManager {
 
         // --no-renames keeps the status simple: files are A/M/D, one path per
         // line, space-separated.
-        let status = run_git(&checkout, &["diff", "--name-status", "--no-renames", base, target])?;
+        let status = run_git(
+            &checkout,
+            &["diff", "--name-status", "--no-renames", base, target],
+        )?;
         for line in status.lines() {
             let line = line.trim();
             if line.is_empty() {
                 continue;
             }
             // `--name-status` separates status and path with a TAB.
-            let parts = line.split_once('\t')
-                .or_else(|| line.split_once(' '));
-            let Some((status_letter, file)) = parts else { continue };
+            let parts = line.split_once('\t').or_else(|| line.split_once(' '));
+            let Some((status_letter, file)) = parts else {
+                continue;
+            };
             validate_relative_path(pkg_name, file)?;
             let first = status_letter.chars().next().unwrap_or('M');
             if first == 'D' {
@@ -346,7 +362,14 @@ impl GitPackageManager {
         }
         run_git(
             &checkout,
-            &["worktree", "add", "--detach", "--force", wt.to_str().context("worktree path not UTF-8")?, commit],
+            &[
+                "worktree",
+                "add",
+                "--detach",
+                "--force",
+                wt.to_str().context("worktree path not UTF-8")?,
+                commit,
+            ],
         )
         .map_err(|e| anyhow!("Failed to materialise {}@{}: {}", pkg_name, commit, e))?;
         Ok(wt)
@@ -393,7 +416,11 @@ struct IndexEntry {
 /// Reject any payload path that is absolute or that escapes via `..`.
 fn validate_relative_path(pkg_name: &str, file: &str) -> Result<()> {
     let path = Path::new(file);
-    if path.is_absolute() || path.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
+    if path.is_absolute()
+        || path
+            .components()
+            .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
         return Err(anyhow!("Unsafe git diff path in {}: {:?}", pkg_name, path));
     }
     Ok(())
@@ -431,7 +458,10 @@ fn run_git_with_git_dir(work_root: &Path, args: &[&str]) -> Result<String> {
 }
 
 fn split_nul(s: &str) -> Vec<String> {
-    s.split('\0').filter(|p| !p.is_empty()).map(|p| p.to_string()).collect()
+    s.split('\0')
+        .filter(|p| !p.is_empty())
+        .map(|p| p.to_string())
+        .collect()
 }
 
 #[cfg(test)]
@@ -446,7 +476,10 @@ mod tests {
         assert!(is_git_source("git://example.com/pkg"));
         assert!(!is_git_source("https://example.com/pkg"));
         assert!(!is_git_source("pool/x86_64/pkg-1.0.xcs"));
-        assert_eq!(git_remote_url("git+https://example.com/pkg"), "https://example.com/pkg");
+        assert_eq!(
+            git_remote_url("git+https://example.com/pkg"),
+            "https://example.com/pkg"
+        );
         assert_eq!(git_remote_url("https://x"), "https://x");
     }
 
@@ -478,9 +511,18 @@ mod tests {
         mgr.sync_registry_from_indexes(&sync_dir).unwrap();
 
         let registry = mgr.read_registry().unwrap();
-        assert_eq!(registry.get("nginx").map(String::as_str), Some("https://x/nginx.git"));
-        assert_eq!(registry.get("side").map(String::as_str), Some("https://x/side.git"));
-        assert!(!registry.contains_key("foo"), "entries without git_source are skipped");
+        assert_eq!(
+            registry.get("nginx").map(String::as_str),
+            Some("https://x/nginx.git")
+        );
+        assert_eq!(
+            registry.get("side").map(String::as_str),
+            Some("https://x/side.git")
+        );
+        assert!(
+            !registry.contains_key("foo"),
+            "entries without git_source are skipped"
+        );
         assert!(state_dir.join("registry.json").is_file());
     }
 }

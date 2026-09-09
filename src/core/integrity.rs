@@ -1,14 +1,14 @@
+use crate::core::constants;
+use crate::core::db::{Database, PackageMetadata};
+use anyhow::{Context, Result};
+use md5::Md5;
+use sha1::Sha1;
+use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use anyhow::{Result, Context};
-use sha2::{Sha256, Digest};
-use sha1::Sha1;
-use md5::Md5;
 use std::sync::Arc;
-use crate::core::constants;
-use crate::core::db::{Database, PackageMetadata};
 
 pub struct IntegrityScanner {
     root: PathBuf,
@@ -33,7 +33,8 @@ impl IntegrityScanner {
             }
         };
 
-        let installed_names: HashSet<String> = all_pkgs.iter().map(|p| p.pkg_name.clone()).collect();
+        let installed_names: HashSet<String> =
+            all_pkgs.iter().map(|p| p.pkg_name.clone()).collect();
 
         for pkg in &all_pkgs {
             self.verify_package(pkg, &installed_names, &mut report);
@@ -44,7 +45,12 @@ impl IntegrityScanner {
         report
     }
 
-    fn verify_package(&self, pkg: &PackageMetadata, installed_names: &HashSet<String>, report: &mut IntegrityReport) {
+    fn verify_package(
+        &self,
+        pkg: &PackageMetadata,
+        installed_names: &HashSet<String>,
+        report: &mut IntegrityReport,
+    ) {
         let pkg_dir = self.root.join(constants::PATH_ACTIVE).join(&pkg.pkg_name);
 
         if pkg.file_hashes.is_empty() {
@@ -87,7 +93,8 @@ impl IntegrityScanner {
                 if md.file_type().is_symlink() || !md.is_file() {
                     continue;
                 }
-                let Some(expected) = pkg.file_hashes.get(&file.to_string_lossy().into_owned()) else {
+                let Some(expected) = pkg.file_hashes.get(&file.to_string_lossy().into_owned())
+                else {
                     continue;
                 };
                 let actual = match hash_file(&full_path, "sha256") {
@@ -105,7 +112,10 @@ impl IntegrityScanner {
                     report.corrupted_files.push(CorruptedFile {
                         pkg: pkg.pkg_name.clone(),
                         path: file.clone(),
-                        reason: format!("Hash mismatch (sha256): got {}, expected {}", actual, expected),
+                        reason: format!(
+                            "Hash mismatch (sha256): got {}, expected {}",
+                            actual, expected
+                        ),
                     });
                 }
             }
@@ -132,14 +142,18 @@ impl IntegrityScanner {
         for mf in &report.missing_files {
             match self.recreate_from_cas(&mf.pkg, &mf.path) {
                 Ok(_) => result.files_repaired += 1,
-                Err(e) => result.errors.push(format!("{}: {}: {}", mf.pkg, mf.path.display(), e)),
+                Err(e) => result
+                    .errors
+                    .push(format!("{}: {}: {}", mf.pkg, mf.path.display(), e)),
             }
         }
 
         for cf in &report.corrupted_files {
             match self.recreate_from_cas(&cf.pkg, &cf.path) {
                 Ok(_) => result.files_repaired += 1,
-                Err(e) => result.errors.push(format!("{}: {}: {}", cf.pkg, cf.path.display(), e)),
+                Err(e) => result
+                    .errors
+                    .push(format!("{}: {}: {}", cf.pkg, cf.path.display(), e)),
             }
         }
 
@@ -152,13 +166,17 @@ impl IntegrityScanner {
             result.symlinks_cleaned = cleaned;
         }
 
-        result.total_issues = report.missing_files.len() + report.corrupted_files.len()
-            + report.broken_deps.len() + report.dangling_symlinks;
+        result.total_issues = report.missing_files.len()
+            + report.corrupted_files.len()
+            + report.broken_deps.len()
+            + report.dangling_symlinks;
         result
     }
 
     fn recreate_from_cas(&self, pkg_name: &str, file: &Path) -> Result<()> {
-        let _meta = self.db.get_package_manifest(pkg_name)
+        let _meta = self
+            .db
+            .get_package_manifest(pkg_name)
             .with_context(|| format!("Package {} not in registry", pkg_name))?;
 
         let full_path = self.root.join(file);
@@ -173,7 +191,11 @@ impl IntegrityScanner {
 
         let cas_file = pkg_active.join(file);
         if !cas_file.exists() {
-            return Err(anyhow::anyhow!("File {} not found in CAS stage for {}", file.display(), pkg_name));
+            return Err(anyhow::anyhow!(
+                "File {} not found in CAS stage for {}",
+                file.display(),
+                pkg_name
+            ));
         }
 
         if full_path.exists() {
@@ -186,7 +208,10 @@ impl IntegrityScanner {
 
     /// Prefixes mcx manages; dangling-link scans never leave these trees.
     fn managed_prefixes(&self) -> Vec<PathBuf> {
-        ["usr", "etc", "var"].iter().map(|p| self.root.join(p)).collect()
+        ["usr", "etc", "var"]
+            .iter()
+            .map(|p| self.root.join(p))
+            .collect()
     }
 
     fn find_dangling_symlinks(&self) -> Vec<PathBuf> {
@@ -207,7 +232,9 @@ impl IntegrityScanner {
         };
         for entry in entries.flatten() {
             let path = entry.path();
-            let Ok(md) = fs::symlink_metadata(&path) else { continue };
+            let Ok(md) = fs::symlink_metadata(&path) else {
+                continue;
+            };
             if md.file_type().is_symlink() {
                 if !path.exists() {
                     out.push(path);
@@ -242,7 +269,10 @@ impl IntegrityScanner {
                 continue;
             }
             if let Err(e) = fs::remove_file(&path) {
-                eprintln!("Warning: failed to remove dangling symlink {:?}: {}", path, e);
+                eprintln!(
+                    "Warning: failed to remove dangling symlink {:?}: {}",
+                    path, e
+                );
             } else {
                 cleaned += 1;
             }
@@ -289,17 +319,19 @@ pub struct RepairResult {
 }
 
 fn hash_file(path: &Path, kind: &str) -> Result<String> {
-    let mut file = fs::File::open(path)
-        .with_context(|| format!("Failed to open {:?}", path))?;
+    let mut file = fs::File::open(path).with_context(|| format!("Failed to open {:?}", path))?;
     let mut buffer = vec![0u8; constants::INTEGRITY_HASH_BUFFER_SIZE];
 
     match kind {
         "sha256" | "sha-256" => {
             let mut hasher = Sha256::new();
             loop {
-                let n = file.read(&mut buffer)
+                let n = file
+                    .read(&mut buffer)
                     .with_context(|| format!("Read error during hash: {:?}", path))?;
-                if n == 0 { break; }
+                if n == 0 {
+                    break;
+                }
                 hasher.update(&buffer[..n]);
             }
             Ok(format!("{:x}", hasher.finalize()))
@@ -307,9 +339,12 @@ fn hash_file(path: &Path, kind: &str) -> Result<String> {
         "sha1" | "sha-1" => {
             let mut hasher = Sha1::new();
             loop {
-                let n = file.read(&mut buffer)
+                let n = file
+                    .read(&mut buffer)
                     .with_context(|| format!("Read error during hash: {:?}", path))?;
-                if n == 0 { break; }
+                if n == 0 {
+                    break;
+                }
                 hasher.update(&buffer[..n]);
             }
             Ok(format!("{:x}", hasher.finalize()))
@@ -317,9 +352,12 @@ fn hash_file(path: &Path, kind: &str) -> Result<String> {
         "md5" => {
             let mut hasher = Md5::new();
             loop {
-                let n = file.read(&mut buffer)
+                let n = file
+                    .read(&mut buffer)
                     .with_context(|| format!("Read error during hash: {:?}", path))?;
-                if n == 0 { break; }
+                if n == 0 {
+                    break;
+                }
                 hasher.update(&buffer[..n]);
             }
             Ok(format!("{:x}", hasher.finalize()))
@@ -342,7 +380,10 @@ mod tests {
         fs::write(&f, b"hello world").expect("write temp file");
         let hash = hash_file(&f, "sha256").expect("hash temp file");
         // SHA-256 of "hello world"
-        assert_eq!(hash, "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9");
+        assert_eq!(
+            hash,
+            "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9"
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -380,13 +421,17 @@ mod tests {
         let f = dir.join("empty.bin");
         fs::write(&f, b"").expect("write temp file");
         let hash = hash_file(&f, "sha256").expect("hash temp file");
-        assert_eq!(hash, "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
+        assert_eq!(
+            hash,
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn test_hash_file_nonexistent() {
-        let dir = std::env::temp_dir().join(format!("mcx_test_hash_missing_{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("mcx_test_hash_missing_{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         let f = dir.join("nope.bin");
         let err = hash_file(&f, "sha256").expect_err("hash missing file");
@@ -396,7 +441,8 @@ mod tests {
 
     #[test]
     fn test_hash_file_unsupported_kind() {
-        let dir = std::env::temp_dir().join(format!("mcx_test_hash_badkind_{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("mcx_test_hash_badkind_{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).expect("create temp dir");
         let f = dir.join("data.bin");
@@ -429,7 +475,8 @@ mod tests {
 
     #[test]
     fn test_integrity_scanner_detect_missing_file() {
-        let root = std::env::temp_dir().join(format!("mcx_test_int_missing_{}", std::process::id()));
+        let root =
+            std::env::temp_dir().join(format!("mcx_test_int_missing_{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(root.join("var/lib/mcx/active/test-pkg")).expect("create active dir");
         fs::create_dir_all(root.join("usr/bin")).expect("create usr bin dir");
@@ -440,7 +487,10 @@ mod tests {
             version: "1.0".into(),
             license: "MIT".into(),
             source: "https://example.com".into(),
-            checksum: crate::core::db::ChecksumData { kind: "sha256".into(), value: "0000".into() },
+            checksum: crate::core::db::ChecksumData {
+                kind: "sha256".into(),
+                value: "0000".into(),
+            },
             dependencies: vec![],
             files: vec![PathBuf::from("usr/bin/test-binary")],
             provides: Some(vec![]),
@@ -453,7 +503,8 @@ mod tests {
             provenance: None,
         };
         let mut tx = db.begin_transaction().expect("begin transaction");
-        tx.register_package_placement(&pkg).expect("register package placement");
+        tx.register_package_placement(&pkg)
+            .expect("register package placement");
         tx.commit().expect("commit transaction");
 
         let scanner = IntegrityScanner::new(&root, Arc::new(db));
@@ -461,7 +512,10 @@ mod tests {
         assert_eq!(report.total_packages, 1);
         assert_eq!(report.missing_files.len(), 1);
         assert_eq!(report.missing_files[0].pkg, "test-pkg");
-        assert_eq!(report.missing_files[0].path, PathBuf::from("usr/bin/test-binary"));
+        assert_eq!(
+            report.missing_files[0].path,
+            PathBuf::from("usr/bin/test-binary")
+        );
 
         let _ = fs::remove_dir_all(&root);
     }
@@ -470,10 +524,15 @@ mod tests {
     fn test_integrity_scanner_repair_missing_file() {
         let root = std::env::temp_dir().join(format!("mcx_test_int_repair_{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
-        fs::create_dir_all(root.join("var/lib/mcx/active/test-pkg/usr/bin")).expect("create active dir");
+        fs::create_dir_all(root.join("var/lib/mcx/active/test-pkg/usr/bin"))
+            .expect("create active dir");
         fs::create_dir_all(root.join("usr/bin")).expect("create usr bin dir");
         // Create the file in the active dir (CAS source for repair)
-        fs::write(root.join("var/lib/mcx/active/test-pkg/usr/bin/test-binary"), b"content").expect("write temp file");
+        fs::write(
+            root.join("var/lib/mcx/active/test-pkg/usr/bin/test-binary"),
+            b"content",
+        )
+        .expect("write temp file");
 
         let db = crate::core::db::Database::open(&root).expect("open test database");
         let pkg = crate::core::db::PackageMetadata {
@@ -481,7 +540,10 @@ mod tests {
             version: "1.0".into(),
             license: "MIT".into(),
             source: "https://example.com".into(),
-            checksum: crate::core::db::ChecksumData { kind: "sha256".into(), value: "0000".into() },
+            checksum: crate::core::db::ChecksumData {
+                kind: "sha256".into(),
+                value: "0000".into(),
+            },
             dependencies: vec![],
             files: vec![PathBuf::from("usr/bin/test-binary")],
             provides: Some(vec![]),
@@ -494,7 +556,8 @@ mod tests {
             provenance: None,
         };
         let mut tx = db.begin_transaction().expect("begin transaction");
-        tx.register_package_placement(&pkg).expect("register package placement");
+        tx.register_package_placement(&pkg)
+            .expect("register package placement");
         tx.commit().expect("commit transaction");
 
         let scanner = IntegrityScanner::new(&root, Arc::new(db));
@@ -514,7 +577,8 @@ mod tests {
         // Create a dangling symlink
         #[cfg(unix)]
         {
-            std::os::unix::fs::symlink("/nonexistent/target", root.join("usr/lib/broken.so")).expect("create symlink");
+            std::os::unix::fs::symlink("/nonexistent/target", root.join("usr/lib/broken.so"))
+                .expect("create symlink");
         }
 
         let db = crate::core::db::Database::open(&root).expect("open test database");
@@ -523,7 +587,10 @@ mod tests {
             version: "1.0".into(),
             license: "MIT".into(),
             source: "https://example.com".into(),
-            checksum: crate::core::db::ChecksumData { kind: "sha256".into(), value: "0000".into() },
+            checksum: crate::core::db::ChecksumData {
+                kind: "sha256".into(),
+                value: "0000".into(),
+            },
             dependencies: vec![],
             files: vec![PathBuf::from("usr/lib/broken.so")],
             provides: Some(vec![]),
@@ -536,7 +603,8 @@ mod tests {
             provenance: None,
         };
         let mut tx = db.begin_transaction().expect("begin transaction");
-        tx.register_package_placement(&pkg).expect("register package placement");
+        tx.register_package_placement(&pkg)
+            .expect("register package placement");
         tx.commit().expect("commit transaction");
 
         let scanner = IntegrityScanner::new(&root, Arc::new(db));
@@ -555,19 +623,27 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn test_repair_leaves_unowned_dangling_symlinks() {
-        let root = std::env::temp_dir().join(format!("mcx_test_int_unowned_{}", std::process::id()));
+        let root =
+            std::env::temp_dir().join(format!("mcx_test_int_unowned_{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(root.join("usr/lib")).expect("create usr lib dir");
-        std::os::unix::fs::symlink("/nonexistent/target", root.join("usr/lib/user-link.so")).expect("create symlink");
+        std::os::unix::fs::symlink("/nonexistent/target", root.join("usr/lib/user-link.so"))
+            .expect("create symlink");
 
         let db = crate::core::db::Database::open(&root).expect("open test database");
         let scanner = IntegrityScanner::new(&root, Arc::new(db));
 
         let report = scanner.verify_all();
-        assert_eq!(report.dangling_symlinks, 1, "unowned links are still counted");
+        assert_eq!(
+            report.dangling_symlinks, 1,
+            "unowned links are still counted"
+        );
 
         let repair = scanner.repair_all();
-        assert_eq!(repair.symlinks_cleaned, 0, "deletion is restricted to package-owned paths");
+        assert_eq!(
+            repair.symlinks_cleaned, 0,
+            "deletion is restricted to package-owned paths"
+        );
         assert!(root.join("usr/lib/user-link.so").symlink_metadata().is_ok());
 
         let _ = fs::remove_dir_all(&root);
@@ -594,7 +670,10 @@ mod tests {
             version: "1.0".into(),
             license: "MIT".into(),
             source: "https://example.com".into(),
-            checksum: crate::core::db::ChecksumData { kind: "sha256".into(), value: "deadbeef".into() },
+            checksum: crate::core::db::ChecksumData {
+                kind: "sha256".into(),
+                value: "deadbeef".into(),
+            },
             dependencies: vec![],
             files: vec![PathBuf::from("usr/bin/tool")],
             provides: Some(vec![]),
@@ -607,7 +686,8 @@ mod tests {
             provenance: None,
         };
         let mut tx = db.begin_transaction().expect("begin transaction");
-        tx.register_package_placement(&pkg).expect("register placement");
+        tx.register_package_placement(&pkg)
+            .expect("register placement");
         tx.commit().expect("commit");
 
         let scanner = IntegrityScanner::new(&root, Arc::new(db));
@@ -615,7 +695,11 @@ mod tests {
         // Intact state: no corruption reported despite the archive checksum
         // field being unrelated to file content.
         let clean = scanner.verify_all();
-        assert!(clean.corrupted_files.is_empty(), "unexpected corruption: {:?}", clean.corrupted_files);
+        assert!(
+            clean.corrupted_files.is_empty(),
+            "unexpected corruption: {:?}",
+            clean.corrupted_files
+        );
 
         // Tamper with the placed file: per-file digest must catch it.
         fs::write(root.join("usr/bin/tool"), b"tampered").expect("tamper");

@@ -1,18 +1,18 @@
+use crate::core::constants;
+use anyhow::{Context, Result, anyhow};
+use futures::future::join_all;
+use rand::Rng;
+use reqwest::Client;
+use reqwest::header::{ACCEPT_RANGES, CONTENT_LENGTH, ETAG, IF_NONE_MATCH, IF_RANGE, RANGE};
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::fs::OpenOptions;
 use std::io::{Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
-use anyhow::{Result, anyhow, Context};
-use futures::future::join_all;
-use rand::Rng;
-use reqwest::header::{ACCEPT_RANGES, CONTENT_LENGTH, ETAG, IF_NONE_MATCH, IF_RANGE, RANGE};
-use reqwest::Client;
-use serde::{Deserialize, Serialize};
 use tokio::io::AsyncWriteExt;
 use tokio::sync::Mutex;
-use crate::core::constants;
 
 /// Persisted progress of a chunked transfer: which byte-ranges have already
 /// been downloaded in full. Kept as a sibling of the `.part` file so an
@@ -58,7 +58,9 @@ impl Downloader {
             .pool_max_idle_per_host(constants::POOL_MAX_IDLE_PER_HOST)
             // Bound connection establishment and per-read stalls so an
             // unresponsive mirror cannot hang the client indefinitely.
-            .connect_timeout(Duration::from_secs(constants::DOWNLOAD_CONNECT_TIMEOUT_SECS))
+            .connect_timeout(Duration::from_secs(
+                constants::DOWNLOAD_CONNECT_TIMEOUT_SECS,
+            ))
             .read_timeout(Duration::from_secs(constants::DOWNLOAD_READ_TIMEOUT_SECS))
             .build()
             .expect("build reqwest client");
@@ -75,11 +77,21 @@ impl Downloader {
         self.download_with_retry(url, destination, None).await
     }
 
-    pub async fn conditional(&self, url: &str, destination: &Path, etag: Option<&str>) -> Result<Option<String>> {
+    pub async fn conditional(
+        &self,
+        url: &str,
+        destination: &Path,
+        etag: Option<&str>,
+    ) -> Result<Option<String>> {
         self.download_with_retry(url, destination, etag).await
     }
 
-    async fn download_with_retry(&self, url: &str, destination: &Path, etag: Option<&str>) -> Result<Option<String>> {
+    async fn download_with_retry(
+        &self,
+        url: &str,
+        destination: &Path,
+        etag: Option<&str>,
+    ) -> Result<Option<String>> {
         let mut last_err = None;
         for attempt in 0..=self.max_retries {
             match self.try_download(url, destination, etag).await {
@@ -93,7 +105,8 @@ impl Downloader {
                 }
             }
         }
-        Err(last_err.unwrap_or_else(|| anyhow!("Download failed after {} retries", self.max_retries)))
+        Err(last_err
+            .unwrap_or_else(|| anyhow!("Download failed after {} retries", self.max_retries)))
     }
 
     fn backoff(&self, attempt: u32) -> Duration {
@@ -102,7 +115,12 @@ impl Downloader {
         Duration::from_millis(base + jitter)
     }
 
-    async fn try_download(&self, url: &str, destination: &Path, etag: Option<&str>) -> Result<Option<String>> {
+    async fn try_download(
+        &self,
+        url: &str,
+        destination: &Path,
+        etag: Option<&str>,
+    ) -> Result<Option<String>> {
         if let Some(parent) = destination.parent() {
             tokio::fs::create_dir_all(parent).await?;
         }
@@ -121,13 +139,20 @@ impl Downloader {
             return Err(anyhow!("HTTP {}", status));
         }
 
-        let new_etag = head_resp.headers().get(ETAG)
+        let new_etag = head_resp
+            .headers()
+            .get(ETAG)
             .and_then(|v| v.to_str().ok())
             .map(|s| s.trim_matches('"').to_string());
 
-        let accept_ranges = head_resp.headers().get(ACCEPT_RANGES)
-            .map(|v| v.to_str().unwrap_or("")) == Some("bytes");
-        let content_length = head_resp.headers().get(CONTENT_LENGTH)
+        let accept_ranges = head_resp
+            .headers()
+            .get(ACCEPT_RANGES)
+            .map(|v| v.to_str().unwrap_or(""))
+            == Some("bytes");
+        let content_length = head_resp
+            .headers()
+            .get(CONTENT_LENGTH)
             .and_then(|v| v.to_str().unwrap_or("").parse::<u64>().ok());
 
         // Always download into a sibling `.part` file and only promote it to the
@@ -157,7 +182,8 @@ impl Downloader {
                 };
                 // If-Range makes the server reject the range request when the
                 // resource changed since the ETag we saw; we then restart cleanly.
-                self.download_streaming(url, &part_path, resume_from, new_etag.as_deref()).await?;
+                self.download_streaming(url, &part_path, resume_from, new_etag.as_deref())
+                    .await?;
             }
         } else {
             // Without a known length we cannot resume reliably.
@@ -178,7 +204,13 @@ impl Downloader {
         }
     }
 
-    async fn download_streaming(&self, url: &str, part: &Path, mut resume_from: u64, etag: Option<&str>) -> Result<()> {
+    async fn download_streaming(
+        &self,
+        url: &str,
+        part: &Path,
+        mut resume_from: u64,
+        etag: Option<&str>,
+    ) -> Result<()> {
         loop {
             if resume_from == 0 {
                 let resp = self.client.get(url).send().await?;
@@ -191,7 +223,8 @@ impl Downloader {
                 return Ok(());
             }
 
-            let mut req = self.client
+            let mut req = self
+                .client
                 .get(url)
                 .header(RANGE, format!("bytes={}-", resume_from));
             if let Some(tag) = etag {
@@ -234,11 +267,18 @@ impl Downloader {
         // AND the part file is already the full size — otherwise completed
         // entries could alias bytes of a stale, different transfer, so every
         // chunk is treated as incomplete and refetched.
-        let part_len = tokio::fs::metadata(part).await.map(|m| m.len()).unwrap_or(0);
+        let part_len = tokio::fs::metadata(part)
+            .await
+            .map(|m| m.len())
+            .unwrap_or(0);
         let bitmap = match load_bitmap(&bm_path).await {
-            Some(bm) if bm.total_size == total_size
-                && bm.chunk_size == chunk_size
-                && part_len == total_size => bm,
+            Some(bm)
+                if bm.total_size == total_size
+                    && bm.chunk_size == chunk_size
+                    && part_len == total_size =>
+            {
+                bm
+            }
             _ => ChunkBitmap::new(total_size, chunk_size),
         };
 
@@ -250,7 +290,7 @@ impl Downloader {
                 .truncate(false)
                 .write(true)
                 .open(part)
-                .with_context(|| format!("Failed to create {:?}", part))?
+                .with_context(|| format!("Failed to create {:?}", part))?,
         ));
         file.lock().await.set_len(total_size)?;
 
@@ -301,7 +341,10 @@ impl Downloader {
         Ok(())
     }
 
-    pub async fn download_many(&self, urls: &[(String, PathBuf)]) -> Vec<(usize, Result<Option<String>>)> {
+    pub async fn download_many(
+        &self,
+        urls: &[(String, PathBuf)],
+    ) -> Vec<(usize, Result<Option<String>>)> {
         let semaphore = Arc::new(tokio::sync::Semaphore::new(self.max_concurrent_packages));
         let mut tasks = Vec::with_capacity(urls.len());
 
@@ -330,11 +373,13 @@ impl Downloader {
     }
 
     pub async fn check_endpoint_availability(&self, url: &str) -> bool {
-        self.client.head(url).send().await
+        self.client
+            .head(url)
+            .send()
+            .await
             .map(|r| r.status().is_success())
             .unwrap_or(false)
     }
-
 }
 
 fn part_path_for(destination: &Path) -> PathBuf {
@@ -399,7 +444,12 @@ mod tests {
         let prev = d.backoff(0).as_millis();
         for attempt in 1..4 {
             let cur = d.backoff(attempt).as_millis();
-            assert!(cur > prev, "attempt {} should be larger than {}", attempt, attempt - 1);
+            assert!(
+                cur > prev,
+                "attempt {} should be larger than {}",
+                attempt,
+                attempt - 1
+            );
         }
     }
 
@@ -411,7 +461,13 @@ mod tests {
             let ms = dur.as_millis() as u64;
             let base = d.base_delay_ms * 2u64.pow(attempt);
             assert!(ms >= base, "attempt {}: {} < {}", attempt, ms, base);
-            assert!(ms <= base + base / 2, "attempt {}: {} > {}", attempt, ms, base + base / 2);
+            assert!(
+                ms <= base + base / 2,
+                "attempt {}: {} > {}",
+                attempt,
+                ms,
+                base + base / 2
+            );
         }
     }
 

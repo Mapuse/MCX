@@ -1,12 +1,12 @@
+use crate::core::constants;
+use crate::core::db::Database;
+use crate::utils::ui::UserInterface;
+use anyhow::Result;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 use std::sync::Arc;
-use anyhow::Result;
-use serde::{Serialize, Deserialize};
-use crate::core::constants;
-use crate::core::db::Database;
-use crate::utils::ui::UserInterface;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct BinaryEntry {
@@ -40,7 +40,9 @@ impl BinaryIndex {
                 }
                 for comp in &pkg.components {
                     if comp.files.iter().any(|f| {
-                        f.file_name().map(|n| n.to_string_lossy() == binary_name).unwrap_or(false)
+                        f.file_name()
+                            .map(|n| n.to_string_lossy() == binary_name)
+                            .unwrap_or(false)
                     }) {
                         results.push(BinaryEntry {
                             binary: binary_name.to_string(),
@@ -114,23 +116,35 @@ pub fn command_not_found_handler(root: &str, db: Arc<Database>, command: &str) -
     let entries = index.lookup(command);
 
     if entries.is_empty() {
-        UserInterface::error(&format!("'{}' is not installed and no package provides it.", command));
+        UserInterface::error(&format!(
+            "'{}' is not installed and no package provides it.",
+            command
+        ));
         return Ok(());
     }
 
-    let unique_pkgs: Vec<&BinaryEntry> = entries.iter().collect::<std::collections::HashSet<_>>().into_iter().collect();
+    let unique_pkgs: Vec<&BinaryEntry> = entries
+        .iter()
+        .collect::<std::collections::HashSet<_>>()
+        .into_iter()
+        .collect();
     let primary = &entries[0];
 
     UserInterface::info(&format!("'{}' is not installed.", command));
     println!();
-    UserInterface::info(&format!("The following package{} provide '{}':",
-        if unique_pkgs.len() > 1 { "s" } else { "" }, command));
+    UserInterface::info(&format!(
+        "The following package{} provide '{}':",
+        if unique_pkgs.len() > 1 { "s" } else { "" },
+        command
+    ));
 
     let mut shown = std::collections::HashSet::new();
     for entry in &entries {
         if shown.insert(entry.package.clone()) {
-            println!("  {} {} [component: {}]",
-                entry.package, entry.version, entry.component);
+            println!(
+                "  {} {} [component: {}]",
+                entry.package, entry.version, entry.component
+            );
         }
     }
 
@@ -138,16 +152,22 @@ pub fn command_not_found_handler(root: &str, db: Arc<Database>, command: &str) -
     if entries.len() == 1 && primary.component == "core" {
         UserInterface::info(&format!("To install, run: mcx install {}", primary.package));
     } else {
-        let comp_names: Vec<String> = entries.iter()
+        let comp_names: Vec<String> = entries
+            .iter()
             .map(|e| e.component.clone())
             .collect::<std::collections::HashSet<_>>()
             .into_iter()
             .collect();
-        UserInterface::info(&format!("To install only '{}', run: mcx install {} --only {}",
-            command, primary.package, command));
+        UserInterface::info(&format!(
+            "To install only '{}', run: mcx install {} --only {}",
+            command, primary.package, command
+        ));
         if comp_names.len() > 1 {
-            UserInterface::info(&format!("To install specific components: mcx install {} --components {}",
-                primary.package, comp_names.join(",")));
+            UserInterface::info(&format!(
+                "To install specific components: mcx install {} --components {}",
+                primary.package,
+                comp_names.join(",")
+            ));
         }
     }
 
@@ -168,9 +188,10 @@ pub fn scan_system_binaries(root: &str) -> Vec<String> {
                         use std::os::unix::fs::PermissionsExt;
                         if let Ok(meta) = fs::metadata(&path)
                             && meta.permissions().mode() & 0o111 != 0
-                                && let Some(name) = path.file_name() {
-                                    binaries.push(name.to_string_lossy().to_string());
-                                }
+                            && let Some(name) = path.file_name()
+                        {
+                            binaries.push(name.to_string_lossy().to_string());
+                        }
                     }
                     #[cfg(not(unix))]
                     {
@@ -188,7 +209,10 @@ pub fn scan_system_binaries(root: &str) -> Vec<String> {
 pub fn detect_new_binaries(root: &str, before: &[String]) -> Vec<String> {
     let after = scan_system_binaries(root);
     let before_set: std::collections::HashSet<&String> = before.iter().collect();
-    after.into_iter().filter(|b| !before_set.contains(b)).collect()
+    after
+        .into_iter()
+        .filter(|b| !before_set.contains(b))
+        .collect()
 }
 
 #[cfg(test)]

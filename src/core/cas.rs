@@ -1,10 +1,10 @@
+use crate::core::constants;
+use anyhow::{Context, Result};
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use anyhow::{Result, Context};
-use sha2::{Sha256, Digest};
-use crate::core::constants;
 
 pub struct CasStore {
     cas_dir: PathBuf,
@@ -26,8 +26,7 @@ impl CasStore {
     }
 
     pub fn initialize(&self) -> Result<()> {
-        fs::create_dir_all(&self.cas_dir)
-            .context("Failed to allocate CAS directory hierarchy")
+        fs::create_dir_all(&self.cas_dir).context("Failed to allocate CAS directory hierarchy")
     }
 
     pub fn deduplicate_libraries(&self, pkg_root: &Path) -> Result<CasStats> {
@@ -49,7 +48,10 @@ impl CasStore {
                     // Cross-device or unsupported: fall back to a plain copy
                     // instead of failing the whole dedup pass.
                     fs::copy(&cas_path, lib_path).with_context(|| {
-                        format!("Failed to restore {:?} from CAS (hard-link error: {})", lib_path, e)
+                        format!(
+                            "Failed to restore {:?} from CAS (hard-link error: {})",
+                            lib_path, e
+                        )
                     })?;
                 }
                 stats.bytes_saved += original_len;
@@ -70,7 +72,8 @@ impl CasStore {
         }
 
         stats.unique_files = seen_hashes.len() as u64;
-        stats.bytes_total = seen_hashes.values()
+        stats.bytes_total = seen_hashes
+            .values()
             .filter_map(|p| p.metadata().ok())
             .map(|m| m.len())
             .sum::<u64>();
@@ -122,7 +125,8 @@ impl CasStore {
                 if path.is_dir() {
                     self.walk_for_so(&path, acc);
                 } else if path.is_file() {
-                    let name = path.file_name()
+                    let name = path
+                        .file_name()
                         .map(|n| n.to_string_lossy())
                         .unwrap_or_default();
                     if name.starts_with("lib") && (name.contains(".so") || name.ends_with(".so")) {
@@ -139,9 +143,12 @@ impl CasStore {
         let mut hasher = Sha256::new();
         let mut buffer = vec![0u8; constants::CAS_HASH_BUFFER_SIZE];
         loop {
-            let n = file.read(&mut buffer)
+            let n = file
+                .read(&mut buffer)
                 .with_context(|| format!("Read error during CAS hashing: {:?}", path))?;
-            if n == 0 { break; }
+            if n == 0 {
+                break;
+            }
             hasher.update(&buffer[..n]);
         }
         Ok(format!("{:x}", hasher.finalize()))
@@ -171,7 +178,10 @@ mod tests {
         assert_eq!(first.total_files, 2);
         assert_eq!(first.unique_files, 1, "identical blobs stored once");
         let second = cas.deduplicate_libraries(&pkg_root).expect("second dedup");
-        assert!(second.bytes_saved > 0, "second pass must reclaim space via links");
+        assert!(
+            second.bytes_saved > 0,
+            "second pass must reclaim space via links"
+        );
 
         // Content must survive both passes byte-for-byte.
         for name in ["libone.so", "libtwo.so"] {

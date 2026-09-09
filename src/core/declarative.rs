@@ -1,9 +1,9 @@
+use crate::core::arch::Architecture;
+use anyhow::{Result, anyhow};
 use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
 use std::str::FromStr;
-use anyhow::{Result, anyhow};
-use crate::core::arch::Architecture;
 
 #[derive(Clone, Debug)]
 pub struct SystemProfile {
@@ -39,8 +39,8 @@ impl ProfileValidator {
     }
 
     fn parse_json_profile(content: &str) -> Result<SystemProfile> {
-        let json: JsonProfile = serde_json::from_str(content)
-            .map_err(|e| anyhow!("Invalid JSON profile: {}", e))?;
+        let json: JsonProfile =
+            serde_json::from_str(content).map_err(|e| anyhow!("Invalid JSON profile: {}", e))?;
         let architecture = match &json.architecture {
             Some(a) => Architecture::from_str(a)?,
             None => Architecture::host(),
@@ -72,7 +72,8 @@ impl ProfileValidator {
                     "version" => version = value.to_string(),
                     "architecture" => architecture = Architecture::from_str(value)?,
                     "packages" => {
-                        packages = value.split(',')
+                        packages = value
+                            .split(',')
                             .map(|s| s.trim().to_string())
                             .filter(|s| !s.is_empty())
                             .collect();
@@ -82,10 +83,17 @@ impl ProfileValidator {
             }
         }
 
-        Ok(SystemProfile { version, architecture, packages })
+        Ok(SystemProfile {
+            version,
+            architecture,
+            packages,
+        })
     }
 
-    pub fn compile_profile_diff(current: &[String], target: &[String]) -> (Vec<String>, Vec<String>) {
+    pub fn compile_profile_diff(
+        current: &[String],
+        target: &[String],
+    ) -> (Vec<String>, Vec<String>) {
         let current_set: HashSet<String> = current.iter().cloned().collect();
         let target_set: HashSet<String> = target.iter().cloned().collect();
         let to_install = target_set.difference(&current_set).cloned().collect();
@@ -100,10 +108,15 @@ impl ProfileValidator {
         let mut unique_packages = HashSet::new();
         for pkg in &profile.packages {
             if pkg.trim().is_empty() {
-                return Err(anyhow!("Empty package token discovered inside target array"));
+                return Err(anyhow!(
+                    "Empty package token discovered inside target array"
+                ));
             }
             if !unique_packages.insert(pkg.clone()) {
-                return Err(anyhow!("Profile declaration duplication detected for: {}", pkg));
+                return Err(anyhow!(
+                    "Profile declaration duplication detected for: {}",
+                    pkg
+                ));
             }
         }
         Ok(())
@@ -116,11 +129,16 @@ mod tests {
 
     #[test]
     fn test_load_json_profile() {
-        let dir = std::env::temp_dir().join(format!("mcx_test_json_profile_{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("mcx_test_json_profile_{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         let path = dir.join("profile.json");
-        fs::write(&path, r#"{"version": "1.0", "architecture": "amd64", "packages": ["a", "b"]}"#).unwrap();
+        fs::write(
+            &path,
+            r#"{"version": "1.0", "architecture": "amd64", "packages": ["a", "b"]}"#,
+        )
+        .unwrap();
 
         let profile = ProfileValidator::load_profile(&path).expect("load json profile");
         assert_eq!(profile.version, "1.0");
@@ -136,7 +154,11 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         let path = dir.join("profile.ini");
-        fs::write(&path, "version = 2.0\narchitecture = native\npackages = a, b\n").unwrap();
+        fs::write(
+            &path,
+            "version = 2.0\narchitecture = native\npackages = a, b\n",
+        )
+        .unwrap();
 
         let profile = ProfileValidator::load_profile(&path).expect("load ini profile");
         assert_eq!(profile.version, "2.0");

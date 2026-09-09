@@ -1,9 +1,9 @@
-use std::path::PathBuf;
-use std::sync::Arc;
-use anyhow::Context;
 use crate::core::constants;
 use crate::core::db::Database;
 use crate::core::repo::RepositoryManager;
+use anyhow::Context;
+use std::path::PathBuf;
+use std::sync::Arc;
 
 pub struct SyncCommand {
     root: PathBuf,
@@ -12,7 +12,10 @@ pub struct SyncCommand {
 
 impl SyncCommand {
     pub fn new(root: String, db: Arc<Database>) -> Self {
-        Self { root: PathBuf::from(root), db }
+        Self {
+            root: PathBuf::from(root),
+            db,
+        }
     }
 
     pub async fn execute(&self) -> Result<(), anyhow::Error> {
@@ -20,11 +23,9 @@ impl SyncCommand {
         // may contribute fresh packages (or prebuilt archives) that the
         // index sync would otherwise mask. Failures are surfaced as warnings
         // so a broken source never blocks a plain update.
-        if let Err(e) = crate::commands::localsrc::LocalSourceCommand::new(
-            &self.root,
-            Arc::clone(&self.db),
-        )
-        .sync_local_sources()
+        if let Err(e) =
+            crate::commands::localsrc::LocalSourceCommand::new(&self.root, Arc::clone(&self.db))
+                .sync_local_sources()
         {
             crate::utils::ui::UserInterface::warning(&format!("Local source sync skipped: {e}"));
         }
@@ -49,8 +50,9 @@ impl SyncCommand {
         for repo in &repos {
             let index_path = mgr.get_local_index_path(&repo.name);
             if index_path.exists() {
-                let path_str = index_path.to_str()
-                    .ok_or_else(|| anyhow::anyhow!("Index path is not valid UTF-8: {:?}", index_path))?;
+                let path_str = index_path.to_str().ok_or_else(|| {
+                    anyhow::anyhow!("Index path is not valid UTF-8: {:?}", index_path)
+                })?;
                 tx.update_repository_index(&repo.name, path_str)?;
             }
         }

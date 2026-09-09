@@ -1,16 +1,16 @@
+use crate::core::cgroup::CgroupController;
+use crate::core::component::ComponentFilter;
+use crate::core::constants;
+use crate::core::db::Database;
+use crate::core::plugin::{PluginEvent, PluginHook, PluginManager};
+use crate::core::security::SecurityMonitor;
+use crate::utils::ui::UserInterface;
+use anyhow::{Context, Result, anyhow};
 use std::cmp::Reverse;
 use std::collections::{HashSet, VecDeque};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use anyhow::{Result, Context, anyhow};
-use crate::core::db::Database;
-use crate::core::cgroup::CgroupController;
-use crate::core::security::SecurityMonitor;
-use crate::core::plugin::{PluginManager, PluginHook, PluginEvent};
-use crate::core::component::ComponentFilter;
-use crate::core::constants;
-use crate::utils::ui::UserInterface;
 
 pub struct RemoveCommand {
     root: PathBuf,
@@ -21,31 +21,51 @@ pub struct RemoveCommand {
 
 impl RemoveCommand {
     pub fn new(root: String, db: Arc<Database>) -> Self {
-        Self { root: PathBuf::from(root), db, plugin_mgr: None, component_filter: None }
+        Self {
+            root: PathBuf::from(root),
+            db,
+            plugin_mgr: None,
+            component_filter: None,
+        }
     }
 
-    pub fn with_plugin_mgr(mut self, mgr: Arc<PluginManager>) -> Self { self.plugin_mgr = Some(mgr); self }
-    pub fn with_component_filter(mut self, filter: Option<ComponentFilter>) -> Self { self.component_filter = filter; self }
+    pub fn with_plugin_mgr(mut self, mgr: Arc<PluginManager>) -> Self {
+        self.plugin_mgr = Some(mgr);
+        self
+    }
+    pub fn with_component_filter(mut self, filter: Option<ComponentFilter>) -> Self {
+        self.component_filter = filter;
+        self
+    }
 
-    pub fn execute(&self, packages: &[String], cgroup_mgr: &CgroupController, security_mon: &SecurityMonitor) -> Result<()> {
+    pub fn execute(
+        &self,
+        packages: &[String],
+        cgroup_mgr: &CgroupController,
+        security_mon: &SecurityMonitor,
+    ) -> Result<()> {
         if packages.is_empty() {
-            return Err(anyhow!("No target packages specified for removal transaction"));
+            return Err(anyhow!(
+                "No target packages specified for removal transaction"
+            ));
         }
 
         self.fire_hooks(PluginHook::PreRemove, packages);
 
         if let Some(ref filter) = self.component_filter
-            && !filter.include.is_empty() {
-                let result = self.execute_partial_removal(packages, filter, cgroup_mgr, security_mon);
-                self.fire_hooks(PluginHook::PostRemove, packages);
-                return result;
-            }
+            && !filter.include.is_empty()
+        {
+            let result = self.execute_partial_removal(packages, filter, cgroup_mgr, security_mon);
+            self.fire_hooks(PluginHook::PostRemove, packages);
+            return result;
+        }
 
         let mut transaction = self.db.begin_transaction()?;
 
         let orphans = self.analysis(packages)?;
 
-        let all_targets: Vec<String> = packages.iter()
+        let all_targets: Vec<String> = packages
+            .iter()
             .chain(orphans.iter())
             .map(|s| s.to_string())
             .collect();
@@ -64,7 +84,9 @@ impl RemoveCommand {
                 continue;
             }
 
-            let manifest = self.db.get_package_manifest(pkg)
+            let manifest = self
+                .db
+                .get_package_manifest(pkg)
                 .with_context(|| format!("Failed to retrieve manifest for {}", pkg))?;
 
             let pkg_active = active_dir.join(pkg);
@@ -93,17 +115,22 @@ impl RemoveCommand {
         residue_paths.sort_by_key(|a| Reverse(a.components().count()));
 
         for file_path in &residue_paths {
-            let absolute_target = self.root.join(
-                file_path.strip_prefix(&self.root).unwrap_or(file_path)
-            );
-            if !absolute_target.exists() { continue; }
-            if shared_files.contains(&absolute_target) { continue; }
+            let absolute_target = self
+                .root
+                .join(file_path.strip_prefix(&self.root).unwrap_or(file_path));
+            if !absolute_target.exists() {
+                continue;
+            }
+            if shared_files.contains(&absolute_target) {
+                continue;
+            }
 
             if absolute_target.is_dir() {
                 if let Ok(mut entries) = fs::read_dir(&absolute_target)
-                    && entries.next().is_none() {
-                        let _ = fs::remove_dir(&absolute_target);
-                    }
+                    && entries.next().is_none()
+                {
+                    let _ = fs::remove_dir(&absolute_target);
+                }
             } else if let Err(e) = fs::remove_file(&absolute_target) {
                 UserInterface::warning(&format!("Failed to remove {:?}: {}", absolute_target, e));
             }
@@ -115,7 +142,10 @@ impl RemoveCommand {
         // sandbox cleanup for removed packages
         for pkg in &all_targets {
             if let Err(e) = cgroup_mgr.remove_resource_limits(pkg) {
-                UserInterface::warning(&format!("Failed to remove resource limits for {}: {}", pkg, e));
+                UserInterface::warning(&format!(
+                    "Failed to remove resource limits for {}: {}",
+                    pkg, e
+                ));
             }
             security_mon.unregister_package(pkg);
         }
@@ -162,7 +192,9 @@ impl RemoveCommand {
                 continue;
             }
 
-            let manifest = self.db.get_package_manifest(pkg_name)
+            let manifest = self
+                .db
+                .get_package_manifest(pkg_name)
                 .with_context(|| format!("Failed to retrieve manifest for {}", pkg_name))?;
 
             let mut removed_count = 0usize;
@@ -172,7 +204,10 @@ impl RemoveCommand {
 
             for component in &manifest.components {
                 if filter.include.contains(&component.name) {
-                    UserInterface::info(&format!("Removing component '{}' from {}", component.name, pkg_name));
+                    UserInterface::info(&format!(
+                        "Removing component '{}' from {}",
+                        component.name, pkg_name
+                    ));
                     removed_component_files.extend(component.files.iter().cloned());
                 } else {
                     remaining_files.extend(component.files.iter().cloned());
@@ -181,13 +216,17 @@ impl RemoveCommand {
             }
 
             if kept_components.is_empty() && !manifest.components.is_empty() {
-                UserInterface::info(&format!("All components removed from '{}'; performing full removal", pkg_name));
+                UserInterface::info(&format!(
+                    "All components removed from '{}'; performing full removal",
+                    pkg_name
+                ));
                 let mut tx = self.db.begin_transaction()?;
                 let pkg_active = active_dir.join(pkg_name);
                 if pkg_active.exists() {
                     tx.backup_file(&pkg_active)?;
-                    fs::remove_dir_all(&pkg_active)
-                        .with_context(|| format!("Failed to purge package root: {:?}", pkg_active))?;
+                    fs::remove_dir_all(&pkg_active).with_context(|| {
+                        format!("Failed to purge package root: {:?}", pkg_active)
+                    })?;
                 }
                 tx.stage_package_removal(pkg_name)?;
                 tx.commit()?;
@@ -198,9 +237,9 @@ impl RemoveCommand {
                 let mut updated = manifest.clone();
                 updated.components = kept_components;
                 updated.files = remaining_files.clone();
-                updated.file_hashes.retain(|key, _| {
-                    remaining_files.iter().any(|f| f.to_string_lossy() == *key)
-                });
+                updated
+                    .file_hashes
+                    .retain(|key, _| remaining_files.iter().any(|f| f.to_string_lossy() == *key));
 
                 let mut tx = self.db.begin_transaction()?;
                 tx.register_package_placement(&updated)?;
@@ -212,22 +251,32 @@ impl RemoveCommand {
                     if abs.exists() {
                         match fs::remove_file(&abs) {
                             Ok(()) => removed_count += 1,
-                            Err(e) => UserInterface::warning(&format!("Failed to remove {:?}: {}", abs, e)),
+                            Err(e) => UserInterface::warning(&format!(
+                                "Failed to remove {:?}: {}",
+                                abs, e
+                            )),
                         }
                     }
                     let file_in_active = pkg_active.join(file);
-                    if file_in_active.exists() { let _ = fs::remove_file(&file_in_active); }
+                    if file_in_active.exists() {
+                        let _ = fs::remove_file(&file_in_active);
+                    }
                 }
 
                 // Drop now-empty directories left behind in the active mirror.
                 if pkg_active.exists()
-                    && fs::read_dir(&pkg_active).map(|mut d| d.next().is_none()).unwrap_or(false)
+                    && fs::read_dir(&pkg_active)
+                        .map(|mut d| d.next().is_none())
+                        .unwrap_or(false)
                 {
                     let _ = fs::remove_dir(&pkg_active);
                 }
             }
 
-            UserInterface::success(&format!("Removed {} file(s) from '{}'", removed_count, pkg_name));
+            UserInterface::success(&format!(
+                "Removed {} file(s) from '{}'",
+                removed_count, pkg_name
+            ));
         }
 
         self.cleanup_dangling_symlinks(&self.root, packages)?;
@@ -243,7 +292,10 @@ impl RemoveCommand {
                 }
             }
             if let Err(e) = cgroup_mgr.remove_resource_limits(pkg_name) {
-                UserInterface::warning(&format!("Failed to remove resource limits for {}: {}", pkg_name, e));
+                UserInterface::warning(&format!(
+                    "Failed to remove resource limits for {}: {}",
+                    pkg_name, e
+                ));
             }
             security_mon.unregister_package(pkg_name);
         }
@@ -255,10 +307,14 @@ impl RemoveCommand {
         let all_installed = self.db.get_all_installed_packages()?;
         let target_set: HashSet<&str> = targets.iter().map(|s| s.as_str()).collect();
 
-        let mut reverse_deps: std::collections::HashMap<&str, Vec<&str>> = std::collections::HashMap::new();
+        let mut reverse_deps: std::collections::HashMap<&str, Vec<&str>> =
+            std::collections::HashMap::new();
         for pkg in &all_installed {
             for dep in &pkg.dependencies {
-                reverse_deps.entry(&dep.name).or_default().push(&pkg.pkg_name);
+                reverse_deps
+                    .entry(&dep.name)
+                    .or_default()
+                    .push(&pkg.pkg_name);
             }
         }
 
@@ -266,8 +322,13 @@ impl RemoveCommand {
         let mut queue: VecDeque<&str> = VecDeque::new();
 
         for pkg in &all_installed {
-            if target_set.contains(pkg.pkg_name.as_str()) { continue; }
-            let rd = reverse_deps.get(pkg.pkg_name.as_str()).map(|v| v.as_slice()).unwrap_or(&[]);
+            if target_set.contains(pkg.pkg_name.as_str()) {
+                continue;
+            }
+            let rd = reverse_deps
+                .get(pkg.pkg_name.as_str())
+                .map(|v| v.as_slice())
+                .unwrap_or(&[]);
             let has_non_target_ref = rd.iter().any(|r| !target_set.contains(r));
             if !has_non_target_ref && !rd.is_empty() {
                 queue.push_back(&pkg.pkg_name);
@@ -276,7 +337,9 @@ impl RemoveCommand {
 
         let mut visited: HashSet<&str> = target_set.iter().copied().collect();
         while let Some(candidate) = queue.pop_front() {
-            if !visited.insert(candidate) { continue; }
+            if !visited.insert(candidate) {
+                continue;
+            }
             if !target_set.contains(candidate) {
                 orphans.push(candidate.to_string());
                 if let Some(deps) = reverse_deps.get(candidate) {
@@ -305,7 +368,9 @@ impl RemoveCommand {
         let removed_set: HashSet<&str> = removed.iter().map(|s| s.as_str()).collect();
 
         for dir in &config_dirs {
-            if !dir.exists() { continue; }
+            if !dir.exists() {
+                continue;
+            }
             if let Ok(entries) = fs::read_dir(dir) {
                 for entry in entries.flatten() {
                     let path = entry.path();
@@ -346,7 +411,9 @@ impl RemoveCommand {
         if let Ok(all) = self.db.get_all_installed_packages() {
             let removed_set: HashSet<&str> = removed_packages.iter().map(|s| s.as_str()).collect();
             for pkg in &all {
-                if removed_set.contains(pkg.pkg_name.as_str()) { continue; }
+                if removed_set.contains(pkg.pkg_name.as_str()) {
+                    continue;
+                }
                 for f in &pkg.files {
                     let full = self.root.join(f);
                     shared.insert(full);
@@ -366,9 +433,13 @@ impl RemoveCommand {
                     let full = root.join(file);
                     if full.is_symlink()
                         && !full.exists()
-                        && let Err(e) = fs::remove_file(&full) {
-                            UserInterface::warning(&format!("Failed to remove dangling symlink {:?}: {}", full, e));
-                        }
+                        && let Err(e) = fs::remove_file(&full)
+                    {
+                        UserInterface::warning(&format!(
+                            "Failed to remove dangling symlink {:?}: {}",
+                            full, e
+                        ));
+                    }
                 }
             }
         }
@@ -376,7 +447,9 @@ impl RemoveCommand {
     }
 
     fn remove_dangling_symlinks_recursive(dir: &Path) {
-        if !dir.exists() { return; }
+        if !dir.exists() {
+            return;
+        }
         if let Ok(entries) = fs::read_dir(dir) {
             for entry in entries.flatten() {
                 let path = entry.path();

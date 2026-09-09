@@ -1,13 +1,13 @@
-use std::fs;
-use std::path::{Path, PathBuf};
-use anyhow::{Result, Context, anyhow};
-use futures_util::future::join_all;
-use crate::core::constants;
+use crate::archive::hash::HashVerifier;
 use crate::core::arch::host_architecture;
+use crate::core::constants;
 use crate::core::database::{PackageMetadata, RepositoryInfo};
 use crate::network::download::Downloader;
-use crate::archive::hash::HashVerifier;
 use crate::utils::ui::UserInterface;
+use anyhow::{Context, Result, anyhow};
+use futures_util::future::join_all;
+use std::fs;
+use std::path::{Path, PathBuf};
 
 pub struct RepositoryManager {
     config_file: PathBuf,
@@ -20,7 +20,9 @@ fn validate_repository_name(name: &str) -> Result<()> {
     let valid = !name.is_empty()
         && name.len() <= 100
         && !name.chars().all(|c| c == '.')
-        && name.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'));
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'));
     if valid {
         Ok(())
     } else {
@@ -41,8 +43,9 @@ impl RepositoryManager {
 
     pub fn initialize(&self) -> Result<()> {
         if let Some(parent) = self.config_file.parent() {
-            fs::create_dir_all(parent)
-                .context("Failed to allocate workspace configuration directories for repositories")?;
+            fs::create_dir_all(parent).context(
+                "Failed to allocate workspace configuration directories for repositories",
+            )?;
         }
         fs::create_dir_all(&self.sync_dir)
             .context("Failed to allocate repository metadata sync runway")?;
@@ -53,8 +56,9 @@ impl RepositoryManager {
         if !self.config_file.exists() {
             return Ok(Vec::new());
         }
-        let content = fs::read_to_string(&self.config_file)
-            .with_context(|| format!("Failed to read repository registry: {:?}", self.config_file))?;
+        let content = fs::read_to_string(&self.config_file).with_context(|| {
+            format!("Failed to read repository registry: {:?}", self.config_file)
+        })?;
         let repos = Self::parse_ini(&content)?;
         Ok(repos)
     }
@@ -80,7 +84,7 @@ impl RepositoryManager {
                         enabled: current_enabled,
                     });
                 }
-                current_name = Some(line[1..line.len()-1].trim().to_string());
+                current_name = Some(line[1..line.len() - 1].trim().to_string());
                 if let Some(name) = &current_name {
                     validate_repository_name(name)?;
                 }
@@ -102,7 +106,12 @@ impl RepositoryManager {
         }
 
         if let (Some(name), Some(url)) = (current_name, current_url) {
-            repos.push(RepositoryInfo { name, url, checksum: current_checksum, enabled: current_enabled });
+            repos.push(RepositoryInfo {
+                name,
+                url,
+                checksum: current_checksum,
+                enabled: current_enabled,
+            });
         }
 
         Ok(repos)
@@ -172,13 +181,18 @@ impl RepositoryManager {
             tasks.push(tokio::spawn(async move {
                 let temp_path = sync_dir.join(format!("{}.tmp", repo_name));
                 let final_path = sync_dir.join(format!("{}.json", repo_name));
-                let index_url = format!("{}/{}", repo_url.trim_end_matches('/'), arch.index_filename());
+                let index_url = format!(
+                    "{}/{}",
+                    repo_url.trim_end_matches('/'),
+                    arch.index_filename()
+                );
 
-                
                 match downloader.package(&index_url, &temp_path).await {
                     Ok(_) => {
                         if let Some(ref expected_hash) = checksum {
-                            if let Err(e) = HashVerifier::verify_integrity(&temp_path, "sha256", expected_hash) {
+                            if let Err(e) =
+                                HashVerifier::verify_integrity(&temp_path, "sha256", expected_hash)
+                            {
                                 let _ = fs::remove_file(&temp_path);
                                 Err(format!("{}: checksum mismatch: {}", repo_name, e))
                             } else if let Err(e) = fs::rename(&temp_path, &final_path) {
@@ -229,17 +243,21 @@ impl RepositoryManager {
             let path = entry.path();
             if path.extension().map(|e| e == "json").unwrap_or(false)
                 && let Ok(content) = fs::read_to_string(&path)
-                    && let Ok(pkgs) = serde_json::from_str::<Vec<PackageMetadata>>(&content) {
-                        let repo_name = path.file_stem().and_then(|s| s.to_str()).unwrap_or("unknown");
-                        for pkg in pkgs {
-                            if pkg.pkg_name.to_lowercase().contains(&q)
-                                || pkg.version.to_lowercase().contains(&q)
-                                || pkg.license.to_lowercase().contains(&q)
-                            {
-                                results.push((repo_name.to_string(), pkg));
-                            }
-                        }
+                && let Ok(pkgs) = serde_json::from_str::<Vec<PackageMetadata>>(&content)
+            {
+                let repo_name = path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("unknown");
+                for pkg in pkgs {
+                    if pkg.pkg_name.to_lowercase().contains(&q)
+                        || pkg.version.to_lowercase().contains(&q)
+                        || pkg.license.to_lowercase().contains(&q)
+                    {
+                        results.push((repo_name.to_string(), pkg));
                     }
+                }
+            }
         }
         Ok(results)
     }
@@ -255,13 +273,14 @@ impl RepositoryManager {
             let path = entry.path();
             if path.extension().map(|e| e == "json").unwrap_or(false)
                 && let Ok(content) = fs::read_to_string(&path)
-                    && let Ok(pkgs) = serde_json::from_str::<Vec<PackageMetadata>>(&content) {
-                        for pkg in pkgs {
-                            if pkg.pkg_name == pkg_name {
-                                results.push(pkg);
-                            }
-                        }
+                && let Ok(pkgs) = serde_json::from_str::<Vec<PackageMetadata>>(&content)
+            {
+                for pkg in pkgs {
+                    if pkg.pkg_name == pkg_name {
+                        results.push(pkg);
                     }
+                }
+            }
         }
         Ok(results)
     }
@@ -273,7 +292,10 @@ impl RepositoryManager {
     pub fn read_cached_index(&self, repo_name: &str) -> Result<Vec<PackageMetadata>> {
         let index_path = self.get_local_index_path(repo_name);
         if !index_path.exists() {
-            return Err(anyhow!("Synchronized remote manifest index not found locally for: {}", repo_name));
+            return Err(anyhow!(
+                "Synchronized remote manifest index not found locally for: {}",
+                repo_name
+            ));
         }
         let content = fs::read_to_string(&index_path)
             .with_context(|| format!("Failed to read synchronized index: {:?}", index_path))?;
@@ -284,7 +306,9 @@ impl RepositoryManager {
 
     pub async fn sync_single(&self, repo_name: &str) -> Result<()> {
         let repos = self.load_repositories()?;
-        let repo = repos.iter().find(|r| r.name == repo_name)
+        let repo = repos
+            .iter()
+            .find(|r| r.name == repo_name)
             .ok_or_else(|| anyhow!("Repository '{}' not found", repo_name))?;
         let repo = repo.clone();
 
@@ -293,17 +317,24 @@ impl RepositoryManager {
 
         let temp_path = self.sync_dir.join(format!("{}.tmp", repo_name));
         let final_path = self.sync_dir.join(format!("{}.json", repo_name));
-        let index_url = format!("{}/{}", repo.url.trim_end_matches('/'), host_arch.index_filename());
+        let index_url = format!(
+            "{}/{}",
+            repo.url.trim_end_matches('/'),
+            host_arch.index_filename()
+        );
 
         let downloader = Downloader::new();
-        downloader.package(&index_url, &temp_path).await
+        downloader
+            .package(&index_url, &temp_path)
+            .await
             .map_err(|e| anyhow!("Download failed: {}", e))?;
 
         if let Some(ref expected_hash) = repo.checksum
-            && let Err(e) = HashVerifier::verify_integrity(&temp_path, "sha256", expected_hash) {
-                let _ = fs::remove_file(&temp_path);
-                return Err(anyhow!("Checksum mismatch: {}", e));
-            }
+            && let Err(e) = HashVerifier::verify_integrity(&temp_path, "sha256", expected_hash)
+        {
+            let _ = fs::remove_file(&temp_path);
+            return Err(anyhow!("Checksum mismatch: {}", e));
+        }
 
         fs::rename(&temp_path, &final_path)?;
         UserInterface::download(&format!("Repo synced: {}", repo_name));
@@ -312,7 +343,9 @@ impl RepositoryManager {
 
     pub fn set_enabled(&self, repo_name: &str, enabled: bool) -> Result<()> {
         let mut repos = self.load_repositories()?;
-        let repo = repos.iter_mut().find(|r| r.name == repo_name)
+        let repo = repos
+            .iter_mut()
+            .find(|r| r.name == repo_name)
             .ok_or_else(|| anyhow!("Repository '{}' not found", repo_name))?;
         repo.enabled = enabled;
         self.save_repositories(&repos)
@@ -320,7 +353,9 @@ impl RepositoryManager {
 
     pub fn info(&self, repo_name: &str) -> Result<RepositoryInfo> {
         let repos = self.load_repositories()?;
-        repos.into_iter().find(|r| r.name == repo_name)
+        repos
+            .into_iter()
+            .find(|r| r.name == repo_name)
             .ok_or_else(|| anyhow!("Repository '{}' not found", repo_name))
     }
 }

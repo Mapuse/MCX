@@ -1,6 +1,6 @@
+use anyhow::{Result, anyhow};
 use std::fs;
 use std::path::{Path, PathBuf};
-use anyhow::{Result, anyhow};
 
 pub struct Extractor;
 
@@ -9,7 +9,11 @@ impl Extractor {
         Self
     }
 
-    pub fn extract_zstd_archive<P: AsRef<Path>>(&self, archive_path: P, dest_dir: &Path) -> Result<Vec<PathBuf>> {
+    pub fn extract_zstd_archive<P: AsRef<Path>>(
+        &self,
+        archive_path: P,
+        dest_dir: &Path,
+    ) -> Result<Vec<PathBuf>> {
         let file = fs::File::open(archive_path)?;
         let decoder = zstd::stream::Decoder::new(file)?;
         let mut archive = tar::Archive::new(decoder);
@@ -20,7 +24,11 @@ impl Extractor {
             let path = entry.path()?.to_path_buf();
             let rel = path.strip_prefix("./").unwrap_or(&path);
 
-            if rel.is_absolute() || rel.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
+            if rel.is_absolute()
+                || rel
+                    .components()
+                    .any(|c| matches!(c, std::path::Component::ParentDir))
+            {
                 return Err(anyhow!("Structural hazard: Invalid path template detected"));
             }
 
@@ -31,7 +39,9 @@ impl Extractor {
                 tar::EntryType::Symlink | tar::EntryType::Link => {
                     if let Some(target) = entry.link_name()?
                         && (target.is_absolute()
-                            || target.components().any(|c| matches!(c, std::path::Component::ParentDir)))
+                            || target
+                                .components()
+                                .any(|c| matches!(c, std::path::Component::ParentDir)))
                     {
                         return Err(anyhow!(
                             "Structural hazard: link {:?} targets {:?} outside the package root",
@@ -81,7 +91,9 @@ mod tests {
         header.set_mode(0o777);
         header.set_path("usr/escape").unwrap();
         header.set_link_name("/etc/shadow").unwrap();
-        builder.append_data(&mut header, "usr/escape", std::io::empty()).unwrap();
+        builder
+            .append_data(&mut header, "usr/escape", std::io::empty())
+            .unwrap();
         builder.finish().unwrap();
         drop(builder);
 
@@ -116,13 +128,17 @@ mod tests {
         header.set_mode(0o777);
         header.set_path("usr/lib/libfoo.so").unwrap();
         header.set_link_name("libfoo.so.1").unwrap();
-        builder.append_data(&mut header, "usr/lib/libfoo.so", std::io::empty()).unwrap();
+        builder
+            .append_data(&mut header, "usr/lib/libfoo.so", std::io::empty())
+            .unwrap();
 
         let mut header2 = tar::Header::new_gnu();
         header2.set_size(5);
         header2.set_entry_type(tar::EntryType::Regular);
         header2.set_mode(0o644);
-        builder.append_data(&mut header2, "usr/lib/libfoo.so.1", b"bytes".as_slice()).unwrap();
+        builder
+            .append_data(&mut header2, "usr/lib/libfoo.so.1", b"bytes".as_slice())
+            .unwrap();
         builder.finish().unwrap();
         drop(builder);
 
@@ -136,8 +152,15 @@ mod tests {
         }
 
         let ext = Extractor::new(dir.path());
-        let files = ext.extract_zstd_archive(&xcs, &stage).expect("relative symlinks are fine");
+        let files = ext
+            .extract_zstd_archive(&xcs, &stage)
+            .expect("relative symlinks are fine");
         assert_eq!(files.len(), 2);
-        assert!(fs::symlink_metadata(stage.join("usr/lib/libfoo.so")).unwrap().file_type().is_symlink());
+        assert!(
+            fs::symlink_metadata(stage.join("usr/lib/libfoo.so"))
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
     }
 }

@@ -1,14 +1,14 @@
+use crate::archive::hash::HashVerifier;
+use crate::core::constants;
+use crate::core::database::Database;
+use crate::core::database::PackageMetadata;
+use crate::core::provenance::{PackageProvenance, auto_link_origin};
+use anyhow::{Result, anyhow};
 use std::collections::HashMap;
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use anyhow::{Result, anyhow};
-use crate::core::database::Database;
-use crate::core::database::PackageMetadata;
-use crate::core::provenance::{PackageProvenance, auto_link_origin};
-use crate::archive::hash::HashVerifier;
-use crate::core::constants;
 
 pub struct AddLocalCommand {
     db: Arc<Database>,
@@ -26,37 +26,94 @@ impl AddLocalCommand {
     pub fn execute(&self, file_path: &str) -> Result<()> {
         let package_path = Path::new(file_path);
         if !package_path.exists() {
-            return Err(anyhow!("Target local package payload missing: {:?}", package_path));
+            return Err(anyhow!(
+                "Target local package payload missing: {:?}",
+                package_path
+            ));
         }
 
         let metadata_file_in_archive = self.read_metadata_from_archive(package_path)?;
 
-        let (pkg_name, version, license, checksum_kind, checksum_value, embedded_arch, provenance, embedded_source) = if let Some(ref content) = metadata_file_in_archive {
+        let (
+            pkg_name,
+            version,
+            license,
+            checksum_kind,
+            checksum_value,
+            embedded_arch,
+            provenance,
+            embedded_source,
+        ) = if let Some(ref content) = metadata_file_in_archive {
             let v: serde_json::Value = serde_json::from_str(content)?;
-            let pkg_name = v.get("pkg_name").and_then(|x| x.as_str()).unwrap_or("").to_string();
-            let version = v.get("version").and_then(|x| x.as_str()).unwrap_or("").to_string();
-            let license = v.get("license").and_then(|x| x.as_str()).unwrap_or("").to_string();
-            let embedded_source = v.get("source").and_then(|x| x.as_str()).unwrap_or("").to_string();
+            let pkg_name = v
+                .get("pkg_name")
+                .and_then(|x| x.as_str())
+                .unwrap_or("")
+                .to_string();
+            let version = v
+                .get("version")
+                .and_then(|x| x.as_str())
+                .unwrap_or("")
+                .to_string();
+            let license = v
+                .get("license")
+                .and_then(|x| x.as_str())
+                .unwrap_or("")
+                .to_string();
+            let embedded_source = v
+                .get("source")
+                .and_then(|x| x.as_str())
+                .unwrap_or("")
+                .to_string();
             let (kind, value) = match v.get("checksum") {
                 Some(serde_json::Value::String(s)) => ("sha256".to_string(), s.clone()),
                 Some(serde_json::Value::Object(_)) => (
-                    v.pointer("/checksum/kind").and_then(|x| x.as_str()).unwrap_or("sha256").to_string(),
-                    v.pointer("/checksum/value").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+                    v.pointer("/checksum/kind")
+                        .and_then(|x| x.as_str())
+                        .unwrap_or("sha256")
+                        .to_string(),
+                    v.pointer("/checksum/value")
+                        .and_then(|x| x.as_str())
+                        .unwrap_or("")
+                        .to_string(),
                 ),
                 _ => ("sha256".to_string(), String::new()),
             };
-            let arch = v.get("architecture").and_then(|x| x.as_str())
+            let arch = v
+                .get("architecture")
+                .and_then(|x| x.as_str())
                 .or_else(|| v.get("arch").and_then(|x| x.as_str()))
-                .unwrap_or("native").to_string();
-            let provenance = v.get("provenance")
+                .unwrap_or("native")
+                .to_string();
+            let provenance = v
+                .get("provenance")
                 .and_then(|p| serde_json::from_value::<PackageProvenance>(p.clone()).ok());
-            (pkg_name, version, license, kind, value, arch, provenance, embedded_source)
+            (
+                pkg_name,
+                version,
+                license,
+                kind,
+                value,
+                arch,
+                provenance,
+                embedded_source,
+            )
         } else {
-            let name = package_path.file_stem()
+            let name = package_path
+                .file_stem()
                 .and_then(|s| s.to_str())
                 .unwrap_or("unknown")
                 .to_string();
-            (name, "0.0.0".to_string(), "Unknown".to_string(), "sha256".to_string(), "none".to_string(), "native".to_string(), None, String::new())
+            (
+                name,
+                "0.0.0".to_string(),
+                "Unknown".to_string(),
+                "sha256".to_string(),
+                "none".to_string(),
+                "native".to_string(),
+                None,
+                String::new(),
+            )
         };
 
         // The embedded checksum in metadata.json is the hash of the
@@ -65,20 +122,31 @@ impl AddLocalCommand {
         {
             let sidecar_path = package_path.with_file_name(format!(
                 "{}.sha256",
-                package_path.file_name().unwrap_or_default().to_string_lossy()
+                package_path
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
             ));
             match fs::read_to_string(&sidecar_path) {
                 Ok(expected) => {
                     let expected = expected.trim().to_string();
                     if !expected.is_empty()
-                        && let Err(e) = HashVerifier::verify_integrity(package_path, "sha256", &expected) {
-                            return Err(anyhow!("Package integrity check failed (sha256 sidecar): {}", e));
-                        }
+                        && let Err(e) =
+                            HashVerifier::verify_integrity(package_path, "sha256", &expected)
+                    {
+                        return Err(anyhow!(
+                            "Package integrity check failed (sha256 sidecar): {}",
+                            e
+                        ));
+                    }
                 }
                 Err(_) => {
                     crate::utils::ui::UserInterface::warning(&format!(
                         "Sidecar checksum not found for {}; transport integrity verification skipped",
-                        package_path.file_name().unwrap_or_default().to_string_lossy()
+                        package_path
+                            .file_name()
+                            .unwrap_or_default()
+                            .to_string_lossy()
                     ));
                 }
             }
@@ -98,7 +166,11 @@ impl AddLocalCommand {
             let mut entry = entry?;
             let path = entry.path()?.into_owned();
             let rel = path.strip_prefix("./").unwrap_or(&path);
-            if rel.is_absolute() || rel.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
+            if rel.is_absolute()
+                || rel
+                    .components()
+                    .any(|c| matches!(c, std::path::Component::ParentDir))
+            {
                 anyhow::bail!("Path traversal detected in local package: {:?}", path);
             }
             if rel == Path::new("metadata.json") {
@@ -158,7 +230,10 @@ impl AddLocalCommand {
             license,
             files: installed_files,
             dependencies: Vec::new(),
-            checksum: crate::core::database::ChecksumData { kind: checksum_kind, value: checksum_value },
+            checksum: crate::core::database::ChecksumData {
+                kind: checksum_kind,
+                value: checksum_value,
+            },
             provides: Some(Vec::new()),
             conflicts: Some(Vec::new()),
             architecture: embedded_arch,
@@ -207,7 +282,8 @@ impl AddLocalCommand {
         for entry in fs::read_dir(dir)? {
             let entry = entry?;
             let path = entry.path();
-            let rel = path.strip_prefix(base)
+            let rel = path
+                .strip_prefix(base)
                 .map_err(|_| anyhow!("Path strip error"))?
                 .to_path_buf();
             // symlink_metadata never follows links, so collection does not

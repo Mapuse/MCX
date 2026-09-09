@@ -1,12 +1,12 @@
+use crate::core::constants;
+use crate::core::db::Database;
+use crate::utils::ui::UserInterface;
+use anyhow::{Context, Result};
 use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
-use anyhow::{Result, Context};
-use crate::core::db::Database;
-use crate::core::constants;
-use crate::utils::ui::UserInterface;
 
 #[derive(Debug, Clone)]
 pub struct AutoRemoveReport {
@@ -48,18 +48,27 @@ fn is_library_file(path: &str) -> bool {
         return true;
     }
     if let Some(rest) = name.strip_prefix("lib")
-        && let Some(pos) = rest.find(".so") {
-            let suffix = &rest[pos..];
-            return suffix == ".so" || suffix.starts_with(".so.");
-        }
+        && let Some(pos) = rest.find(".so")
+    {
+        let suffix = &rest[pos..];
+        return suffix == ".so" || suffix.starts_with(".so.");
+    }
     false
 }
 
 fn is_core_library(name: &str) -> bool {
     const CORE: &[&str] = &[
-        "libc.so", "libm.so", "libdl.so", "libpthread.so",
-        "librt.so", "libresolv.so", "libnss_", "libcrypt.so",
-        "libutil.so", "libgcc_s.so", "ld-linux",
+        "libc.so",
+        "libm.so",
+        "libdl.so",
+        "libpthread.so",
+        "librt.so",
+        "libresolv.so",
+        "libnss_",
+        "libcrypt.so",
+        "libutil.so",
+        "libgcc_s.so",
+        "ld-linux",
     ];
     CORE.iter().any(|c| name.starts_with(c))
 }
@@ -71,7 +80,10 @@ pub struct AutoRemoveAnalyzer {
 
 impl AutoRemoveAnalyzer {
     pub fn new(db: Arc<Database>, root: &str) -> Self {
-        Self { db, root: root.to_string() }
+        Self {
+            db,
+            root: root.to_string(),
+        }
     }
 
     pub fn analyze(&self) -> Result<AutoRemoveReport> {
@@ -92,7 +104,10 @@ impl AutoRemoveAnalyzer {
         let mut reverse_deps: HashMap<String, Vec<String>> = HashMap::new();
         for pkg in &installed {
             for dep in &pkg.dependencies {
-                reverse_deps.entry(dep.name.clone()).or_default().push(pkg.pkg_name.clone());
+                reverse_deps
+                    .entry(dep.name.clone())
+                    .or_default()
+                    .push(pkg.pkg_name.clone());
             }
         }
 
@@ -103,7 +118,10 @@ impl AutoRemoveAnalyzer {
             if is_protected(&pkg.pkg_name) {
                 continue;
             }
-            let deps_of = reverse_deps.get(&pkg.pkg_name).map(|v| v.len()).unwrap_or(0);
+            let deps_of = reverse_deps
+                .get(&pkg.pkg_name)
+                .map(|v| v.len())
+                .unwrap_or(0);
             if deps_of == 0 && pkg.dependencies.is_empty() {
                 continue;
             }
@@ -111,7 +129,10 @@ impl AutoRemoveAnalyzer {
                 continue;
             }
 
-            let rdeps = reverse_deps.get(&pkg.pkg_name).map(|v| v.as_slice()).unwrap_or(&[]);
+            let rdeps = reverse_deps
+                .get(&pkg.pkg_name)
+                .map(|v| v.as_slice())
+                .unwrap_or(&[]);
             if rdeps.is_empty() {
                 orphans.push(OrphanedPackage {
                     name: pkg.pkg_name.clone(),
@@ -132,14 +153,20 @@ impl AutoRemoveAnalyzer {
                     if visited.contains(parent_name) || is_protected(parent_name) {
                         continue;
                     }
-                    if let Some(parent_meta) = installed.iter().find(|p| p.pkg_name == *parent_name) {
-                        let parent_rdeps = reverse_deps.get(parent_name).map(|v| v.as_slice()).unwrap_or(&[]);
+                    if let Some(parent_meta) = installed.iter().find(|p| p.pkg_name == *parent_name)
+                    {
+                        let parent_rdeps = reverse_deps
+                            .get(parent_name)
+                            .map(|v| v.as_slice())
+                            .unwrap_or(&[]);
                         let still_needed = parent_rdeps.iter().any(|r| !visited.contains(r));
                         if !still_needed {
                             orphans.push(OrphanedPackage {
                                 name: parent_meta.pkg_name.clone(),
                                 version: parent_meta.version.clone(),
-                                reason: OrphanReason::DependencyOfRemoved { parent: candidate.to_string() },
+                                reason: OrphanReason::DependencyOfRemoved {
+                                    parent: candidate.to_string(),
+                                },
                             });
                             visited.insert(parent_name.clone());
                             queue.push_back(parent_name.clone());
@@ -176,7 +203,9 @@ impl AutoRemoveAnalyzer {
                 }
                 let lib_stem = fname.strip_suffix(".so").unwrap_or(fname);
                 let needed = all_library_deps.iter().any(|d| {
-                    d == fname || d.starts_with(&format!("{}.", lib_stem)) || d.starts_with(&format!("{}-", lib_stem))
+                    d == fname
+                        || d.starts_with(&format!("{}.", lib_stem))
+                        || d.starts_with(&format!("{}-", lib_stem))
                 });
                 if !needed {
                     unnecessary.push(UnnecessaryLib {
@@ -216,23 +245,43 @@ impl AutoRemoveAnalyzer {
         }
 
         if !report.orphaned_packages.is_empty() {
-            UserInterface::info(&format!("Found {} orphaned package(s):", report.orphaned_packages.len()));
+            UserInterface::info(&format!(
+                "Found {} orphaned package(s):",
+                report.orphaned_packages.len()
+            ));
             for orphan in &report.orphaned_packages {
                 let reason_str = match &orphan.reason {
                     OrphanReason::NoReverseDeps => "no reverse dependencies".to_string(),
-                    OrphanReason::DependencyOfRemoved { parent } => format!("dependency of removed '{}'", parent),
-                    OrphanReason::UnusedLibrary { libs } => format!("unused library: {}", libs.join(", ")),
+                    OrphanReason::DependencyOfRemoved { parent } => {
+                        format!("dependency of removed '{}'", parent)
+                    }
+                    OrphanReason::UnusedLibrary { libs } => {
+                        format!("unused library: {}", libs.join(", "))
+                    }
                 };
-                UserInterface::info(&format!("  {} {} — {}", orphan.name, orphan.version, reason_str));
+                UserInterface::info(&format!(
+                    "  {} {} — {}",
+                    orphan.name, orphan.version, reason_str
+                ));
             }
-            UserInterface::info(&format!("Total reclaimable: {} file(s)", report.total_size_bytes));
+            UserInterface::info(&format!(
+                "Total reclaimable: {} file(s)",
+                report.total_size_bytes
+            ));
         }
 
         if !report.unnecessary_libs.is_empty() {
-            UserInterface::info(&format!("Found {} unnecessary library file(s):", report.unnecessary_libs.len()));
-            let mut by_package: std::collections::BTreeMap<&str, Vec<&UnnecessaryLib>> = std::collections::BTreeMap::new();
+            UserInterface::info(&format!(
+                "Found {} unnecessary library file(s):",
+                report.unnecessary_libs.len()
+            ));
+            let mut by_package: std::collections::BTreeMap<&str, Vec<&UnnecessaryLib>> =
+                std::collections::BTreeMap::new();
             for lib in &report.unnecessary_libs {
-                by_package.entry(lib.package.as_str()).or_default().push(lib);
+                by_package
+                    .entry(lib.package.as_str())
+                    .or_default()
+                    .push(lib);
             }
             for (pkg, libs) in &by_package {
                 UserInterface::info(&format!("  {}:", pkg));
@@ -253,7 +302,11 @@ impl AutoRemoveAnalyzer {
         let active_dir = root.join(constants::PATH_ACTIVE);
         let services_dir = root.join(constants::CESAR_SERVICES_DIR);
 
-        let removed_set: HashSet<&str> = report.orphaned_packages.iter().map(|o| o.name.as_str()).collect();
+        let removed_set: HashSet<&str> = report
+            .orphaned_packages
+            .iter()
+            .map(|o| o.name.as_str())
+            .collect();
         let shared_files = self.compute_shared_files(&removed_set)?;
 
         // Phase 1 — inside the transaction: clear ACTIVE mirrors, collect
@@ -264,11 +317,16 @@ impl AutoRemoveAnalyzer {
 
         for orphan in &report.orphaned_packages {
             if !self.db.is_package_installed(&orphan.name)? {
-                UserInterface::warning(&format!("'{}' is no longer installed, skipping", orphan.name));
+                UserInterface::warning(&format!(
+                    "'{}' is no longer installed, skipping",
+                    orphan.name
+                ));
                 continue;
             }
 
-            let manifest = self.db.get_package_manifest(&orphan.name)
+            let manifest = self
+                .db
+                .get_package_manifest(&orphan.name)
                 .with_context(|| format!("Failed to retrieve manifest for '{}'", orphan.name))?;
 
             UserInterface::info(&format!("Removing '{}'...", orphan.name));
@@ -287,9 +345,8 @@ impl AutoRemoveAnalyzer {
                 }
             }
 
-            let mut file_paths: Vec<PathBuf> = manifest.files.iter()
-                .map(|f| root.join(f))
-                .collect();
+            let mut file_paths: Vec<PathBuf> =
+                manifest.files.iter().map(|f| root.join(f)).collect();
             file_paths.sort_by_key(|a| Reverse(a.components().count()));
             pending_deletions.push(file_paths);
 
@@ -311,9 +368,10 @@ impl AutoRemoveAnalyzer {
                 }
                 if abs.is_dir() {
                     if let Ok(mut entries) = fs::read_dir(abs)
-                        && entries.next().is_none() {
-                            let _ = fs::remove_dir(abs);
-                        }
+                        && entries.next().is_none()
+                    {
+                        let _ = fs::remove_dir(abs);
+                    }
                 } else if let Err(e) = fs::remove_file(abs) {
                     UserInterface::warning(&format!("Failed to remove {:?}: {}", abs, e));
                 }
@@ -346,8 +404,12 @@ mod tests {
     #[test]
     fn test_orphan_reason_debug() {
         let r1 = OrphanReason::NoReverseDeps;
-        let r2 = OrphanReason::DependencyOfRemoved { parent: "foo".into() };
-        let r3 = OrphanReason::UnusedLibrary { libs: vec!["libbar.so".into()] };
+        let r2 = OrphanReason::DependencyOfRemoved {
+            parent: "foo".into(),
+        };
+        let r3 = OrphanReason::UnusedLibrary {
+            libs: vec!["libbar.so".into()],
+        };
         assert!(!format!("{:?}", r1).is_empty());
         assert!(!format!("{:?}", r2).is_empty());
         assert!(!format!("{:?}", r3).is_empty());
@@ -397,7 +459,9 @@ mod tests {
 
     #[test]
     fn test_orphan_reason_clone() {
-        let r = OrphanReason::UnusedLibrary { libs: vec!["a".into(), "b".into()] };
+        let r = OrphanReason::UnusedLibrary {
+            libs: vec!["a".into(), "b".into()],
+        };
         let cloned = r.clone();
         match cloned {
             OrphanReason::UnusedLibrary { libs } => assert_eq!(libs.len(), 2),

@@ -4,8 +4,8 @@ pub mod binindex;
 pub mod cas;
 pub mod cgroup;
 pub mod changelog;
-pub mod component;
 pub mod completion;
+pub mod component;
 pub mod config;
 pub mod constants;
 pub mod database;
@@ -27,16 +27,19 @@ pub mod rollback;
 pub mod security;
 pub mod service;
 pub mod solver;
+pub mod sudo;
 pub mod transaction;
 pub mod update;
 pub mod vendor;
 pub mod wildcard;
-pub mod sudo;
 pub mod workspace;
 
 pub use database as db;
 
 pub use arch::{Architecture, host_architecture};
+pub use autoremove::{
+    AutoRemoveAnalyzer, AutoRemoveReport, OrphanReason, OrphanedPackage, UnnecessaryLib,
+};
 pub use cas::CasStore;
 pub use cgroup::CgroupController;
 pub use changelog::ChangelogManager;
@@ -45,11 +48,14 @@ pub use config::{ConfigManager, MappedConfig};
 pub use cps::PythonConfig;
 pub use database::Database;
 pub use declarative::ProfileValidator;
+pub use gitpkg::{GitPackageManager, GitPackageState, PackageDiff, git_remote_url, is_git_source};
 pub use graph::DepGraph;
-pub use gitpkg::{GitPackageManager, GitPackageState, PackageDiff, is_git_source, git_remote_url};
 pub use history::HistoryEngine;
 pub use integrity::IntegrityScanner;
-pub use lifecycle::{LifecycleEngine, LifecycleEntry, LifecycleTransition, LifecycleEvent, PackageState, DependencyGraph, OrphanSet};
+pub use lifecycle::{
+    DependencyGraph, LifecycleEngine, LifecycleEntry, LifecycleEvent, LifecycleTransition,
+    OrphanSet, PackageState,
+};
 pub use localsrc::{LocalSource, LocalSourceManager, SourceMode};
 pub use manifest::ManifestParser;
 pub use mode::{
@@ -58,15 +64,19 @@ pub use mode::{
     user_selection_path, user_selection_path_in, write_user_selection, write_user_selection_in,
 };
 pub use package::PackageEntity;
-pub use plugin::{PluginSlot, PluginManager, PythonPlugin, PluginManifest, PluginHook, PluginEvent, PluginResult};
-pub use profiler::{SystemProfile, NetworkProfile, CalibratedParams, DecisionEngine, DecisionMatrix, HeuristicVerdict, NetworkProber};
+pub use plugin::{
+    PluginEvent, PluginHook, PluginManager, PluginManifest, PluginResult, PluginSlot, PythonPlugin,
+};
+pub use profiler::{
+    CalibratedParams, DecisionEngine, DecisionMatrix, HeuristicVerdict, NetworkProber,
+    NetworkProfile, SystemProfile,
+};
 pub use repo::RepositoryManager;
 pub use rollback::RollbackManager;
 pub use security::SecurityMonitor;
 pub use solver::DependencySolver;
-pub use update::SelfUpdateManager;
 pub use transaction::PackageTransaction;
+pub use update::SelfUpdateManager;
 pub use vendor::VendorManager;
 pub use wildcard::{expand, has_wildcard, pattern_to_regex};
 pub use workspace::WorkspaceManager;
-pub use autoremove::{AutoRemoveAnalyzer, AutoRemoveReport, OrphanedPackage, OrphanReason, UnnecessaryLib};

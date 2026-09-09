@@ -1,7 +1,7 @@
+use anyhow::{Result, anyhow};
+use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::str::FromStr;
-use anyhow::{Result, anyhow};
-use serde::{Serialize, Deserialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Architecture {
@@ -20,22 +20,25 @@ impl Architecture {
                 return Architecture::Arm64;
             }
         }
-        if let Ok(output) = std::process::Command::new("uname")
-            .arg("-m")
-            .output()
-            && let Ok(val) = String::from_utf8(output.stdout) {
-                let val = val.trim();
-                if val == "x86_64" {
-                    return Architecture::Amd64;
-                } else if val == "aarch64" {
-                    return Architecture::Arm64;
-                }
+        if let Ok(output) = std::process::Command::new("uname").arg("-m").output()
+            && let Ok(val) = String::from_utf8(output.stdout)
+        {
+            let val = val.trim();
+            if val == "x86_64" {
+                return Architecture::Amd64;
+            } else if val == "aarch64" {
+                return Architecture::Arm64;
             }
+        }
         Architecture::Amd64
     }
 
     pub fn all() -> Vec<Architecture> {
-        vec![Architecture::Amd64, Architecture::Arm64, Architecture::Native]
+        vec![
+            Architecture::Amd64,
+            Architecture::Arm64,
+            Architecture::Native,
+        ]
     }
 
     pub fn short_name(&self) -> &'static str {
@@ -103,7 +106,10 @@ impl FromStr for Architecture {
             "x86_64" | "amd64" | "x64" | "x86" => Ok(Architecture::Amd64),
             "aarch64" | "arm64" | "armv8" | "armv8l" => Ok(Architecture::Arm64),
             "native" => Ok(Architecture::Native),
-            _ => Err(anyhow!("Unsupported architecture: '{}'. Expected amd64/x86_64, arm64/aarch64, or native", s)),
+            _ => Err(anyhow!(
+                "Unsupported architecture: '{}'. Expected amd64/x86_64, arm64/aarch64, or native",
+                s
+            )),
         }
     }
 }

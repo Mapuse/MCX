@@ -15,19 +15,26 @@ pub use commands::sync::SyncCommand;
 pub use commands::system::SystemCommand;
 
 pub use core::arch::{Architecture, host_architecture};
+pub use core::autoremove::{
+    AutoRemoveAnalyzer, AutoRemoveReport, OrphanReason, OrphanedPackage, UnnecessaryLib,
+};
 pub use core::cas::CasStore;
 pub use core::cgroup::CgroupController;
 pub use core::changelog::ChangelogManager;
 pub use core::completion::CompletionEngine;
 pub use core::config::{ConfigManager, MappedConfig};
-pub use cps::PythonConfig;
 pub use core::database::Database;
 pub use core::declarative::ProfileValidator;
 pub use core::graph::DepGraph;
 pub use core::history::HistoryEngine;
 pub use core::integrity::IntegrityScanner;
-pub use core::lifecycle::{LifecycleEngine, LifecycleEntry, LifecycleTransition, LifecycleEvent, PackageState, DependencyGraph, OrphanSet};
-pub use core::localsrc::{LocalSource, LocalSourceManager, SourceMode, LocalSourceResult, LocalSourceAction};
+pub use core::lifecycle::{
+    DependencyGraph, LifecycleEngine, LifecycleEntry, LifecycleEvent, LifecycleTransition,
+    OrphanSet, PackageState,
+};
+pub use core::localsrc::{
+    LocalSource, LocalSourceAction, LocalSourceManager, LocalSourceResult, SourceMode,
+};
 pub use core::manifest::ManifestParser;
 pub use core::mode::{
     Mode, ModeConfig, UserSelection, current_user, ensure_mode_fields, normalize_root,
@@ -35,18 +42,23 @@ pub use core::mode::{
     user_selection_path, user_selection_path_in, write_user_selection, write_user_selection_in,
 };
 pub use core::package::PackageEntity;
+pub use core::plugin::{
+    PluginEvent, PluginHook, PluginManager, PluginManifest, PluginResult, PluginSlot, PythonPlugin,
+};
+pub use core::profiler::{
+    CalibratedParams, DecisionEngine, DecisionMatrix, HeuristicVerdict, NetworkProber,
+    NetworkProfile, SystemProfile,
+};
 pub use core::provenance::{PackageProvenance, auto_link_origin};
-pub use core::plugin::{PluginSlot, PluginManager, PythonPlugin, PluginManifest, PluginHook, PluginEvent, PluginResult};
-pub use core::profiler::{SystemProfile, NetworkProfile, CalibratedParams, DecisionEngine, DecisionMatrix, HeuristicVerdict, NetworkProber};
 pub use core::repo::RepositoryManager;
 pub use core::rollback::RollbackManager;
 pub use core::security::SecurityMonitor;
-pub use core::update::SelfUpdateManager;
 pub use core::solver::{DependencySolver, ResolutionVerdict, UpgradePath};
 pub use core::transaction::PackageTransaction;
+pub use core::update::SelfUpdateManager;
 pub use core::vendor::VendorManager;
 pub use core::workspace::WorkspaceManager;
-pub use core::autoremove::{AutoRemoveAnalyzer, AutoRemoveReport, OrphanedPackage, OrphanReason, UnnecessaryLib};
+pub use cps::PythonConfig;
 
 pub use network::download::Downloader;
 

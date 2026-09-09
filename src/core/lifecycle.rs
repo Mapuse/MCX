@@ -1,11 +1,11 @@
+use anyhow::{Result, anyhow};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
-use anyhow::{Result, anyhow};
-use serde::{Serialize, Deserialize};
 
 use crate::core::constants;
 
@@ -25,19 +25,20 @@ pub enum PackageState {
 
 impl PackageState {
     pub fn can_transition_to(&self, target: PackageState) -> bool {
-        matches!((self, target),
+        matches!(
+            (self, target),
             (PackageState::Unknown, PackageState::Resolved)
-            | (PackageState::Resolved, PackageState::Staged)
-            | (PackageState::Staged, PackageState::Installed)
-            | (PackageState::Installed, PackageState::Active)
-            | (PackageState::Active, PackageState::MarkedForRemoval)
-            | (PackageState::Active, PackageState::Resolved)
-            | (PackageState::Installed, PackageState::MarkedForRemoval)
-            | (PackageState::MarkedForRemoval, PackageState::Removed)
-            | (PackageState::Removed, PackageState::Purged)
-            | (PackageState::Resolved, PackageState::Unknown)
-            | (PackageState::Staged, PackageState::Unknown)
-            | (PackageState::Installed, PackageState::Staged)
+                | (PackageState::Resolved, PackageState::Staged)
+                | (PackageState::Staged, PackageState::Installed)
+                | (PackageState::Installed, PackageState::Active)
+                | (PackageState::Active, PackageState::MarkedForRemoval)
+                | (PackageState::Active, PackageState::Resolved)
+                | (PackageState::Installed, PackageState::MarkedForRemoval)
+                | (PackageState::MarkedForRemoval, PackageState::Removed)
+                | (PackageState::Removed, PackageState::Purged)
+                | (PackageState::Resolved, PackageState::Unknown)
+                | (PackageState::Staged, PackageState::Unknown)
+                | (PackageState::Installed, PackageState::Staged)
         )
     }
 
@@ -112,7 +113,13 @@ impl Default for LifecycleEngine {
 
 impl LifecycleEngine {
     pub fn new() -> Self {
-        Self { entries: HashMap::new(), transitions: Vec::new(), pre_hooks: Vec::new(), post_hooks: Vec::new(), journal: None }
+        Self {
+            entries: HashMap::new(),
+            transitions: Vec::new(),
+            pre_hooks: Vec::new(),
+            post_hooks: Vec::new(),
+            journal: None,
+        }
     }
 
     pub fn new_with_root(root: &Path) -> Self {
@@ -123,31 +130,50 @@ impl LifecycleEngine {
     }
 
     fn now_ts(&self) -> u64 {
-        SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs()
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs()
     }
 
     fn load_journal(&mut self) {
-        let Some(path) = self.journal.clone() else { return };
-        let Ok(content) = std::fs::read_to_string(&path) else { return };
+        let Some(path) = self.journal.clone() else {
+            return;
+        };
+        let Ok(content) = std::fs::read_to_string(&path) else {
+            return;
+        };
         for line in content.lines() {
             if line.trim().is_empty() {
                 continue;
             }
-            let Ok(record): Result<LifecycleJournalRecord, _> = serde_json::from_str(line) else { continue };
+            let Ok(record): Result<LifecycleJournalRecord, _> = serde_json::from_str(line) else {
+                continue;
+            };
             if record.generation >= LIFECYCLE_GENERATION.load(Ordering::Relaxed) {
                 LIFECYCLE_GENERATION.store(record.generation + 1, Ordering::Relaxed);
             }
-            self.entries.insert(record.package.clone(), LifecycleEntry {
-                package: record.package,
-                version: record.version,
-                state: record.state,
-                generation: record.generation,
-                checksum: record.checksum,
-            });
+            self.entries.insert(
+                record.package.clone(),
+                LifecycleEntry {
+                    package: record.package,
+                    version: record.version,
+                    state: record.state,
+                    generation: record.generation,
+                    checksum: record.checksum,
+                },
+            );
         }
     }
 
-    fn append_journal(&self, package: &str, version: &str, state: PackageState, checksum: Option<String>, generation: u64) {
+    fn append_journal(
+        &self,
+        package: &str,
+        version: &str,
+        state: PackageState,
+        checksum: Option<String>,
+        generation: u64,
+    ) {
         let Some(path) = &self.journal else { return };
         let record = LifecycleJournalRecord {
             package: package.to_string(),
@@ -170,13 +196,16 @@ impl LifecycleEngine {
 
     pub fn register_package(&mut self, name: &str, version: &str) -> u64 {
         let gen_id = LIFECYCLE_GENERATION.fetch_add(1, Ordering::Relaxed);
-        self.entries.insert(name.to_string(), LifecycleEntry {
-            package: name.to_string(),
-            version: version.to_string(),
-            state: PackageState::Unknown,
-            generation: gen_id,
-            checksum: None,
-        });
+        self.entries.insert(
+            name.to_string(),
+            LifecycleEntry {
+                package: name.to_string(),
+                version: version.to_string(),
+                state: PackageState::Unknown,
+                generation: gen_id,
+                checksum: None,
+            },
+        );
         self.append_journal(name, version, PackageState::Unknown, None, gen_id);
         gen_id
     }
@@ -194,7 +223,9 @@ impl LifecycleEngine {
     }
 
     pub fn transition(&mut self, package: &str, target: PackageState) -> Result<u64> {
-        let entry = self.entries.get_mut(package)
+        let entry = self
+            .entries
+            .get_mut(package)
             .ok_or_else(|| anyhow!("Package '{}' not registered in lifecycle engine", package))?;
 
         let current = entry.state;
@@ -202,7 +233,12 @@ impl LifecycleEngine {
             return Ok(0);
         }
         if !current.can_transition_to(target) {
-            return Err(anyhow!("Invalid lifecycle transition: {:?} -> {:?} for package '{}'", current, target, package));
+            return Err(anyhow!(
+                "Invalid lifecycle transition: {:?} -> {:?} for package '{}'",
+                current,
+                target,
+                package
+            ));
         }
 
         for hook in &self.pre_hooks {
@@ -210,7 +246,10 @@ impl LifecycleEngine {
         }
 
         let id = LIFECYCLE_GENERATION.fetch_add(1, Ordering::Relaxed);
-        let ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
+        let ts = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
         entry.state = target;
 
         self.transitions.push(LifecycleTransition {
@@ -236,17 +275,24 @@ impl LifecycleEngine {
     }
 
     pub fn add_pre_hook<F>(&mut self, hook: F)
-    where F: Fn(&str, PackageState, PackageState) -> Result<()> + Send + Sync + 'static {
+    where
+        F: Fn(&str, PackageState, PackageState) -> Result<()> + Send + Sync + 'static,
+    {
         self.pre_hooks.push(Box::new(hook));
     }
 
     pub fn add_post_hook<F>(&mut self, hook: F)
-    where F: Fn(&str, PackageState, PackageState) -> Result<()> + Send + Sync + 'static {
+    where
+        F: Fn(&str, PackageState, PackageState) -> Result<()> + Send + Sync + 'static,
+    {
         self.post_hooks.push(Box::new(hook));
     }
 
     pub fn history(&self, package: &str) -> Vec<&LifecycleTransition> {
-        self.transitions.iter().filter(|t| t.package == package).collect()
+        self.transitions
+            .iter()
+            .filter(|t| t.package == package)
+            .collect()
     }
 
     pub fn transition_count(&self) -> usize {
@@ -254,11 +300,17 @@ impl LifecycleEngine {
     }
 
     pub fn installed_count(&self) -> usize {
-        self.entries.values().filter(|e| e.state.is_installed()).count()
+        self.entries
+            .values()
+            .filter(|e| e.state.is_installed())
+            .count()
     }
 
     pub fn removed_count(&self) -> usize {
-        self.entries.values().filter(|e| e.state.is_removed()).count()
+        self.entries
+            .values()
+            .filter(|e| e.state.is_removed())
+            .count()
     }
 }
 
@@ -282,12 +334,21 @@ impl Default for DependencyGraph {
 
 impl DependencyGraph {
     pub fn new() -> Self {
-        Self { edges: HashMap::new(), reverse: HashMap::new() }
+        Self {
+            edges: HashMap::new(),
+            reverse: HashMap::new(),
+        }
     }
 
     pub fn add_dep(&mut self, from: &str, to: &str) {
-        self.edges.entry(from.to_string()).or_default().push(to.to_string());
-        self.reverse.entry(to.to_string()).or_default().push(from.to_string());
+        self.edges
+            .entry(from.to_string())
+            .or_default()
+            .push(to.to_string());
+        self.reverse
+            .entry(to.to_string())
+            .or_default()
+            .push(from.to_string());
     }
 
     pub fn reachable_from(&self, roots: &[String]) -> Vec<String> {
@@ -295,9 +356,10 @@ impl DependencyGraph {
         let mut stack = roots.to_vec();
         while let Some(node) = stack.pop() {
             if visited.insert(node.clone())
-                && let Some(deps) = self.edges.get(&node) {
-                    stack.extend(deps.iter().cloned());
-                }
+                && let Some(deps) = self.edges.get(&node)
+            {
+                stack.extend(deps.iter().cloned());
+            }
         }
         let mut result: Vec<String> = visited.into_iter().collect();
         result.sort();
@@ -305,7 +367,8 @@ impl DependencyGraph {
     }
 
     pub fn orphans(&self, roots: &[String], all_packages: &[String]) -> OrphanSet {
-        let reachable: std::collections::HashSet<String> = self.reachable_from(roots).into_iter().collect();
+        let reachable: std::collections::HashSet<String> =
+            self.reachable_from(roots).into_iter().collect();
         let mut orphaned = Vec::new();
         let mut reachable_pkgs = Vec::new();
         let purged = Vec::new();
@@ -318,6 +381,10 @@ impl DependencyGraph {
             }
         }
 
-        OrphanSet { packages: orphaned, reachable: reachable_pkgs, purged }
+        OrphanSet {
+            packages: orphaned,
+            reachable: reachable_pkgs,
+            purged,
+        }
     }
 }

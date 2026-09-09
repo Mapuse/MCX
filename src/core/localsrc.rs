@@ -1,9 +1,9 @@
-use std::fs;
-use std::path::{Path, PathBuf};
-use anyhow::{Result, Context, anyhow};
+use crate::archive::hash::hash_bytes;
 use crate::core::constants;
 use crate::core::package::compare_versions;
-use crate::archive::hash::hash_bytes;
+use anyhow::{Context, Result, anyhow};
+use std::fs;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SourceMode {
@@ -54,7 +54,9 @@ pub fn validate_source_name(name: &str) -> Result<()> {
     let valid = !name.is_empty()
         && name.len() <= 100
         && !name.chars().all(|c| c == '.')
-        && name.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'));
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'));
     if valid {
         Ok(())
     } else {
@@ -104,10 +106,7 @@ pub fn strip_file_scheme(s: &str) -> String {
 /// git vs dir vs archive tarball vs `.json` URL vs plain http.
 pub fn classify_source_url(s: &str) -> SourceKind {
     let trimmed = s.trim();
-    if trimmed.starts_with("git+")
-        || trimmed.starts_with("git@")
-        || trimmed.starts_with("git://")
-    {
+    if trimmed.starts_with("git+") || trimmed.starts_with("git@") || trimmed.starts_with("git://") {
         return SourceKind::Git;
     }
     if let Some(rest) = trimmed.strip_prefix("file://") {
@@ -118,7 +117,10 @@ pub fn classify_source_url(s: &str) -> SourceKind {
             return SourceKind::Archive;
         }
         if rest.ends_with(".json")
-            || Path::new(rest).file_name().map(|n| n == "manifest.json").unwrap_or(false)
+            || Path::new(rest)
+                .file_name()
+                .map(|n| n == "manifest.json")
+                .unwrap_or(false)
         {
             return SourceKind::JsonUrl;
         }
@@ -219,7 +221,10 @@ pub fn check_download_tools(path_or_url: &str) -> Option<String> {
     let kind = classify_source_url(path_or_url);
     let is_file_scheme = path_or_url.trim().starts_with("file://");
     let needs_curl = !is_file_scheme
-        && matches!(kind, SourceKind::Archive | SourceKind::Http | SourceKind::JsonUrl);
+        && matches!(
+            kind,
+            SourceKind::Archive | SourceKind::Http | SourceKind::JsonUrl
+        );
     let needs_tar = matches!(kind, SourceKind::Archive);
     if needs_curl && !find_tool_on_path(constants::TOOL_CURL) {
         return Some(format!(
@@ -271,16 +276,16 @@ pub fn materialize_source(
             update_git_mirror(&url, &mirror)?;
             let manifest = mirror.join("manifest.json");
             if !manifest.exists() {
-                return Err(anyhow!(
-                    "Mirror of '{}' has no manifest.json",
-                    source.path
-                ));
+                return Err(anyhow!("Mirror of '{}' has no manifest.json", source.path));
             }
             let fingerprint = match git_head_fingerprint(&mirror) {
                 Ok(head) => head,
                 Err(_) => compute_manifest_fingerprint(&manifest)?,
             };
-            Ok(MaterializedSource { fingerprint, manifest })
+            Ok(MaterializedSource {
+                fingerprint,
+                manifest,
+            })
         }
         SourceKind::Dir | SourceKind::FileDir => {
             let local = if source.path.trim().starts_with("file://") {
@@ -293,7 +298,10 @@ pub fn materialize_source(
                 return Err(anyhow!("Source has no manifest.json: '{}'", local));
             }
             let fingerprint = compute_manifest_fingerprint(&manifest)?;
-            Ok(MaterializedSource { fingerprint, manifest })
+            Ok(MaterializedSource {
+                fingerprint,
+                manifest,
+            })
         }
         SourceKind::Archive | SourceKind::Http | SourceKind::JsonUrl => {
             let (artifact, fingerprint) = download_artifact(mgr, source)?;
@@ -307,7 +315,10 @@ pub fn materialize_source(
                         source.name
                     ));
                 }
-                Ok(MaterializedSource { fingerprint, manifest })
+                Ok(MaterializedSource {
+                    fingerprint,
+                    manifest,
+                })
             } else {
                 if work_dir.exists() {
                     fs::remove_dir_all(&work_dir)?;
@@ -315,7 +326,10 @@ pub fn materialize_source(
                 fs::create_dir_all(&work_dir)?;
                 let manifest = work_dir.join("manifest.json");
                 fs::copy(&artifact, &manifest)?;
-                Ok(MaterializedSource { fingerprint, manifest })
+                Ok(MaterializedSource {
+                    fingerprint,
+                    manifest,
+                })
             }
         }
     }
@@ -324,7 +338,11 @@ pub fn materialize_source(
 fn download_dest_ext(path_or_url: &str) -> &'static str {
     let lower = path_or_url.to_ascii_lowercase();
     if lower.ends_with(".tar.gz") || lower.ends_with(".tgz") {
-        if lower.ends_with(".tgz") { ".tgz" } else { ".tar.gz" }
+        if lower.ends_with(".tgz") {
+            ".tgz"
+        } else {
+            ".tar.gz"
+        }
     } else if lower.ends_with(".tar.xz") {
         ".tar.xz"
     } else if lower.ends_with(".tar.zst") {
@@ -334,15 +352,14 @@ fn download_dest_ext(path_or_url: &str) -> &'static str {
     }
 }
 
-fn download_artifact(
-    mgr: &LocalSourceManager,
-    source: &LocalSource,
-) -> Result<(PathBuf, String)> {
+fn download_artifact(mgr: &LocalSourceManager, source: &LocalSource) -> Result<(PathBuf, String)> {
     let path = source.path.trim();
     let dest = mgr
         .downloads_dir()
         .join(format!("{}{}", source.name, download_dest_ext(path)));
-    let parent = dest.parent().ok_or_else(|| anyhow!("Downloads dir has no parent"))?;
+    let parent = dest
+        .parent()
+        .ok_or_else(|| anyhow!("Downloads dir has no parent"))?;
     fs::create_dir_all(parent)?;
 
     if source.path.trim().starts_with("file://") {
@@ -352,10 +369,12 @@ fn download_artifact(
             return Err(anyhow!("Local source file not found: '{}'", local));
         }
         if src.is_dir() {
-            return Err(anyhow!("Expected a file archive for '{}', got a directory", local));
+            return Err(anyhow!(
+                "Expected a file archive for '{}', got a directory",
+                local
+            ));
         }
-        fs::copy(src, &dest)
-            .with_context(|| format!("Failed to copy '{}'", local))?;
+        fs::copy(src, &dest).with_context(|| format!("Failed to copy '{}'", local))?;
     } else {
         let status = std::process::Command::new(constants::TOOL_CURL)
             .args(["-fSL", "-o"])
@@ -400,7 +419,10 @@ fn detect_archive_kind(path: &Path) -> Result<ArchiveKind> {
     if n >= 262 && &buf[257..262] == b"ustar" {
         return Ok(ArchiveKind::PlainTar);
     }
-    Err(anyhow!("'{}' is not a recognized archive (gzip/xz/zstd/tar)", path.display()))
+    Err(anyhow!(
+        "'{}' is not a recognized archive (gzip/xz/zstd/tar)",
+        path.display()
+    ))
 }
 
 fn extract_archive(
@@ -452,7 +474,12 @@ pub fn parse_xcs_filename(file_name: &str) -> Option<(String, String)> {
     let stem = file_name.strip_suffix(".xcs")?;
     let bytes = stem.as_bytes();
     for (idx, &b) in bytes.iter().enumerate() {
-        if b == b'-' && bytes.get(idx + 1).map(|c| c.is_ascii_digit()).unwrap_or(false) {
+        if b == b'-'
+            && bytes
+                .get(idx + 1)
+                .map(|c| c.is_ascii_digit())
+                .unwrap_or(false)
+        {
             let (name_part, version_part) = stem.split_at(idx);
             if name_part.is_empty() || version_part.is_empty() {
                 return None;
@@ -468,8 +495,13 @@ pub fn predict_output_names(manifest_path: &Path) -> Result<Vec<String>> {
         return Err(anyhow!("Manifest not found: {}", manifest_path.display()));
     }
     let content = fs::read_to_string(manifest_path)?;
-    let value: serde_json::Value = serde_json::from_str(&content)
-        .map_err(|e| anyhow!("Invalid manifest JSON in {}: {}", manifest_path.display(), e))?;
+    let value: serde_json::Value = serde_json::from_str(&content).map_err(|e| {
+        anyhow!(
+            "Invalid manifest JSON in {}: {}",
+            manifest_path.display(),
+            e
+        )
+    })?;
     let mut names = Vec::new();
     match value.get("packages") {
         Some(serde_json::Value::Array(packages)) => {
@@ -579,7 +611,10 @@ pub fn find_ous_binary() -> Option<String> {
     None
 }
 
-pub fn versions_outdated(db: &crate::core::database::Database, packages: &[(String, String)]) -> bool {
+pub fn versions_outdated(
+    db: &crate::core::database::Database,
+    packages: &[(String, String)],
+) -> bool {
     for (name, version) in packages {
         match db.get_package_manifest(name) {
             Err(_) => return true,
@@ -655,8 +690,13 @@ impl LocalSourceManager {
         if !self.config_file.exists() {
             return Ok(Vec::new());
         }
-        let content = fs::read_to_string(&self.config_file)
-            .map_err(|e| anyhow!("Failed to read local sources config {}: {}", self.config_file.display(), e))?;
+        let content = fs::read_to_string(&self.config_file).map_err(|e| {
+            anyhow!(
+                "Failed to read local sources config {}: {}",
+                self.config_file.display(),
+                e
+            )
+        })?;
         Self::parse_ini(&content)
     }
 
@@ -829,10 +869,18 @@ mod tests {
     #[test]
     fn test_validate_source_name() {
         for evil in ["../evil", "a/b", "", ".", "..", "space in name"] {
-            assert!(validate_source_name(evil).is_err(), "{:?} must be rejected", evil);
+            assert!(
+                validate_source_name(evil).is_err(),
+                "{:?} must be rejected",
+                evil
+            );
         }
         for good in ["hello-pkg", "main_repo.2", "a", "x".repeat(100).as_str()] {
-            assert!(validate_source_name(good).is_ok(), "{:?} must be accepted", good);
+            assert!(
+                validate_source_name(good).is_ok(),
+                "{:?} must be accepted",
+                good
+            );
         }
         assert!(validate_source_name(&"y".repeat(101)).is_err());
     }
@@ -917,17 +965,38 @@ mod tests {
             args,
             vec!["-m", "/tmp/m/manifest.json", "-o", "/var/lib/out", "-c"]
         );
-        assert!(!args.iter().any(|a| a == "-n" || a == "--no-auto"), "no-auto must not be passed");
+        assert!(
+            !args.iter().any(|a| a == "-n" || a == "--no-auto"),
+            "no-auto must not be passed"
+        );
     }
 
     #[test]
     fn test_decide_action() {
-        assert_eq!(decide_action(Some("fp"), Some("fp"), false, false), LocalSourceAction::Skip);
-        assert_eq!(decide_action(Some("fp"), Some("other"), false, false), LocalSourceAction::Rebuild);
-        assert_eq!(decide_action(Some("fp"), Some("fp"), true, false), LocalSourceAction::Rebuild);
-        assert_eq!(decide_action(Some("fp"), Some("fp"), false, true), LocalSourceAction::Rebuild);
-        assert_eq!(decide_action(Some("fp"), None, false, false), LocalSourceAction::Rebuild);
-        assert_eq!(decide_action(None, Some("fp"), false, false), LocalSourceAction::Rebuild);
+        assert_eq!(
+            decide_action(Some("fp"), Some("fp"), false, false),
+            LocalSourceAction::Skip
+        );
+        assert_eq!(
+            decide_action(Some("fp"), Some("other"), false, false),
+            LocalSourceAction::Rebuild
+        );
+        assert_eq!(
+            decide_action(Some("fp"), Some("fp"), true, false),
+            LocalSourceAction::Rebuild
+        );
+        assert_eq!(
+            decide_action(Some("fp"), Some("fp"), false, true),
+            LocalSourceAction::Rebuild
+        );
+        assert_eq!(
+            decide_action(Some("fp"), None, false, false),
+            LocalSourceAction::Rebuild
+        );
+        assert_eq!(
+            decide_action(None, Some("fp"), false, false),
+            LocalSourceAction::Rebuild
+        );
     }
 
     #[test]
@@ -980,11 +1049,18 @@ priority = 100\n\
         let (mgr, dir) = temp_source_manager("addremove");
         mgr.add_source(sample_source("alpha")).expect("add alpha");
         mgr.add_source(sample_source("beta")).expect("add beta");
-        assert!(mgr.add_source(sample_source("alpha")).is_err(), "duplicate rejected");
-        assert!(mgr.add_source(LocalSource {
-            name: "../evil".to_string(),
-            ..sample_source("..")
-        }).is_err(), "invalid name rejected");
+        assert!(
+            mgr.add_source(sample_source("alpha")).is_err(),
+            "duplicate rejected"
+        );
+        assert!(
+            mgr.add_source(LocalSource {
+                name: "../evil".to_string(),
+                ..sample_source("..")
+            })
+            .is_err(),
+            "invalid name rejected"
+        );
 
         let loaded = mgr.load_sources().expect("load");
         assert_eq!(loaded.len(), 2);
@@ -993,9 +1069,13 @@ priority = 100\n\
         assert!(mgr.remove_source("alpha").is_err(), "missing rejected");
         assert_eq!(mgr.load_sources().expect("load").len(), 1);
 
-        mgr.update_last_built("beta", "abc123").expect("record last built");
+        mgr.update_last_built("beta", "abc123")
+            .expect("record last built");
         assert_eq!(
-            mgr.get_source("beta").expect("get beta").last_built.as_deref(),
+            mgr.get_source("beta")
+                .expect("get beta")
+                .last_built
+                .as_deref(),
             Some("abc123")
         );
 
@@ -1006,12 +1086,20 @@ priority = 100\n\
     fn test_manifest_fingerprint_is_deterministic() {
         let dir = tempfile::tempdir().expect("tempdir");
         let manifest = dir.path().join("manifest.json");
-        fs::write(&manifest, r#"{"packages":[{"name":"p","version":"1.0.0"}]}"#).expect("write manifest");
+        fs::write(
+            &manifest,
+            r#"{"packages":[{"name":"p","version":"1.0.0"}]}"#,
+        )
+        .expect("write manifest");
         let first = compute_manifest_fingerprint(&manifest).expect("fingerprint");
         let second = compute_manifest_fingerprint(&manifest).expect("fingerprint again");
         assert_eq!(first, second);
         assert_eq!(first.len(), 64);
-        fs::write(&manifest, r#"{"packages":[{"name":"p","version":"1.1.0"}]}"#).expect("rewrite manifest");
+        fs::write(
+            &manifest,
+            r#"{"packages":[{"name":"p","version":"1.1.0"}]}"#,
+        )
+        .expect("rewrite manifest");
         let changed = compute_manifest_fingerprint(&manifest).expect("changed fingerprint");
         assert_ne!(first, changed);
     }

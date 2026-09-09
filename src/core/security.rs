@@ -1,8 +1,8 @@
+use crate::core::plugin::PluginSlot;
+use anyhow::Result;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::RwLock;
-use anyhow::Result;
-use crate::core::plugin::PluginSlot;
 
 pub enum PackageThreat {
     SuspiciousFiles,
@@ -51,14 +51,16 @@ impl SecurityMonitor {
 
     pub fn isolate_package(&self, pkg_name: &str) -> Result<()> {
         if let Ok(mut map) = self.active_packages.write()
-            && let Some(guard) = map.get_mut(pkg_name) {
-                guard.isolated = true;
-            }
+            && let Some(guard) = map.get_mut(pkg_name)
+        {
+            guard.isolated = true;
+        }
         Ok(())
     }
 
     pub fn is_package_isolated(&self, pkg_name: &str) -> bool {
-        self.active_packages.read()
+        self.active_packages
+            .read()
             .map(|map| map.get(pkg_name).map(|g| g.isolated).unwrap_or(false))
             .unwrap_or(false)
     }
@@ -75,6 +77,9 @@ impl SecurityMonitor {
     }
 
     pub fn active_count(&self) -> usize {
-        self.active_packages.read().map(|map| map.len()).unwrap_or(0)
+        self.active_packages
+            .read()
+            .map(|map| map.len())
+            .unwrap_or(0)
     }
 }

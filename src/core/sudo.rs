@@ -1,8 +1,8 @@
+use super::mode::Mode;
+use crate::utils::ui::UserInterface;
 use std::env;
 use std::path::Path;
 use std::process::{Command, exit};
-use crate::utils::ui::UserInterface;
-use super::mode::Mode;
 
 /// Returns the effective command token: the first argument that is neither a
 /// global option nor a global option's value.
@@ -59,19 +59,15 @@ fn is_read_only_command() -> bool {
         return true;
     };
     let canonical = canonical_command(cmd);
-    matches!(canonical,
-        "search" |
-        "query" |
-        "history" |
-        "completion" |
-        "repo-list" |
-        "repo-info" |
-        "version"
+    matches!(
+        canonical,
+        "search" | "query" | "history" | "completion" | "repo-list" | "repo-info" | "version"
     )
 }
 
 pub fn root_access(root: &Path, mode: &Mode, target_user: Option<&str>) {
-    if env::var("MCX_IGNORE_SUDO").is_ok() || env::var("USER").map(|u| u == "root").unwrap_or(false) {
+    if env::var("MCX_IGNORE_SUDO").is_ok() || env::var("USER").map(|u| u == "root").unwrap_or(false)
+    {
         return;
     }
 
@@ -99,7 +95,9 @@ pub fn root_access(root: &Path, mode: &Mode, target_user: Option<&str>) {
         // Operating on another user's environment always demands the root
         // password, even for read-only commands.
         if target_user.is_some() && !authenticate_root() {
-            eprintln!("Error: root password required to operate on another user; authentication failed.");
+            eprintln!(
+                "Error: root password required to operate on another user; authentication failed."
+            );
             exit(1);
         }
 
@@ -124,17 +122,15 @@ pub fn root_access(root: &Path, mode: &Mode, target_user: Option<&str>) {
         // An explicit target user re-resolves its own root as root in the
         // child; otherwise the resolved root is passed down explicitly.
         if target_user.is_none()
-            && !new_args.iter().any(|a| a == "--root" || a.starts_with("--root="))
+            && !new_args
+                .iter()
+                .any(|a| a == "--root" || a.starts_with("--root="))
         {
             new_args.push("--root".to_string());
             new_args.push(root.to_string_lossy().to_string());
         }
 
-        let status = match Command::new("sudo")
-            .arg(&exe)
-            .args(&new_args)
-            .status()
-        {
+        let status = match Command::new("sudo").arg(&exe).args(&new_args).status() {
             Ok(s) => s,
             Err(e) => {
                 eprintln!("Error: failed to execute sudo: {}", e);
@@ -151,7 +147,8 @@ pub fn root_access(root: &Path, mode: &Mode, target_user: Option<&str>) {
 /// (or already running as root / `MCX_IGNORE_SUDO` is set). Pure: callers
 /// decide what to print.
 pub fn authenticate_root() -> bool {
-    if env::var("MCX_IGNORE_SUDO").is_ok() || env::var("USER").map(|u| u == "root").unwrap_or(false) {
+    if env::var("MCX_IGNORE_SUDO").is_ok() || env::var("USER").map(|u| u == "root").unwrap_or(false)
+    {
         return true;
     }
 

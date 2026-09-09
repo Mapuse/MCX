@@ -1,10 +1,10 @@
+use crate::archive::hash::HashVerifier;
+use crate::network::download::Downloader;
+use anyhow::{Context, Result, anyhow};
+use rand::Rng;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use anyhow::{Result, anyhow, Context};
-use rand::Rng;
-use crate::archive::hash::HashVerifier;
-use crate::network::download::Downloader;
 
 pub struct SelfUpdateManager;
 
@@ -75,9 +75,10 @@ impl SelfUpdateManager {
 
         // Phase 2: download into the unique staging slot.
         let staged_path = Self::unique_stage_path(stage_dir);
-        downloader.package(binary_url, &staged_path).await.with_context(|| {
-            format!("Failed to download {}", binary_url)
-        })?;
+        downloader
+            .package(binary_url, &staged_path)
+            .await
+            .with_context(|| format!("Failed to download {}", binary_url))?;
 
         // Phase 3: verify content before it becomes executable.
         if let Err(e) = HashVerifier::verify_integrity(&staged_path, "sha256", &expected) {
@@ -110,10 +111,15 @@ impl SelfUpdateManager {
     /// Promotes a verified staged binary onto `target` through a unique,
     /// same-filesystem temporary name and an atomic rename.
     pub fn promote(staged: &Path, target: &Path) -> Result<()> {
-        let parent = target.parent().ok_or_else(|| anyhow!("Target {:?} has no parent directory", target))?;
+        let parent = target
+            .parent()
+            .ok_or_else(|| anyhow!("Target {:?} has no parent directory", target))?;
         fs::create_dir_all(parent)?;
 
-        let name = target.file_name().map(|n| n.to_string_lossy()).unwrap_or_default();
+        let name = target
+            .file_name()
+            .map(|n| n.to_string_lossy())
+            .unwrap_or_default();
         let new_path = parent.join(format!(
             ".{}.mcx-new-{}",
             name,

@@ -1,10 +1,10 @@
+use super::config::MappedConfig;
+use super::constants;
+use anyhow::{Context, Result};
 use std::env;
 use std::fs;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
-use anyhow::{Context, Result};
-use super::config::MappedConfig;
-use super::constants;
 
 /// Operating mode. `User` mode acts on the selected user's own root and
 /// never elevates; `System` mode targets the system root and escalates via
@@ -201,7 +201,11 @@ pub fn home_dir_for_user(name: &str) -> Option<PathBuf> {
     // the lifetime of this read.
     let dir = unsafe { std::ffi::CStr::from_ptr((*pw).pw_dir) };
     let s = dir.to_string_lossy();
-    if s.is_empty() { None } else { Some(PathBuf::from(s.into_owned())) }
+    if s.is_empty() {
+        None
+    } else {
+        Some(PathBuf::from(s.into_owned()))
+    }
 }
 
 /// The canonical per-user root for `--for-user`: the selected user's home plus
@@ -282,15 +286,16 @@ pub fn check_directory_access(path: &Path) -> Result<()> {
                 }
                 break candidate;
             }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                match candidate.parent() {
-                    Some(parent) => candidate = parent.to_path_buf(),
-                    None => break candidate,
-                }
-            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => match candidate.parent() {
+                Some(parent) => candidate = parent.to_path_buf(),
+                None => break candidate,
+            },
             Err(e) => {
                 return Err(e).with_context(|| {
-                    format!("Cannot inspect {} while checking directory access", candidate.display())
+                    format!(
+                        "Cannot inspect {} while checking directory access",
+                        candidate.display()
+                    )
                 });
             }
         }
@@ -321,7 +326,10 @@ pub fn check_directory_access(path: &Path) -> Result<()> {
 /// to the default (system mode). A missing file or missing fields also
 /// returns `None` so the caller never guesses an external target.
 pub fn read_user_selection() -> Option<UserSelection> {
-    owned_for_user(read_user_selection_in(&user_selection_path()), &current_user())
+    owned_for_user(
+        read_user_selection_in(&user_selection_path()),
+        &current_user(),
+    )
 }
 
 /// Whether `sel` was authored by the given OS user. Kept separate so the
@@ -342,7 +350,12 @@ fn owned_for_user(sel: Option<UserSelection>, user: &str) -> Option<UserSelectio
 /// User-selection read anchored at an explicit path (used by tests).
 pub fn read_user_selection_in(path: &Path) -> Option<UserSelection> {
     let parsed = MappedConfig::from_file(path).ok()?;
-    let get = |key: &str| parsed.get("general", key).map(str::trim).filter(|v| !v.is_empty());
+    let get = |key: &str| {
+        parsed
+            .get("general", key)
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+    };
     let mode = get("mode").and_then(Mode::parse)?;
     let user = get("user")?.to_string();
     Some(UserSelection { mode, user })
@@ -364,13 +377,14 @@ pub fn write_user_selection_in(sel: &UserSelection, path: &Path) -> Result<()> {
         let original = fs::read_to_string(path).unwrap_or_default();
         patch_general(
             &original,
-            &[
-                ("mode", sel.mode.as_str()),
-                ("user", sel.user.as_str()),
-            ],
+            &[("mode", sel.mode.as_str()), ("user", sel.user.as_str())],
         )
     } else {
-        format!("[general]\nmode = {}\nuser = {}\n", sel.mode.as_str(), sel.user)
+        format!(
+            "[general]\nmode = {}\nuser = {}\n",
+            sel.mode.as_str(),
+            sel.user
+        )
     };
     fs::write(path, content).with_context(|| format!("Failed to write user config {:?}", path))
 }
@@ -387,10 +401,18 @@ pub fn read_mode_config() -> ModeConfig {
 pub fn read_mode_config_in(path: &Path) -> ModeConfig {
     let mut cfg = ModeConfig::default();
     if let Ok(parsed) = MappedConfig::from_file(path) {
-        if let Some(root) = parsed.get("general", "user_root").map(str::trim).filter(|r| !r.is_empty()) {
+        if let Some(root) = parsed
+            .get("general", "user_root")
+            .map(str::trim)
+            .filter(|r| !r.is_empty())
+        {
             cfg.user_root = root.to_string();
         }
-        if let Some(root) = parsed.get("general", "system_root").map(str::trim).filter(|r| !r.is_empty()) {
+        if let Some(root) = parsed
+            .get("general", "system_root")
+            .map(str::trim)
+            .filter(|r| !r.is_empty())
+        {
             cfg.system_root = root.to_string();
         }
     }
@@ -452,7 +474,11 @@ fn general_has_keys(path: &Path, keys: &[&str]) -> bool {
     let Ok(parsed) = MappedConfig::from_file(path) else {
         return false;
     };
-    let Some(section) = parsed.sections().iter().find(|s| s.key.eq_ignore_ascii_case("general")) else {
+    let Some(section) = parsed
+        .sections()
+        .iter()
+        .find(|s| s.key.eq_ignore_ascii_case("general"))
+    else {
         return false;
     };
     let mut found = vec![false; keys.len()];
@@ -540,7 +566,10 @@ mod tests {
 
     #[test]
     fn test_normalize_root_absolute_passes_through() {
-        assert_eq!(normalize_root(Path::new("/opt/mcx")), PathBuf::from("/opt/mcx"));
+        assert_eq!(
+            normalize_root(Path::new("/opt/mcx")),
+            PathBuf::from("/opt/mcx")
+        );
     }
 
     #[test]
@@ -575,10 +604,16 @@ mod tests {
         let path = tmp.path().join("etc/mcx/user.ini");
         fs::create_dir_all(path.parent().unwrap()).unwrap();
 
-        assert!(read_user_selection_in(&path).is_none(), "missing file has no selection");
+        assert!(
+            read_user_selection_in(&path).is_none(),
+            "missing file has no selection"
+        );
 
         fs::write(&path, "[general]\nmode = user\n").unwrap();
-        assert!(read_user_selection_in(&path).is_none(), "missing required user field");
+        assert!(
+            read_user_selection_in(&path).is_none(),
+            "missing required user field"
+        );
 
         fs::write(&path, "[general]\nmode = user\nuser = alice\n").unwrap();
         let sel = read_user_selection_in(&path).unwrap();
@@ -593,7 +628,10 @@ mod tests {
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(&path, "[general]\nnote = keep\n").unwrap();
         write_user_selection_in(
-            &UserSelection { mode: Mode::System, user: "root".to_string() },
+            &UserSelection {
+                mode: Mode::System,
+                user: "root".to_string(),
+            },
             &path,
         )
         .unwrap();
@@ -605,13 +643,11 @@ mod tests {
 
     #[test]
     fn test_patch_general_replaces_and_preserves() {
-        let original = "[general]\nlog_level = info\nuser_root = /old\n\n[python]\nenabled = false\n";
+        let original =
+            "[general]\nlog_level = info\nuser_root = /old\n\n[python]\nenabled = false\n";
         let patched = patch_general(
             original,
-            &[
-                ("user_root", "/new/u"),
-                ("system_root", "/new/s"),
-            ],
+            &[("user_root", "/new/u"), ("system_root", "/new/s")],
         );
         assert!(patched.contains("user_root = /new/u"));
         assert!(patched.contains("system_root = /new/s"));
@@ -645,7 +681,11 @@ mod tests {
     fn test_ensure_mode_fields_adds_missing_keys() {
         let tmp = tempfile::TempDir::new().unwrap();
         let path = tmp.path().join("config.ini");
-        fs::write(&path, "[general]\nlog_level = info\n\n[python]\nenabled = true\n").unwrap();
+        fs::write(
+            &path,
+            "[general]\nlog_level = info\n\n[python]\nenabled = true\n",
+        )
+        .unwrap();
         ensure_mode_fields_in(&path).unwrap();
         let content = fs::read_to_string(&path).unwrap();
         assert!(content.contains("user_root = ~/.mcx"));
@@ -766,14 +806,26 @@ mod tests {
     fn test_is_within_home_matches_home_boundary() {
         let home = home_dir();
         assert!(is_within_home(&home), "the home itself qualifies");
-        assert!(is_within_home(&home.join(".mcx")), "subdirs of home qualify");
-        assert!(!is_within_home(Path::new("/tmp")), "system dirs do not qualify");
-        assert!(!is_within_home(Path::new("/")), "the system root never qualifies");
+        assert!(
+            is_within_home(&home.join(".mcx")),
+            "subdirs of home qualify"
+        );
+        assert!(
+            !is_within_home(Path::new("/tmp")),
+            "system dirs do not qualify"
+        );
+        assert!(
+            !is_within_home(Path::new("/")),
+            "the system root never qualifies"
+        );
     }
 
     #[test]
     fn test_home_dir_for_user_uses_passwd_database() {
-        assert!(home_dir_for_user("this-user-cannot-exist-mcx").is_none(), "unknown user has no home");
+        assert!(
+            home_dir_for_user("this-user-cannot-exist-mcx").is_none(),
+            "unknown user has no home"
+        );
         let home = home_dir_for_user("root").expect("root exists in the passwd database");
         assert_eq!(home, PathBuf::from("/root"));
         assert_eq!(target_user_root("root"), Some(PathBuf::from("/root/.mcx")));

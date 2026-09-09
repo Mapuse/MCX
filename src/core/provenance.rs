@@ -1,9 +1,9 @@
-use std::path::Path;
-use serde::{Serialize, Deserialize};
 use crate::core::database::{PackageMetadata, RepositoryInfo};
 use crate::core::localsrc::{LocalSourceManager, SourceMode};
 use crate::core::repo::RepositoryManager;
 use crate::utils::ui::UserInterface;
+use serde::{Deserialize, Serialize};
+use std::path::Path;
 
 /// Origin provenance block embedded by the producer (Outsider) inside each
 /// package's `metadata.json`. `source_url` is the ORIGINAL source-of-origin;
@@ -30,7 +30,8 @@ const POOL_SEGMENT: &str = "/pool/";
 /// Returns the repository base (everything before `/pool/`) when the URL points
 /// into an Outsider pool, plus the remainder after the pool segment.
 fn pool_base(url: &str) -> Option<(&str, &str)> {
-    url.find(POOL_SEGMENT).map(|idx| (&url[..idx], &url[idx + POOL_SEGMENT.len()..]))
+    url.find(POOL_SEGMENT)
+        .map(|idx| (&url[..idx], &url[idx + POOL_SEGMENT.len()..]))
 }
 
 /// Derive a repository name from a base URL. The INI section / index file name
@@ -106,7 +107,13 @@ pub fn auto_link_origin(meta: &PackageMetadata, embedded_source: &str, root: &Pa
     };
 
     let registry_added = link_registry_repo(source_url, root);
-    record_local_source(meta, source_url, provenance_url.is_none(), registry_added, root);
+    record_local_source(
+        meta,
+        source_url,
+        provenance_url.is_none(),
+        registry_added,
+        root,
+    );
 }
 
 fn is_linkable_source(s: &str) -> bool {
@@ -119,7 +126,9 @@ fn link_registry_repo(source_url: &str, root: &Path) -> bool {
     };
     let mgr = RepositoryManager::new(root);
     if let Err(e) = mgr.initialize() {
-        UserInterface::warning(&format!("Auto-link: could not initialize repository config: {e}"));
+        UserInterface::warning(&format!(
+            "Auto-link: could not initialize repository config: {e}"
+        ));
         return false;
     }
     let repo_base = base.to_string();
@@ -130,7 +139,10 @@ fn link_registry_repo(source_url: &str, root: &Path) -> bool {
             return false;
         }
     };
-    if existing.iter().any(|r| r.url.trim_end_matches('/') == repo_base.trim_end_matches('/')) {
+    if existing
+        .iter()
+        .any(|r| r.url.trim_end_matches('/') == repo_base.trim_end_matches('/'))
+    {
         // Exact URL already registered: nothing to add, but the registry link exists.
         return true;
     }
@@ -172,7 +184,9 @@ fn record_local_source(
 
     let mgr = LocalSourceManager::new(root);
     if let Err(e) = mgr.initialize() {
-        UserInterface::warning(&format!("Auto-link: could not initialize local sources config: {e}"));
+        UserInterface::warning(&format!(
+            "Auto-link: could not initialize local sources config: {e}"
+        ));
         return;
     }
     let sources = match mgr.load_sources() {
@@ -236,8 +250,14 @@ mod tests {
 
     #[test]
     fn test_derive_repo_name_sanitizes() {
-        assert_eq!(derive_repo_name("https://packages.example.org/mirror"), "packages.example.org.mirror");
-        assert_eq!(derive_repo_name("http://git.example.com/a_b-c"), "git.example.com.a_b-c");
+        assert_eq!(
+            derive_repo_name("https://packages.example.org/mirror"),
+            "packages.example.org.mirror"
+        );
+        assert_eq!(
+            derive_repo_name("http://git.example.com/a_b-c"),
+            "git.example.com.a_b-c"
+        );
         assert_eq!(derive_repo_name("https://x/y:"), "x.y");
     }
 }

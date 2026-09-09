@@ -1,12 +1,12 @@
+use crate::core::constants;
+use anyhow::{Result, anyhow};
+use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
-use anyhow::{Result, anyhow};
-use crate::core::constants;
-use serde::{Serialize, Deserialize};
 
 static LAST_TRANSACTION_ID: AtomicU64 = AtomicU64::new(0);
 
@@ -62,9 +62,7 @@ impl ChangelogManager {
     }
 
     fn fresh_transaction_id(&self) -> Result<u64> {
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)?
-            .as_millis() as u64;
+        let timestamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis() as u64;
         let pid_bits = (std::process::id() as u64) & 0x3F_FFFF;
         let base = (timestamp << 22) | pid_bits;
         let transaction_id = base.max(LAST_TRANSACTION_ID.load(Ordering::Relaxed) + 1);
@@ -76,9 +74,7 @@ impl ChangelogManager {
     /// treated as committed until `mark_transaction_complete` succeeds.
     pub fn record_transaction(&self, action: ActionKind, targets: Vec<String>) -> Result<u64> {
         let transaction_id = self.fresh_transaction_id()?;
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)?
-            .as_millis() as u64;
+        let timestamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis() as u64;
         let record = RegistryTransactionRecord {
             transaction_id,
             timestamp,
@@ -93,9 +89,7 @@ impl ChangelogManager {
     /// Phase 3 of the commit protocol: mark the intent as durably committed.
     pub fn mark_transaction_complete(&self, id: u64) -> Result<()> {
         let marker_id = self.fresh_transaction_id()?;
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)?
-            .as_millis() as u64;
+        let timestamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis() as u64;
         let record = RegistryTransactionRecord {
             transaction_id: marker_id,
             timestamp,

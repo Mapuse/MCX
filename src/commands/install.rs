@@ -1,24 +1,24 @@
+use crate::archive::extract::Extractor;
+use crate::archive::hash::HashVerifier;
+use crate::core::cgroup::CgroupController;
+use crate::core::component::ComponentFilter;
+use crate::core::constants;
+use crate::core::database::PackageMetadata;
+use crate::core::db::{Database, DbTransaction};
+use crate::core::declarative::ProfileValidator;
+use crate::core::package::compare_versions;
+use crate::core::plugin::{PluginEvent, PluginHook, PluginManager};
+use crate::core::profiler::SystemProfile;
+use crate::core::security::SecurityMonitor;
+use crate::core::solver::DependencySolver;
+use crate::core::vendor::VendorManager;
+use crate::network::download::Downloader;
+use crate::utils::ui::UserInterface;
+use anyhow::{Result, anyhow};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use anyhow::{Result, anyhow};
-use crate::core::solver::DependencySolver;
-use crate::core::db::{Database, DbTransaction};
-use crate::core::database::PackageMetadata;
-use crate::core::package::compare_versions;
-use crate::core::profiler::SystemProfile;
-use crate::core::cgroup::CgroupController;
-use crate::core::declarative::ProfileValidator;
-use crate::core::security::SecurityMonitor;
-use crate::core::plugin::{PluginManager, PluginHook, PluginEvent};
-use crate::core::component::ComponentFilter;
-use crate::core::vendor::VendorManager;
-use crate::network::download::Downloader;
-use crate::archive::extract::Extractor;
-use crate::archive::hash::HashVerifier;
-use crate::core::constants;
-use crate::utils::ui::UserInterface;
 
 /// A package fully prepared in its private staging directory: archive hash
 /// verified, contents extracted, component filtering applied and per-file
@@ -50,11 +50,26 @@ impl InstallCommand {
         }
     }
 
-    pub fn with_cgroup(mut self, mgr: CgroupController) -> Self { self.cgroup_mgr = mgr; self }
-    pub fn with_security(mut self, mon: Arc<SecurityMonitor>) -> Self { self.security_mon = Some(mon); self }
-    pub fn with_profile(mut self, path: PathBuf) -> Self { self.profile_path = Some(path); self }
-    pub fn with_plugin_mgr(mut self, mgr: Arc<PluginManager>) -> Self { self.plugin_mgr = Some(mgr); self }
-    pub fn with_component_filter(mut self, filter: ComponentFilter) -> Self { self.component_filter = Some(filter); self }
+    pub fn with_cgroup(mut self, mgr: CgroupController) -> Self {
+        self.cgroup_mgr = mgr;
+        self
+    }
+    pub fn with_security(mut self, mon: Arc<SecurityMonitor>) -> Self {
+        self.security_mon = Some(mon);
+        self
+    }
+    pub fn with_profile(mut self, path: PathBuf) -> Self {
+        self.profile_path = Some(path);
+        self
+    }
+    pub fn with_plugin_mgr(mut self, mgr: Arc<PluginManager>) -> Self {
+        self.plugin_mgr = Some(mgr);
+        self
+    }
+    pub fn with_component_filter(mut self, filter: ComponentFilter) -> Self {
+        self.component_filter = Some(filter);
+        self
+    }
 
     pub async fn execute(&self, packages: &[String]) -> Result<()> {
         if packages.is_empty() {
@@ -62,7 +77,7 @@ impl InstallCommand {
         }
 
         self.fire_hooks(PluginHook::PreInstall, packages);
-let sys_profile = SystemProfile::probe();
+        let sys_profile = SystemProfile::probe();
         let mut solver = DependencySolver::new(Arc::clone(&self.db));
         for pkg in packages {
             solver = solver.add_target(pkg);
@@ -73,7 +88,8 @@ let sys_profile = SystemProfile::probe();
             if !crate::core::arch::package_matches_host(&meta.architecture) {
                 return Err(anyhow!(
                     "Package '{}' architecture '{}' is not compatible with this host",
-                    meta.pkg_name, meta.architecture
+                    meta.pkg_name,
+                    meta.architecture
                 ));
             }
         }
@@ -92,8 +108,12 @@ let sys_profile = SystemProfile::probe();
                 continue;
             }
             match newest_available.get(&meta.pkg_name) {
-                Some(existing) if compare_versions(&existing.version, &meta.version) != std::cmp::Ordering::Less => {}
-                _ => { newest_available.insert(meta.pkg_name.clone(), meta.clone()); }
+                Some(existing)
+                    if compare_versions(&existing.version, &meta.version)
+                        != std::cmp::Ordering::Less => {}
+                _ => {
+                    newest_available.insert(meta.pkg_name.clone(), meta.clone());
+                }
             }
         }
         for meta in &mut plan {
@@ -120,7 +140,8 @@ let sys_profile = SystemProfile::probe();
                 // resolved target. An older installed version must be
                 // re-installed so `mcx install <pkg>` doubles as an upgrade.
                 if let Ok(installed) = self.db.get_package_manifest(&meta.pkg_name)
-                    && compare_versions(&installed.version, &meta.version) != std::cmp::Ordering::Less
+                    && compare_versions(&installed.version, &meta.version)
+                        != std::cmp::Ordering::Less
                 {
                     continue;
                 }
@@ -132,7 +153,10 @@ let sys_profile = SystemProfile::probe();
                 match vendor_mgr.lookup_vendor_archive(&meta.pkg_name, &meta.version) {
                     Some(vendored) => {
                         crate::core::transaction::atomic_copy(&vendored, &target_path)?;
-                        UserInterface::info(&format!("Using vendored offline archive for {}", meta.pkg_name));
+                        UserInterface::info(&format!(
+                            "Using vendored offline archive for {}",
+                            meta.pkg_name
+                        ));
                     }
                     None => {
                         downloads.push((meta.source.clone(), target_path.clone()));
@@ -157,10 +181,13 @@ let sys_profile = SystemProfile::probe();
         // No live-system path is modified in this phase, so a failure here
         // leaves the installation untouched.
         let stage_base = root_path.join(constants::PATH_STAGE);
-        if stage_base.exists() { fs::remove_dir_all(&stage_base)?; }
+        if stage_base.exists() {
+            fs::remove_dir_all(&stage_base)?;
+        }
         fs::create_dir_all(&stage_base)?;
 
-        let use_parallel = sys_profile.cpu_count >= constants::CPU_THRESHOLD_LOW && sys_profile.available_ram_mb >= constants::RAM_THRESHOLD_MEDIUM_MB;
+        let use_parallel = sys_profile.cpu_count >= constants::CPU_THRESHOLD_LOW
+            && sys_profile.available_ram_mb >= constants::RAM_THRESHOLD_MEDIUM_MB;
 
         let mut staged: Vec<StagedPackage> = Vec::with_capacity(pending.len());
 
@@ -173,9 +200,11 @@ let sys_profile = SystemProfile::probe();
                 let root = self.root.clone();
                 let filter = filter_clone.clone();
 
-                handles.push(tokio::task::spawn_blocking(move || -> Result<StagedPackage> {
-                    stage_package(Path::new(&root), meta_clone, &path_clone, filter.as_ref())
-                }));
+                handles.push(tokio::task::spawn_blocking(
+                    move || -> Result<StagedPackage> {
+                        stage_package(Path::new(&root), meta_clone, &path_clone, filter.as_ref())
+                    },
+                ));
             }
 
             for handle in handles {
@@ -183,7 +212,12 @@ let sys_profile = SystemProfile::probe();
             }
         } else {
             for (meta, path) in &pending {
-                staged.push(stage_package(root_path, meta.clone(), path, self.component_filter.as_ref())?);
+                staged.push(stage_package(
+                    root_path,
+                    meta.clone(),
+                    path,
+                    self.component_filter.as_ref(),
+                )?);
             }
         }
 
@@ -193,7 +227,8 @@ let sys_profile = SystemProfile::probe();
         // staged archive against the previously installed content and only
         // touch the files that actually changed — the new `.xcs` archive is
         // read from its source and the diff is applied straight from it.
-        let installed_map: HashMap<String, PackageMetadata> = self.db
+        let installed_map: HashMap<String, PackageMetadata> = self
+            .db
             .get_all_installed_packages()?
             .into_iter()
             .map(|m| (m.pkg_name.clone(), m))
@@ -249,7 +284,11 @@ let sys_profile = SystemProfile::probe();
         for sp in &staged {
             // cgroup: apply resource limits; surface failures instead of
             // silently pretending enforcement succeeded.
-            if let Err(e) = self.cgroup_mgr.enforce_resource_limits(&sp.meta.pkg_name, constants::DEFAULT_CGROUP_MAX_MEMORY_MB, constants::DEFAULT_CGROUP_MAX_CPU_PERCENT) {
+            if let Err(e) = self.cgroup_mgr.enforce_resource_limits(
+                &sp.meta.pkg_name,
+                constants::DEFAULT_CGROUP_MAX_MEMORY_MB,
+                constants::DEFAULT_CGROUP_MAX_CPU_PERCENT,
+            ) {
                 UserInterface::warning(&format!(
                     "Resource limits were NOT enforced for {} (cgroup setup failed): {}",
                     sp.meta.pkg_name, e
@@ -264,25 +303,32 @@ let sys_profile = SystemProfile::probe();
 
         // profile validation: detect drift between declared and actual state
         if let Some(ref profile_path) = self.profile_path
-            && profile_path.exists() {
-                match ProfileValidator::load_profile(profile_path) {
-                    Ok(profile) => {
-                        let current: Vec<String> = self.db.get_all_installed_packages()
-                            .unwrap_or_default()
-                            .iter()
-                            .map(|p| p.pkg_name.clone())
-                            .collect();
-                        let (to_install, to_remove) = ProfileValidator::compile_profile_diff(&current, &profile.packages);
-                        if !to_install.is_empty() || !to_remove.is_empty() {
-                            UserInterface::profile(&format!("Drift: {} to install, {} to remove",
-                                to_install.len(), to_remove.len()));
-                        }
-                    }
-                    Err(e) => {
-                        UserInterface::warning(&format!("Profile validation skipped: {}", e));
+            && profile_path.exists()
+        {
+            match ProfileValidator::load_profile(profile_path) {
+                Ok(profile) => {
+                    let current: Vec<String> = self
+                        .db
+                        .get_all_installed_packages()
+                        .unwrap_or_default()
+                        .iter()
+                        .map(|p| p.pkg_name.clone())
+                        .collect();
+                    let (to_install, to_remove) =
+                        ProfileValidator::compile_profile_diff(&current, &profile.packages);
+                    if !to_install.is_empty() || !to_remove.is_empty() {
+                        UserInterface::profile(&format!(
+                            "Drift: {} to install, {} to remove",
+                            to_install.len(),
+                            to_remove.len()
+                        ));
                     }
                 }
+                Err(e) => {
+                    UserInterface::warning(&format!("Profile validation skipped: {}", e));
+                }
             }
+        }
 
         for sp in &staged {
             for svc in sp.meta.all_services() {
@@ -291,8 +337,10 @@ let sys_profile = SystemProfile::probe();
                     Arc::clone(&self.db),
                 );
                 if let Err(e) = svc_cmd.register_service(svc) {
-                    UserInterface::warning(&format!("Failed to register service '{}' for {}: {}",
-                        svc.name, sp.meta.pkg_name, e));
+                    UserInterface::warning(&format!(
+                        "Failed to register service '{}' for {}: {}",
+                        svc.name, sp.meta.pkg_name, e
+                    ));
                 }
             }
         }
@@ -334,29 +382,39 @@ fn stage_package(
     {
         let sidecar_path = archive_path.with_file_name(format!(
             "{}.sha256",
-            archive_path.file_name().unwrap_or_default().to_string_lossy()
+            archive_path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
         ));
         let sidecar_bytes = fs::read_to_string(&sidecar_path);
         match sidecar_bytes {
             Ok(expected) => {
                 let expected = expected.trim().to_string();
                 if !expected.is_empty()
-                    && let Err(e) = HashVerifier::verify_integrity(archive_path, "sha256", &expected) {
-                        let _ = fs::remove_file(archive_path);
-                        return Err(e);
-                    }
+                    && let Err(e) =
+                        HashVerifier::verify_integrity(archive_path, "sha256", &expected)
+                {
+                    let _ = fs::remove_file(archive_path);
+                    return Err(e);
+                }
             }
             Err(_) => {
                 UserInterface::warning(&format!(
                     "Sidecar checksum not found for {}; transport integrity verification skipped",
-                    archive_path.file_name().unwrap_or_default().to_string_lossy()
+                    archive_path
+                        .file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
                 ));
             }
         }
     }
 
     let pkg_stage = root.join(constants::PATH_STAGE).join(&meta.pkg_name);
-    if pkg_stage.exists() { fs::remove_dir_all(&pkg_stage)?; }
+    if pkg_stage.exists() {
+        fs::remove_dir_all(&pkg_stage)?;
+    }
     fs::create_dir_all(&pkg_stage)?;
 
     // Cross-package collisions are rejected later by the database
@@ -366,18 +424,18 @@ fn stage_package(
     let total_extracted = extracted.len();
 
     let files_to_install: Vec<PathBuf> = match filter {
-        Some(f) => crate::core::component::filter_files_by_components(
-            &extracted,
-            &meta.components,
-            f,
-        ),
+        Some(f) => {
+            crate::core::component::filter_files_by_components(&extracted, &meta.components, f)
+        }
         None => extracted,
     };
 
     let skipped = total_extracted.saturating_sub(files_to_install.len());
     if skipped > 0 {
-        UserInterface::info(&format!("{}: {} files skipped by component filter",
-            meta.pkg_name, skipped));
+        UserInterface::info(&format!(
+            "{}: {} files skipped by component filter",
+            meta.pkg_name, skipped
+        ));
     }
 
     // Per-file SHA-256 digests recorded at install time so integrity
@@ -436,7 +494,11 @@ fn place_package(
             fs::create_dir_all(&pkg_active_new)?;
         }
         Err(e) => {
-            return Err(anyhow!("Failed to seed update generation for {}: {}", name, e));
+            return Err(anyhow!(
+                "Failed to seed update generation for {}: {}",
+                name,
+                e
+            ));
         }
     }
 
@@ -446,7 +508,9 @@ fn place_package(
 
     for file in &staged.meta.files {
         let src = pkg_stage.join(file);
-        let Ok(src_meta) = fs::symlink_metadata(&src) else { continue };
+        let Ok(src_meta) = fs::symlink_metadata(&src) else {
+            continue;
+        };
 
         // Content-identical to the previously installed file? Then it needs
         // no root write; the digest comparison only skips regular files that
@@ -490,7 +554,9 @@ fn place_package(
             continue;
         }
 
-        if !src_meta.is_file() { continue; } // directories appear implicitly
+        if !src_meta.is_file() {
+            continue;
+        } // directories appear implicitly
 
         let dst_active = pkg_active_new.join(file);
         if unchanged {
@@ -554,7 +620,11 @@ fn place_package(
     match fs::rename(&pkg_active_new, &pkg_active) {
         Ok(()) => {}
         Err(e) => {
-            return Err(anyhow!("Failed to activate new generation for {}: {}", name, e));
+            return Err(anyhow!(
+                "Failed to activate new generation for {}: {}",
+                name,
+                e
+            ));
         }
     }
     let _ = fs::remove_dir_all(&pkg_active_old);
@@ -573,7 +643,10 @@ mod tests {
     fn test_sidecar_url_for() {
         let source = "https://packages.cudane.org/pool/x86_64/foo/foo-1.0.0.xcs";
         let url = sidecar_url_for(source);
-        assert_eq!(url, "https://packages.cudane.org/pool/x86_64/foo/foo-1.0.0.xcs.sha256");
+        assert_eq!(
+            url,
+            "https://packages.cudane.org/pool/x86_64/foo/foo-1.0.0.xcs.sha256"
+        );
     }
 
     #[test]
@@ -590,7 +663,10 @@ mod tests {
             version: "1.0.0".into(),
             license: "MIT".into(),
             source: "https://example.com/pool/x86_64/foo/foo-1.0.0.xcs".into(),
-            checksum: crate::core::database::ChecksumData { kind: "sha256".into(), value: "abc".into() },
+            checksum: crate::core::database::ChecksumData {
+                kind: "sha256".into(),
+                value: "abc".into(),
+            },
             dependencies: vec![],
             files: vec![],
             provides: None,
@@ -613,14 +689,22 @@ mod tests {
             downloads.push((meta.source.clone(), target_path.clone()));
             downloads.push((
                 sidecar_url_for(&meta.source),
-                cache_dir.path().join(sidecar_path_for(&meta.pkg_name, &meta.version)),
+                cache_dir
+                    .path()
+                    .join(sidecar_path_for(&meta.pkg_name, &meta.version)),
             ));
         }
         pending.push((meta.clone(), target_path));
 
         assert_eq!(downloads.len(), 2);
-        assert_eq!(downloads[0].0, "https://example.com/pool/x86_64/foo/foo-1.0.0.xcs");
-        assert_eq!(downloads[1].0, "https://example.com/pool/x86_64/foo/foo-1.0.0.xcs.sha256");
+        assert_eq!(
+            downloads[0].0,
+            "https://example.com/pool/x86_64/foo/foo-1.0.0.xcs"
+        );
+        assert_eq!(
+            downloads[1].0,
+            "https://example.com/pool/x86_64/foo/foo-1.0.0.xcs.sha256"
+        );
         assert_eq!(pending.len(), 1);
     }
 
@@ -632,7 +716,10 @@ mod tests {
             version: "2.0.0".into(),
             license: "MIT".into(),
             source: "https://example.com/pool/x86_64/bar/bar-2.0.0.xcs".into(),
-            checksum: crate::core::database::ChecksumData { kind: "sha256".into(), value: "def".into() },
+            checksum: crate::core::database::ChecksumData {
+                kind: "sha256".into(),
+                value: "def".into(),
+            },
             dependencies: vec![],
             files: vec![],
             provides: None,
@@ -656,7 +743,9 @@ mod tests {
             downloads.push((meta.source.clone(), target_path.clone()));
             downloads.push((
                 sidecar_url_for(&meta.source),
-                cache_dir.path().join(sidecar_path_for(&meta.pkg_name, &meta.version)),
+                cache_dir
+                    .path()
+                    .join(sidecar_path_for(&meta.pkg_name, &meta.version)),
             ));
         }
         pending.push((meta.clone(), target_path));
@@ -665,4 +754,3 @@ mod tests {
         assert_eq!(pending.len(), 1);
     }
 }
-

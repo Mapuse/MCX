@@ -1,11 +1,11 @@
+use crate::core::constants;
+use crate::core::db::Database;
+use crate::core::service::CesarService;
+use crate::utils::ui::UserInterface;
+use anyhow::{Result, anyhow};
 use std::fs;
 use std::path::Path;
 use std::sync::Arc;
-use anyhow::{Result, anyhow};
-use crate::core::db::Database;
-use crate::core::service::CesarService;
-use crate::core::constants;
-use crate::utils::ui::UserInterface;
 
 pub struct ServiceCommand {
     root: String,
@@ -19,44 +19,67 @@ impl ServiceCommand {
 
     pub fn execute(&self, args: &[String]) -> Result<()> {
         if args.is_empty() {
-            return Err(anyhow!("Usage: mcx service <list|status|enable|disable|start|stop|restart|info> [name]"));
+            return Err(anyhow!(
+                "Usage: mcx service <list|status|enable|disable|start|stop|restart|info> [name]"
+            ));
         }
 
         match args[0].as_str() {
             "list" => self.list_services(),
             "status" => {
-                if args.len() < 2 { return Err(anyhow!("Usage: mcx service status <name>")); }
+                if args.len() < 2 {
+                    return Err(anyhow!("Usage: mcx service status <name>"));
+                }
                 self.status_service(&args[1])
             }
             "enable" => {
-                if args.len() < 2 { return Err(anyhow!("Usage: mcx service enable <name>")); }
+                if args.len() < 2 {
+                    return Err(anyhow!("Usage: mcx service enable <name>"));
+                }
                 self.enable_service(&args[1])
             }
             "disable" => {
-                if args.len() < 2 { return Err(anyhow!("Usage: mcx service disable <name>")); }
+                if args.len() < 2 {
+                    return Err(anyhow!("Usage: mcx service disable <name>"));
+                }
                 self.disable_service(&args[1])
             }
             "start" => {
-                if args.len() < 2 { return Err(anyhow!("Usage: mcx service start <name>")); }
+                if args.len() < 2 {
+                    return Err(anyhow!("Usage: mcx service start <name>"));
+                }
                 self.start_service(&args[1])
             }
             "stop" => {
-                if args.len() < 2 { return Err(anyhow!("Usage: mcx service stop <name>")); }
+                if args.len() < 2 {
+                    return Err(anyhow!("Usage: mcx service stop <name>"));
+                }
                 self.stop_service(&args[1])
             }
             "restart" => {
-                if args.len() < 2 { return Err(anyhow!("Usage: mcx service restart <name>")); }
+                if args.len() < 2 {
+                    return Err(anyhow!("Usage: mcx service restart <name>"));
+                }
                 self.restart_service(&args[1])
             }
             "info" => {
-                if args.len() < 2 { return Err(anyhow!("Usage: mcx service info <name>")); }
+                if args.len() < 2 {
+                    return Err(anyhow!("Usage: mcx service info <name>"));
+                }
                 self.info_service(&args[1])
             }
             "translate" => {
-                if args.len() < 3 { return Err(anyhow!("Usage: mcx service translate <input.service> <output_dir>")); }
+                if args.len() < 3 {
+                    return Err(anyhow!(
+                        "Usage: mcx service translate <input.service> <output_dir>"
+                    ));
+                }
                 self.translate(&args[1], &args[2])
             }
-            _ => Err(anyhow!("Unknown subcommand '{}'. Use list|status|enable|disable|start|stop|restart|info|translate", args[0])),
+            _ => Err(anyhow!(
+                "Unknown subcommand '{}'. Use list|status|enable|disable|start|stop|restart|info|translate",
+                args[0]
+            )),
         }
     }
 
@@ -139,7 +162,11 @@ impl ServiceCommand {
             .status()
             .map_err(|e| anyhow!("Failed to start service '{}': {}", svc.name, e))?;
         if !status.success() {
-            return Err(anyhow!("Failed to start service '{}': cesar exited {}", svc.name, status));
+            return Err(anyhow!(
+                "Failed to start service '{}': cesar exited {}",
+                svc.name,
+                status
+            ));
         }
         UserInterface::success(&format!("Service '{}' started", svc.name));
         Ok(())
@@ -153,7 +180,11 @@ impl ServiceCommand {
             .status()
             .map_err(|e| anyhow!("Failed to stop service '{}': {}", svc.name, e))?;
         if !status.success() {
-            return Err(anyhow!("Failed to stop service '{}': cesar exited {}", svc.name, status));
+            return Err(anyhow!(
+                "Failed to stop service '{}': cesar exited {}",
+                svc.name,
+                status
+            ));
         }
         UserInterface::success(&format!("Service '{}' stopped", svc.name));
         Ok(())
@@ -167,7 +198,11 @@ impl ServiceCommand {
             .status()
             .map_err(|e| anyhow!("Failed to restart service '{}': {}", svc.name, e))?;
         if !status.success() {
-            return Err(anyhow!("Failed to restart service '{}': cesar exited {}", svc.name, status));
+            return Err(anyhow!(
+                "Failed to restart service '{}': cesar exited {}",
+                svc.name,
+                status
+            ));
         }
         UserInterface::success(&format!("Service '{}' restarted", svc.name));
         Ok(())
@@ -213,8 +248,7 @@ impl ServiceCommand {
             if !candidate.contains('/') {
                 let on_path = std::env::var_os("PATH")
                     .map(|paths| {
-                        std::env::split_paths(&paths)
-                            .any(|dir| dir.join(candidate).is_file())
+                        std::env::split_paths(&paths).any(|dir| dir.join(candidate).is_file())
                     })
                     .unwrap_or(false);
                 if on_path {
