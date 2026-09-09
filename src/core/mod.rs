@@ -15,11 +15,13 @@ pub mod graph;
 pub mod history;
 pub mod integrity;
 pub mod lifecycle;
+pub mod localsrc;
 pub mod manifest;
 pub mod mode;
 pub mod package;
 pub mod plugin;
 pub mod profiler;
+pub mod provenance;
 pub mod repo;
 pub mod rollback;
 pub mod security;
@@ -48,6 +50,7 @@ pub use gitpkg::{GitPackageManager, GitPackageState, PackageDiff, is_git_source,
 pub use history::HistoryEngine;
 pub use integrity::IntegrityScanner;
 pub use lifecycle::{LifecycleEngine, LifecycleEntry, LifecycleTransition, LifecycleEvent, PackageState, DependencyGraph, OrphanSet};
+pub use localsrc::{LocalSource, LocalSourceManager, SourceMode};
 pub use manifest::ManifestParser;
 pub use mode::{
     Mode, ModeConfig, UserSelection, current_user, ensure_mode_fields, normalize_root,

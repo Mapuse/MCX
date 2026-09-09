@@ -13,6 +13,7 @@ use mcx::core::rollback::RollbackManager;
 use mcx::core::lifecycle::{LifecycleEngine, DependencyGraph, PackageState, OrphanSet};
 
 use mcx::commands::add::AddLocalCommand;
+use mcx::commands::localsrc::LocalSourceCommand;
 use mcx::commands::remove::RemoveCommand;
 use mcx::commands::install::InstallCommand;
 use mcx::commands::configuration::ConfigTarget;
@@ -43,6 +44,7 @@ async fn test_atomic_database_write_and_conflict_prevention() {
         services: Vec::new(),
         binaries: Vec::new(),
         file_hashes: std::collections::HashMap::new(),
+        provenance: None,
     };
 
     let mut tx_a = db.begin_transaction().expect("begin transaction");
@@ -61,6 +63,7 @@ async fn test_atomic_database_write_and_conflict_prevention() {
         services: Vec::new(),
         binaries: Vec::new(),
         file_hashes: std::collections::HashMap::new(),
+        provenance: None,
     };
 
     let mut tx_b = db.begin_transaction().expect("begin transaction");
@@ -117,6 +120,7 @@ async fn test_package_removal_and_filesystem_cleanup() {
         services: Vec::new(),
         binaries: Vec::new(),
         file_hashes: std::collections::HashMap::new(),
+        provenance: None,
     };
 
     let mut tx = db.begin_transaction().expect("begin transaction");
@@ -151,6 +155,7 @@ async fn test_shell_completion_engine_querying() {
         services: Vec::new(),
         binaries: Vec::new(),
         file_hashes: std::collections::HashMap::new(),
+        provenance: None,
     };
 
     let mut tx = db.begin_transaction().expect("begin transaction");
@@ -294,6 +299,7 @@ async fn test_database_dependency_graph_relations() {
         services: Vec::new(),
         binaries: Vec::new(),
         file_hashes: std::collections::HashMap::new(),
+        provenance: None,
     };
 
     let mut tx = db.begin_transaction().expect("begin transaction");
@@ -311,6 +317,7 @@ async fn test_database_dependency_graph_relations() {
         services: Vec::new(),
         binaries: Vec::new(),
         file_hashes: std::collections::HashMap::new(),
+        provenance: None,
     };
 
     let mut tx2 = db.begin_transaction().expect("begin transaction");
@@ -341,6 +348,7 @@ async fn test_cyclic_dependency_deadlock_breaking() {
         services: Vec::new(),
         binaries: Vec::new(),
         file_hashes: std::collections::HashMap::new(),
+        provenance: None,
     };
 
     let node_y = PackageMetadata {
@@ -354,6 +362,7 @@ async fn test_cyclic_dependency_deadlock_breaking() {
         services: Vec::new(),
         binaries: Vec::new(),
         file_hashes: std::collections::HashMap::new(),
+        provenance: None,
     };
 
     let mut tx = db.begin_transaction().expect("begin transaction");
@@ -385,6 +394,7 @@ async fn test_dependency_solver_topological_sorting_and_resolution() {
         services: Vec::new(),
         binaries: Vec::new(),
         file_hashes: std::collections::HashMap::new(),
+        provenance: None,
     };
 
     let dep_a = PackageMetadata {
@@ -398,6 +408,7 @@ async fn test_dependency_solver_topological_sorting_and_resolution() {
         services: Vec::new(),
         binaries: Vec::new(),
         file_hashes: std::collections::HashMap::new(),
+        provenance: None,
     };
 
     let target_pkg = PackageMetadata {
@@ -411,6 +422,7 @@ async fn test_dependency_solver_topological_sorting_and_resolution() {
         services: Vec::new(),
         binaries: Vec::new(),
         file_hashes: std::collections::HashMap::new(),
+        provenance: None,
     };
 
     let mut tx = db.begin_transaction().expect("begin transaction");
@@ -446,6 +458,7 @@ async fn test_dependency_solver_library_provider_resolution() {
         services: Vec::new(),
         binaries: Vec::new(),
         file_hashes: std::collections::HashMap::new(),
+        provenance: None,
     };
 
     let build_dep_pkg = PackageMetadata {
@@ -458,6 +471,7 @@ async fn test_dependency_solver_library_provider_resolution() {
         services: Vec::new(),
         binaries: Vec::new(),
         file_hashes: std::collections::HashMap::new(),
+        provenance: None,
     };
 
     let json_glib_pkg = PackageMetadata {
@@ -474,6 +488,7 @@ async fn test_dependency_solver_library_provider_resolution() {
         services: Vec::new(),
         binaries: Vec::new(),
         file_hashes: std::collections::HashMap::new(),
+        provenance: None,
     };
 
     let mut tx = db.begin_transaction().expect("begin transaction");
@@ -535,6 +550,7 @@ async fn test_temporal_history_ledger_rollback() {
         services: Vec::new(),
         binaries: Vec::new(),
         file_hashes: std::collections::HashMap::new(),
+        provenance: None,
     };
 
     let mut tx = db_arc.begin_transaction().expect("begin transaction");
@@ -934,6 +950,7 @@ async fn test_integrity_scanner_detects_missing_files() {
         services: Vec::new(),
         binaries: Vec::new(),
         file_hashes: std::collections::HashMap::new(),
+        provenance: None,
     };
     let mut tx = db.begin_transaction().expect("begin transaction");
     tx.register_package_placement(&pkg).expect("register package placement");
@@ -1037,6 +1054,7 @@ async fn test_changelog_two_phase_roundtrip_and_malformed_tolerance() {
         architecture: "native".to_string(), components: Vec::new(),
         services: Vec::new(), binaries: Vec::new(),
         file_hashes: std::collections::HashMap::new(),
+        provenance: None,
     };
     let mut tx = db.begin_transaction().expect("begin transaction");
     tx.register_package_placement(&pkg).expect("register placement");
@@ -1184,6 +1202,7 @@ fn package_meta(name: &str, version: &str, source: &str, checksum: &str, files: 
         architecture: "native".to_string(),
         components: Vec::new(), services: Vec::new(), binaries: Vec::new(),
         file_hashes: std::collections::HashMap::new(),
+        provenance: None,
     }
 }
 
@@ -1713,4 +1732,646 @@ fn test_manifest_parser_accepts_outsider_checksum_object() {
     let entity2 = mcx::core::manifest::ManifestParser::parse_embedded_manifest(root)
         .expect("parse legacy metadata.json");
     assert_eq!(entity2.checksum, "flat_hash_value");
+}
+
+// ── Local package sources ────────────────────────────────────────────────
+
+/// Write an Outsider-shaped `.xcs` archive (metadata.json + flat payload) and
+/// its `.sha256` transport sidecar, exactly like `ous` produces.
+fn write_outsider_xcs(path: &PathBuf, pkg_name: &str, version: &str, files: &[(&str, &str)]) {
+    fs::create_dir_all(path.parent().expect("archive parent")).expect("create archive dir");
+    let metadata = serde_json::json!({
+        "pkg_name": pkg_name,
+        "version": version,
+        "license": "MIT",
+        "source": "local-source-test",
+        "architecture": "native",
+        "checksum": {"kind": "sha256", "value": "info-only"},
+        "dependencies": [],
+        "files": [],
+        "provides": [],
+        "conflicts": []
+    });
+    let mut entries: Vec<(String, String)> = vec![(
+        "metadata.json".to_string(),
+        serde_json::to_string(&metadata).expect("serialize metadata"),
+    )];
+    entries.extend(files.iter().map(|(rel, content)| (rel.to_string(), content.to_string())));
+    let flat: Vec<(&str, &str)> = entries
+        .iter()
+        .map(|(rel, content)| (rel.as_str(), content.as_str()))
+        .collect();
+    write_xcs(path, &flat);
+    let hash = mcx::archive::hash::HashVerifier::calculate(path, "sha256").expect("hash archive");
+    fs::write(path.with_extension("xcs.sha256"), format!("{}\n", hash)).expect("write sidecar");
+}
+
+/// Like `write_outsider_xcs` but embeds an optional `provenance` block.
+fn write_outsider_xcs_with_provenance(
+    path: &PathBuf,
+    pkg_name: &str,
+    version: &str,
+    source: &str,
+    provenance: Option<serde_json::Value>,
+    files: &[(&str, &str)],
+) {
+    fs::create_dir_all(path.parent().expect("archive parent")).expect("create archive dir");
+    let mut metadata = serde_json::json!({
+        "pkg_name": pkg_name,
+        "version": version,
+        "license": "MIT",
+        "source": source,
+        "architecture": "native",
+        "checksum": {"kind": "sha256", "value": "info-only"},
+        "dependencies": [],
+        "files": [],
+        "provides": [],
+        "conflicts": [],
+    });
+    if let Some(prov) = provenance {
+        metadata["provenance"] = prov;
+    }
+    let mut entries: Vec<(String, String)> = vec![(
+        "metadata.json".to_string(),
+        serde_json::to_string(&metadata).expect("serialize metadata"),
+    )];
+    entries.extend(files.iter().map(|(rel, content)| (rel.to_string(), content.to_string())));
+    let flat: Vec<(&str, &str)> = entries
+        .iter()
+        .map(|(rel, content)| (rel.as_str(), content.as_str()))
+        .collect();
+    write_xcs(path, &flat);
+    let hash = mcx::archive::hash::HashVerifier::calculate(path, "sha256").expect("hash archive");
+    fs::write(path.with_extension("xcs.sha256"), format!("{}\n", hash)).expect("write sidecar");
+}
+
+/// Build a `.tar.zst` containing the given archive entries (relative path ->
+/// content) without requiring any external binary (tar + zstd crates only).
+fn write_tar_zst(path: &PathBuf, entries: &[(&str, &str)]) {
+    fs::create_dir_all(path.parent().expect("tar parent")).expect("create tar dir");
+    let plain = path.with_extension("plain.tar");
+    {
+        let f = fs::File::create(&plain).expect("create tar file");
+        let mut builder = tar::Builder::new(f);
+        for (rel, content) in entries {
+            let mut header = tar::Header::new_gnu();
+            header.set_size(content.len() as u64);
+            header.set_mode(0o644);
+            header.set_entry_type(tar::EntryType::Regular);
+            header.set_path(rel).expect("set tar path");
+            builder
+                .append_data(&mut header, rel, content.as_bytes())
+                .expect("append tar entry");
+        }
+        builder.finish().expect("finish tar");
+    }
+    {
+        let mut input = fs::File::open(&plain).expect("open plain tar");
+        let output = fs::File::create(path).expect("create tar.zst");
+        let mut enc = zstd::stream::Encoder::new(output, 1).expect("zstd encoder");
+        std::io::copy(&mut input, &mut enc).expect("compress to zstd");
+        enc.finish().expect("finish zstd");
+    }
+    fs::remove_file(&plain).expect("remove temp tar");
+}
+
+#[tokio::test]
+async fn test_local_prebuilt_source_sync_and_fingerprint() {
+    let root = create_temporary_root("local_prebuilt_sync");
+    let prebuilt_dir = root.join("srv/prebuilt");
+    fs::create_dir_all(&prebuilt_dir).expect("create prebuilt dir");
+
+    let archive_100 = prebuilt_dir.join("hello-pkg-1.0.0.xcs");
+    write_outsider_xcs(&archive_100, "hello-pkg", "1.0.0", &[("usr/bin/hello", "hello v1\n")]);
+
+    let db = Arc::new(mcx::core::database::Database::open(&root).expect("open db"));
+    let cmd = LocalSourceCommand::new(&root, Arc::clone(&db));
+
+    cmd.add("prebuilt", prebuilt_dir.to_str().expect("str"), true, true)
+        .expect("register prebuilt source");
+
+    cmd.sync_local_sources().expect("first sync");
+
+    assert!(db.is_package_installed("hello-pkg").expect("installed"));
+    assert_eq!(fs::read_to_string(root.join("usr/bin/hello")).unwrap(), "hello v1\n");
+
+    let mtime = fs::metadata(root.join("usr/bin/hello"))
+        .expect("hello meta")
+        .modified()
+        .expect("mtime");
+
+    cmd.sync_local_sources().expect("second sync unchanged");
+    assert_eq!(
+        fs::metadata(root.join("usr/bin/hello"))
+            .expect("hello meta")
+            .modified()
+            .expect("mtime"),
+        mtime,
+        "unchanged source must not rewrite installed files"
+    );
+
+    let archive_110 = prebuilt_dir.join("hello-pkg-1.1.0.xcs");
+    write_outsider_xcs(&archive_110, "hello-pkg", "1.1.0", &[("usr/bin/hello", "hello v1.1\n")]);
+    cmd.sync_local_sources().expect("third sync with new archive");
+
+    let meta = db.get_package_manifest("hello-pkg").expect("manifest");
+    assert_eq!(meta.version, "1.1.0", "newer archive wins");
+    assert_eq!(fs::read_to_string(root.join("usr/bin/hello")).unwrap(), "hello v1.1\n");
+
+    let listed = cmd.list().expect("list sources");
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].mode, mcx::core::localsrc::SourceMode::Prebuilt);
+    assert!(listed[0].last_built.is_some(), "last_built was recorded");
+    assert!(root.join("etc/mcx/localsources.ini").exists(), "config written under etc/mcx");
+
+    cmd.remove("prebuilt").expect("remove source");
+    assert!(cmd.list().expect("list").is_empty());
+
+    fs::remove_dir_all(&root).expect("cleanup");
+}
+
+#[tokio::test]
+async fn test_local_source_add_validation_and_skip_without_ous() {
+    let root = create_temporary_root("local_source_skip");
+    let source_dir = root.join("srv/src");
+    fs::create_dir_all(&source_dir).expect("create source dir");
+    fs::write(
+        source_dir.join("manifest.json"),
+        r#"{"packages":[{"name":"hello-pkg","version":"1.0.0","source":"payload","type":"custom"}]}"#,
+    )
+    .expect("write manifest");
+    fs::create_dir_all(source_dir.join("payload")).expect("create payload");
+    fs::write(source_dir.join("payload/hello.c"), "int main(void) { return 0; }\n").expect("write source");
+
+    let db = Arc::new(mcx::core::database::Database::open(&root).expect("open db"));
+    let cmd = LocalSourceCommand::new(&root, Arc::clone(&db));
+
+    assert!(cmd.add("../evil", source_dir.to_str().expect("str"), false, true).is_err());
+    assert!(cmd.add("prebuilt-url", "https://example.com/x.git", true, true).is_err());
+    assert!(cmd.add("missing-dir", "/no/such/dir", true, true).is_err());
+    assert!(cmd.add("no-manifest", root.join("srv").to_str().expect("str"), false, true).is_err());
+
+    cmd.add("source", source_dir.to_str().expect("str"), false, true)
+        .expect("register source source");
+
+    let sources = cmd.list().expect("list");
+    let result = cmd
+        .build_one(&sources[0], false, None)
+        .expect("build_one must not panic without ous");
+    assert_eq!(
+        result,
+        mcx::core::localsrc::LocalSourceResult::Skipped("ous binary not available".to_string())
+    );
+
+    assert!(
+        cmd.build(vec!["source".to_string()], false).is_err(),
+        "explicit build without ous must fail"
+    );
+
+    fs::remove_dir_all(&root).expect("cleanup");
+}
+
+#[tokio::test]
+async fn test_local_source_add_cli_default_is_enabled() {
+    // Drives the real `mcx` binary so the enable/disable flag resolution in
+    // the CLI handler is pinned: no flag must default to ENABLED, only
+    // `--disable` may produce `enabled = false`.
+    let home = create_temporary_root("lsrc_cli_default");
+    let src = home.join("srv/srca");
+    fs::create_dir_all(&src).expect("create source dir");
+    fs::write(src.join("manifest.json"), r#"{"packages":[]}"#).expect("write manifest");
+    let src = src.to_str().expect("src path");
+    let bin = env!("CARGO_BIN_EXE_mcx");
+
+    let run = |args: &[&str]| {
+        std::process::Command::new(bin)
+            .args(args)
+            .env("HOME", &home)
+            .output()
+            .expect("run mcx")
+    };
+
+    // No flag: enabled by default.
+    let ok = run(&["--user-mode", "local-source-add", "cli-a", src]);
+    assert!(
+        ok.status.success(),
+        "no-flag add failed: {}",
+        String::from_utf8_lossy(&ok.stderr)
+    );
+    let ini = fs::read_to_string(home.join(".mcx/etc/mcx/localsources.ini")).expect("localsources.ini");
+    assert!(ini.contains("[cli-a]"), "{ini}");
+    assert!(ini.contains("enabled = true"), "no flag must store enabled=true:\n{ini}");
+
+    // --enable also stores enabled=true.
+    let ok = run(&["--user-mode", "local-source-add", "cli-b", src, "--enable"]);
+    assert!(ok.status.success(), "enable add failed: {}", String::from_utf8_lossy(&ok.stderr));
+    let ini = fs::read_to_string(home.join(".mcx/etc/mcx/localsources.ini")).expect("localsources.ini");
+    assert!(ini.contains("[cli-b]"), "{ini}");
+    assert!(ini.contains("enabled = true"), "--enable must store enabled=true:\n{ini}");
+
+    // --disable stores enabled=false.
+    let ok = run(&["--user-mode", "local-source-add", "cli-c", src, "--disable"]);
+    assert!(ok.status.success(), "disable add failed: {}", String::from_utf8_lossy(&ok.stderr));
+    let ini = fs::read_to_string(home.join(".mcx/etc/mcx/localsources.ini")).expect("localsources.ini");
+    assert!(ini.contains("[cli-c]"), "{ini}");
+    assert!(ini.contains("enabled = false"), "--disable must store enabled=false:\n{ini}");
+
+    fs::remove_dir_all(&home).expect("cleanup");
+}
+
+#[tokio::test]
+#[ignore = "requires a real ous binary (set OUS_BIN)"]
+async fn test_local_source_build_with_real_ous_binary() {
+    let Some(ous) = std::env::var("OUS_BIN")
+        .ok()
+        .filter(|p| !p.is_empty() && Path::new(p).is_file())
+    else {
+        eprintln!("OUS_BIN not set to an existing binary; skipping real-ous test");
+        return;
+    };
+
+    let root = create_temporary_root("local_source_real_ous");
+    let source_dir = root.join("srv/src");
+    fs::create_dir_all(&source_dir).expect("create source dir");
+    fs::write(
+        source_dir.join("manifest.json"),
+        r#"{"packages":[{"name":"hello-pkg","version":"1.0.0","source":"payload","type":"custom","build":["none"],"install":["mkdir -p \"$CUDANE_DEST/usr/share/hello\" && cp hello.txt \"$CUDANE_DEST/usr/share/hello/\""]}]}"#,
+    )
+    .expect("write manifest");
+    fs::create_dir_all(source_dir.join("payload")).expect("create payload");
+    fs::write(source_dir.join("payload/hello.txt"), "hello\n").expect("write payload");
+
+    let db = Arc::new(mcx::core::database::Database::open(&root).expect("open db"));
+    let cmd = LocalSourceCommand::new(&root, Arc::clone(&db));
+    cmd.add("source", source_dir.to_str().expect("str"), false, true)
+        .expect("register source");
+
+    let sources = cmd.list().expect("list");
+    let result = cmd.build_one(&sources[0], true, Some(&ous)).expect("build with real ous succeeded");
+    assert_eq!(result, mcx::core::localsrc::LocalSourceResult::Built);
+
+    assert!(db.is_package_installed("hello-pkg").expect("installed"));
+    assert_eq!(
+        fs::read_to_string(root.join("usr/share/hello/hello.txt")).unwrap(),
+        "hello\n",
+        "payload produced by the real ous archive must reach the live root"
+    );
+
+    fs::remove_dir_all(&root).expect("cleanup");
+}
+
+#[tokio::test]
+async fn test_local_add_handles_dot_prefix_archive_entries() {
+    let root = create_temporary_root("local_add_dot_prefix");
+    let out = root.join("var/tmp/dot.xcs");
+    fs::create_dir_all(out.parent().expect("out parent")).expect("create out dir");
+    let metadata = serde_json::json!({
+        "pkg_name": "hello-dot",
+        "version": "1.0.0",
+        "license": "MIT",
+        "source": "local-source-test",
+        "architecture": "native",
+        "checksum": {"kind": "sha256", "value": "info-only"},
+        "dependencies": [],
+        "files": ["usr/bin/hello-dot"],
+        "provides": [],
+        "conflicts": []
+    });
+
+    let tar_path = out.with_extension("tar");
+    {
+        let f = fs::File::create(&tar_path).expect("create tar file");
+        let mut builder = tar::Builder::new(f);
+        for (rel, content) in [
+            ("./metadata.json", serde_json::to_string(&metadata).expect("serialize")),
+            ("./usr/bin/hello-dot", String::from("#!/bin/sh\necho hi\n")),
+        ] {
+            let mut header = tar::Header::new_gnu();
+            header.set_size(content.len() as u64);
+            header.set_mode(0o644);
+            header.set_entry_type(tar::EntryType::Regular);
+            header.set_path(rel).expect("set tar path");
+            builder.append_data(&mut header, rel, content.as_bytes()).expect("append tar entry");
+        }
+        builder.finish().expect("finish tar");
+    }
+    {
+        let mut input = fs::File::open(&tar_path).expect("open tar");
+        let output = fs::File::create(&out).expect("create xcs");
+        let mut enc = zstd::stream::Encoder::new(output, 1).expect("zstd encoder");
+        std::io::copy(&mut input, &mut enc).expect("compress to zstd");
+        enc.finish().expect("finish zstd");
+        fs::remove_file(&tar_path).expect("remove temp tar");
+    }
+
+    let db = Arc::new(mcx::core::database::Database::open(&root).expect("open db"));
+    let add = mcx::commands::AddLocalCommand::new(
+        root.to_string_lossy().into_owned(),
+        Arc::clone(&db),
+    );
+    add.execute(&out.to_string_lossy()).expect("add succeeds");
+
+    assert!(db.is_package_installed("hello-dot").expect("installed"));
+    let meta = db.get_package_manifest("hello-dot").expect("manifest");
+    assert_eq!(meta.version, "1.0.0", "metadata read from ./-prefixed entry");
+    assert_eq!(
+        fs::read_to_string(root.join("usr/bin/hello-dot")).unwrap(),
+        "#!/bin/sh\necho hi\n"
+    );
+    assert!(
+        !root.join("metadata.json").exists(),
+        "./-prefixed metadata.json must not be installed verbatim"
+    );
+
+    fs::remove_dir_all(&root).expect("cleanup");
+}
+
+// ── Universal local-source kinds + provenance auto-link ────────────────────
+
+#[tokio::test]
+async fn test_local_source_archive_tarball_materialization_and_fingerprint() {
+    let root = create_temporary_root("local_src_archive_tar");
+    let tarball = root.join("srv/hello-tar.tar.zst");
+    write_tar_zst(
+        &tarball,
+        &[
+            (
+                "manifest.json",
+                r#"{"packages":[{"name":"hello-tar","version":"1.0.0","source":"payload","type":"custom","build":["none"],"install":["mkdir -p \"$CUDANE_DEST/usr/share/hello\" && cp hello.txt \"$CUDANE_DEST/usr/share/hello/\""]}]}"#,
+            ),
+            ("payload/hello.txt", "hello tar v1\n"),
+        ],
+    );
+
+    let db = Arc::new(mcx::core::database::Database::open(&root).expect("open db"));
+    let cmd = LocalSourceCommand::new(&root, Arc::clone(&db));
+    let url = format!("file://{}", tarball.display());
+    cmd.add("archive-src", &url, false, true).expect("register archive source");
+
+    let mgr = mcx::core::localsrc::LocalSourceManager::new(&root);
+    let sources = cmd.list().expect("list sources");
+    let materialized =
+        mcx::core::localsrc::materialize_source(&mgr, &sources[0]).expect("materialize");
+
+    let artifact = mgr.downloads_dir().join("archive-src.tar.zst");
+    assert!(artifact.exists(), "artifact downloaded into downloads dir");
+    assert_eq!(
+        materialized.fingerprint,
+        mcx::archive::hash::HashVerifier::calculate(&artifact, "sha256").expect("artifact sha"),
+        "fingerprint must be the sha256 of the artifact BYTES"
+    );
+    assert_eq!(materialized.fingerprint.len(), 64);
+    assert_eq!(
+        materialized.manifest,
+        mgr.work_dir().join("archive-src").join("manifest.json")
+    );
+    assert!(materialized.manifest.exists(), "manifest extracted into work dir");
+    assert!(mgr.work_dir().join("archive-src").join("payload/hello.txt").exists());
+
+    // Changed artifact bytes => different fingerprint and re-extraction.
+    write_tar_zst(
+        &tarball,
+        &[
+            (
+                "manifest.json",
+                r#"{"packages":[{"name":"hello-tar","version":"1.1.0","source":"payload","type":"custom","build":["none"],"install":["mkdir -p \"$CUDANE_DEST/usr/share/hello\" && cp hello.txt \"$CUDANE_DEST/usr/share/hello/\""]}]}"#,
+            ),
+            ("payload/hello.txt", "hello tar v2\n"),
+        ],
+    );
+    let re_materialized =
+        mcx::core::localsrc::materialize_source(&mgr, &sources[0]).expect("re-materialize");
+    assert_ne!(materialized.fingerprint, re_materialized.fingerprint);
+    assert_eq!(
+        fs::read_to_string(mgr.work_dir().join("archive-src").join("payload/hello.txt")).unwrap(),
+        "hello tar v2\n",
+        "work dir reflects the new artifact bytes"
+    );
+
+    // Skip semantics on the management layer.
+    assert_eq!(
+        mcx::core::localsrc::decide_action(
+            Some(&re_materialized.fingerprint),
+            Some(&re_materialized.fingerprint),
+            false,
+            false
+        ),
+        mcx::core::localsrc::LocalSourceAction::Skip
+    );
+    assert_eq!(
+        mcx::core::localsrc::decide_action(
+            Some(&re_materialized.fingerprint),
+            Some("other-fingerprint"),
+            false,
+            false
+        ),
+        mcx::core::localsrc::LocalSourceAction::Rebuild
+    );
+
+    // Full build/install flow requires the real ous binary; degrade gracefully.
+    let Some(ous) = std::env::var("OUS_BIN")
+        .ok()
+        .filter(|p| !p.is_empty() && Path::new(p).is_file())
+    else {
+        eprintln!("OUS_BIN not set to an existing binary; skipping archive install assertion");
+        fs::remove_dir_all(&root).expect("cleanup");
+        return;
+    };
+
+    let result = cmd
+        .build_one(&sources[0], false, Some(&ous))
+        .expect("build archive source with real ous");
+    assert_eq!(result, mcx::core::localsrc::LocalSourceResult::Built);
+    assert!(db.is_package_installed("hello-tar").expect("installed"));
+    assert_eq!(
+        fs::read_to_string(root.join("usr/share/hello/hello.txt")).unwrap(),
+        "hello tar v2\n",
+        "built archive payload must reach the live root"
+    );
+
+    let mtime = fs::metadata(root.join("usr/share/hello/hello.txt"))
+        .expect("hello meta")
+        .modified()
+        .expect("mtime");
+    cmd.sync_local_sources().expect("second sync unchanged");
+    assert_eq!(
+        fs::metadata(root.join("usr/share/hello/hello.txt"))
+            .expect("hello meta")
+            .modified()
+            .expect("mtime"),
+        mtime,
+        "unchanged artifact must not trigger a rebuild"
+    );
+
+    fs::remove_dir_all(&root).expect("cleanup");
+}
+
+#[tokio::test]
+async fn test_auto_link_origin_pool_url_adds_repo_and_disabled_source() {
+    let root = create_temporary_root("auto_link_pool");
+    let pool_url =
+        "https://packages.example.org/repo/pool/x86_64/hello-pkg/hello-pkg-1.0.0.xcs";
+    let archive = root.join("srv/mirror/hello-pkg-1.0.0.xcs");
+    write_outsider_xcs_with_provenance(
+        &archive,
+        "hello-pkg",
+        "1.0.0",
+        pool_url,
+        Some(serde_json::json!({
+            "source_type": "dir",
+            "source_url": pool_url,
+            "source_revision": null,
+            "builder": "ous-1.2.3",
+        })),
+        &[("usr/bin/hello", "hello\n")],
+    );
+
+    let db = Arc::new(mcx::core::database::Database::open(&root).expect("open db"));
+    let add = AddLocalCommand::new(root.to_string_lossy().into_owned(), Arc::clone(&db));
+    add.execute(&archive.to_string_lossy()).expect("add succeeds");
+
+    assert!(db.is_package_installed("hello-pkg").expect("installed"));
+
+    // Registry repo auto-added: section per host+path, enabled, pointing at base.
+    let repo_ini = fs::read_to_string(root.join("etc/mcx/repo.ini")).expect("repo.ini");
+    assert!(repo_ini.contains("[packages.example.org.repo]"), "{repo_ini}");
+    assert!(repo_ini.contains("url = https://packages.example.org/repo"), "{repo_ini}");
+    assert!(repo_ini.contains("enabled = true"), "{repo_ini}");
+
+    // Local source recorded: provenance.source_url verbatim, mode=source,
+    // disabled because the registry link drives updates.
+    let lsrc_ini = fs::read_to_string(root.join("etc/mcx/localsources.ini")).expect("localsources.ini");
+    assert!(lsrc_ini.contains("[hello-pkg]"), "{lsrc_ini}");
+    assert!(lsrc_ini.contains(&format!("path = {pool_url}")), "{lsrc_ini}");
+    assert!(lsrc_ini.contains("mode = source"), "{lsrc_ini}");
+    assert!(lsrc_ini.contains("enabled = false"), "{lsrc_ini}");
+
+    // Re-install must not duplicate either record.
+    let repo_count = fs::read_to_string(root.join("etc/mcx/repo.ini"))
+        .expect("repo.ini")
+        .matches("[packages.example.org.repo]")
+        .count();
+    assert_eq!(repo_count, 1, "repo section must not be duplicated");
+    add.execute(&archive.to_string_lossy()).expect("re-add succeeds");
+    let lsrc_ini2 = fs::read_to_string(root.join("etc/mcx/localsources.ini")).expect("localsources.ini");
+    assert_eq!(
+        lsrc_ini2.matches("[hello-pkg]").count(),
+        1,
+        "local source section must not be duplicated"
+    );
+    let repo_count2 = fs::read_to_string(root.join("etc/mcx/repo.ini"))
+        .expect("repo.ini")
+        .matches("[packages.example.org.repo]")
+        .count();
+    assert_eq!(repo_count2, 1, "repo section must not be duplicated after re-add");
+
+    fs::remove_dir_all(&root).expect("cleanup");
+}
+
+#[tokio::test]
+async fn test_auto_link_origin_no_pool_records_enabled_source() {
+    let root = create_temporary_root("auto_link_dir");
+    let source_path = "/srv/build-src/hello-pkg";
+    let archive = root.join("srv/mirror/hello-pkg-1.0.0.xcs");
+    write_outsider_xcs_with_provenance(
+        &archive,
+        "hello-pkg",
+        "1.0.0",
+        "unused",
+        Some(serde_json::json!({
+            "source_type": "dir",
+            "source_url": source_path,
+            "source_revision": "abc123",
+            "built_at": "2026-01-01T00:00:00Z",
+            "builder": "ous-1.2.3",
+        })),
+        &[("usr/bin/hello", "hello\n")],
+    );
+
+    let db = Arc::new(mcx::core::database::Database::open(&root).expect("open db"));
+    let add = AddLocalCommand::new(root.to_string_lossy().into_owned(), Arc::clone(&db));
+    add.execute(&archive.to_string_lossy()).expect("add succeeds");
+
+    // No /pool/ in source_url: no registry repo write.
+    assert!(
+        !root.join("etc/mcx/repo.ini").exists(),
+        "no repo.ini expected without a pool-style origin"
+    );
+
+    // Local source recorded enabled=true (no registry link), verbatim path.
+    let lsrc_ini = fs::read_to_string(root.join("etc/mcx/localsources.ini")).expect("localsources.ini");
+    assert!(lsrc_ini.contains("[hello-pkg]"), "{lsrc_ini}");
+    assert!(lsrc_ini.contains(&format!("path = {source_path}")), "{lsrc_ini}");
+    assert!(lsrc_ini.contains("mode = source"), "{lsrc_ini}");
+    assert!(lsrc_ini.contains("enabled = true"), "{lsrc_ini}");
+
+    fs::remove_dir_all(&root).expect("cleanup");
+}
+
+#[tokio::test]
+async fn test_auto_link_origin_metadata_source_pool_fallback_and_provenance_display() {
+    let root = create_temporary_root("auto_link_meta_fallback");
+    let pool_url =
+        "https://mirror.example.net/pool/x86_64/legacy-pkg/legacy-pkg-1.0.0.xcs";
+    let archive = root.join("srv/mirror/legacy-pkg-1.0.0.xcs");
+    // No provenance block at all: auto-link must fall back to metadata.source.
+    write_outsider_xcs_with_provenance(
+        &archive,
+        "legacy-pkg",
+        "1.0.0",
+        pool_url,
+        None,
+        &[("usr/bin/legacy", "legacy\n")],
+    );
+
+    let db = Arc::new(mcx::core::database::Database::open(&root).expect("open db"));
+    let add = AddLocalCommand::new(root.to_string_lossy().into_owned(), Arc::clone(&db));
+    add.execute(&archive.to_string_lossy()).expect("add succeeds");
+
+    let repo_ini = fs::read_to_string(root.join("etc/mcx/repo.ini")).expect("repo.ini");
+    assert!(repo_ini.contains("[mirror.example.net]"), "{repo_ini}");
+
+    // metadata.source pool fallback: local source path = base without /pool/.
+    let lsrc_ini = fs::read_to_string(root.join("etc/mcx/localsources.ini")).expect("localsources.ini");
+    assert!(lsrc_ini.contains("[legacy-pkg]"), "{lsrc_ini}");
+    assert!(lsrc_ini.contains("path = https://mirror.example.net"), "{lsrc_ini}");
+    assert!(!lsrc_ini.contains("path = https://mirror.example.net/pool"), "{lsrc_ini}");
+    assert!(lsrc_ini.contains("enabled = false"), "{lsrc_ini}");
+
+    // Provenance recorded in the DB (from embedded metadata) and visible.
+    let meta = db.get_package_manifest("legacy-pkg").expect("legacy manifest");
+    assert_eq!(meta.provenance, None, "old archive has no provenance block");
+
+    let prov = serde_json::json!({
+        "source_type": "git",
+        "source_url": "https://git.example.com/srv/proj.git",
+        "source_revision": "deadbeef",
+        "built_at": "2026-01-01T00:00:00Z",
+        "builder": "ous-1.2.3",
+    });
+    let archive2 = root.join("srv/mirror/modern-pkg-1.0.0.xcs");
+    write_outsider_xcs_with_provenance(
+        &archive2,
+        "modern-pkg",
+        "1.0.0",
+        "registry:modern",
+        Some(prov.clone()),
+        &[("usr/bin/modern", "modern\n")],
+    );
+    add.execute(&archive2.to_string_lossy()).expect("add modern succeeds");
+    let meta2 = db.get_package_manifest("modern-pkg").expect("modern manifest");
+    let embedded = meta2.provenance.expect("modern provenance embedded");
+    assert_eq!(embedded.source_type, "git");
+    assert_eq!(embedded.source_url, "https://git.example.com/srv/proj.git");
+    assert_eq!(embedded.source_revision.as_deref(), Some("deadbeef"));
+    assert_eq!(embedded.builder.as_deref(), Some("ous-1.2.3"));
+    // metadata.source is not a pool/URL -> nothing auto-linked, provenance
+    // source_url is a git URL -> local source records it enabled.
+    let lsrc_ini2 = fs::read_to_string(root.join("etc/mcx/localsources.ini")).expect("localsources.ini");
+    assert!(
+        lsrc_ini2.contains("path = https://git.example.com/srv/proj.git"),
+        "{lsrc_ini2}"
+    );
+
+    fs::remove_dir_all(&root).expect("cleanup");
 }

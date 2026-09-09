@@ -126,6 +126,16 @@ pub const TOOL_PYTHON3: &str = "python3";
 pub const CESAR_SERVICES_DIR: &str = "etc/cesar/services.d";
 pub const CESAR_BINARY_CANDIDATES: &[&str] = &["/usr/bin/cesar", "/sbin/cesar", "cesar"];
 
+// ── Local package sources ──────────────────────────────────────────────
+pub const PATH_LOCAL_SOURCES_INI: &str = "etc/mcx/localsources.ini";
+pub const PATH_LOCAL_SRC: &str = "var/lib/mcx/localsrc";
+pub const PATH_LOCAL_SRC_MIRRORS: &str = "var/lib/mcx/localsrc/.mirrors";
+pub const PATH_LOCAL_SRC_OUT: &str = "var/lib/mcx/localsrc/out";
+pub const PATH_LOCAL_SRC_DOWNLOADS: &str = "var/lib/mcx/localsrc/downloads";
+pub const PATH_LOCAL_SRC_WORK: &str = "var/lib/mcx/localsrc/work";
+pub const OUS_BIN_ENV: &str = "OUS_BIN";
+pub const OUS_BINARY_CANDIDATES: &[&str] = &["/usr/bin/ous", "/usr/local/bin/ous", "/bin/ous", "ous"];
+
 // ── Shared library directories for CAS deduplication ────────────────────
 pub const LIB_DIRS: &[&str] = &["usr/lib", "lib", "usr/lib64", "lib64"];
 

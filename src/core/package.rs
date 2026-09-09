@@ -1,6 +1,7 @@
 use serde::{Serialize, Deserialize};
 use std::path::PathBuf;
 use anyhow::{Result, anyhow};
+use crate::core::provenance::PackageProvenance;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PackageStatus {
@@ -69,6 +70,8 @@ pub struct PackageEntity {
     pub status: PackageStatus,
     #[serde(default = "default_arch", alias = "arch")]
     pub architecture: String,
+    #[serde(default)]
+    pub provenance: Option<PackageProvenance>,
 }
 
 fn default_arch() -> String {
@@ -179,6 +182,7 @@ mod tests {
             files: vec![],
             status: PackageStatus::Unknown,
             architecture: "native".to_string(),
+            provenance: None,
         }
     }
 

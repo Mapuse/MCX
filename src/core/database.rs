@@ -8,6 +8,7 @@ use heed::types::{Str, SerdeBincode};
 
 use crate::core::constants;
 use crate::core::component::Component;
+use crate::core::provenance::PackageProvenance;
 use crate::core::service::CesarService;
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -53,6 +54,10 @@ pub struct PackageMetadata {
     /// the field are skipped gracefully.
     #[serde(default)]
     pub file_hashes: HashMap<String, String>,
+    /// Optional origin-provenance block embedded by the producer. Absent for
+    /// old archives and packages without provenance.
+    #[serde(default)]
+    pub provenance: Option<PackageProvenance>,
 }
 
 impl PackageMetadata {

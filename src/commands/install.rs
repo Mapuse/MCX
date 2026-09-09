@@ -600,6 +600,7 @@ mod tests {
             services: vec![],
             binaries: vec![],
             file_hashes: HashMap::new(),
+            provenance: None,
         };
 
         let mut downloads: Vec<(String, PathBuf)> = Vec::new();
@@ -641,6 +642,7 @@ mod tests {
             services: vec![],
             binaries: vec![],
             file_hashes: HashMap::new(),
+            provenance: None,
         };
 
         let archive_name = format!("{}-{}.xcs", meta.pkg_name, meta.version);

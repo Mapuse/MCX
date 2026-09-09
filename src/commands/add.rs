@@ -6,6 +6,7 @@ use std::sync::Arc;
 use anyhow::{Result, anyhow};
 use crate::core::database::Database;
 use crate::core::database::PackageMetadata;
+use crate::core::provenance::{PackageProvenance, auto_link_origin};
 use crate::archive::hash::HashVerifier;
 use crate::core::constants;
 
@@ -30,11 +31,12 @@ impl AddLocalCommand {
 
         let metadata_file_in_archive = self.read_metadata_from_archive(package_path)?;
 
-        let (pkg_name, version, license, checksum_kind, checksum_value, embedded_arch) = if let Some(ref content) = metadata_file_in_archive {
+        let (pkg_name, version, license, checksum_kind, checksum_value, embedded_arch, provenance, embedded_source) = if let Some(ref content) = metadata_file_in_archive {
             let v: serde_json::Value = serde_json::from_str(content)?;
             let pkg_name = v.get("pkg_name").and_then(|x| x.as_str()).unwrap_or("").to_string();
             let version = v.get("version").and_then(|x| x.as_str()).unwrap_or("").to_string();
             let license = v.get("license").and_then(|x| x.as_str()).unwrap_or("").to_string();
+            let embedded_source = v.get("source").and_then(|x| x.as_str()).unwrap_or("").to_string();
             let (kind, value) = match v.get("checksum") {
                 Some(serde_json::Value::String(s)) => ("sha256".to_string(), s.clone()),
                 Some(serde_json::Value::Object(_)) => (
@@ -46,13 +48,15 @@ impl AddLocalCommand {
             let arch = v.get("architecture").and_then(|x| x.as_str())
                 .or_else(|| v.get("arch").and_then(|x| x.as_str()))
                 .unwrap_or("native").to_string();
-            (pkg_name, version, license, kind, value, arch)
+            let provenance = v.get("provenance")
+                .and_then(|p| serde_json::from_value::<PackageProvenance>(p.clone()).ok());
+            (pkg_name, version, license, kind, value, arch, provenance, embedded_source)
         } else {
             let name = package_path.file_stem()
                 .and_then(|s| s.to_str())
                 .unwrap_or("unknown")
                 .to_string();
-            (name, "0.0.0".to_string(), "Unknown".to_string(), "sha256".to_string(), "none".to_string(), "native".to_string())
+            (name, "0.0.0".to_string(), "Unknown".to_string(), "sha256".to_string(), "none".to_string(), "native".to_string(), None, String::new())
         };
 
         // The embedded checksum in metadata.json is the hash of the
@@ -93,13 +97,14 @@ impl AddLocalCommand {
         for entry in archive.entries()? {
             let mut entry = entry?;
             let path = entry.path()?.into_owned();
-            if path.is_absolute() || path.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
+            let rel = path.strip_prefix("./").unwrap_or(&path);
+            if rel.is_absolute() || rel.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
                 anyhow::bail!("Path traversal detected in local package: {:?}", path);
             }
-            if path == Path::new("metadata.json") {
+            if rel == Path::new("metadata.json") {
                 continue;
             }
-            let dest = stage_dir.join(&path);
+            let dest = stage_dir.join(rel);
             if let Some(parent) = dest.parent() {
                 fs::create_dir_all(parent)?;
             }
@@ -161,10 +166,14 @@ impl AddLocalCommand {
             services: Vec::new(),
             binaries: Vec::new(),
             file_hashes,
+            provenance,
         };
 
         db_tx.register_package_placement(&db_metadata)?;
         db_tx.commit()?;
+
+        // Provenance-aware auto-link: best-effort, never fails the install.
+        auto_link_origin(&db_metadata, &embedded_source, &self.root);
 
         if stage_dir.exists() {
             let _ = fs::remove_dir_all(&stage_dir);
@@ -181,7 +190,8 @@ impl AddLocalCommand {
         for entry in archive.entries()? {
             let mut entry = entry?;
             let path = entry.path()?;
-            if path.as_ref() == Path::new("metadata.json") {
+            let rel = path.strip_prefix("./").unwrap_or(&path);
+            if rel == Path::new("metadata.json") {
                 let mut content = String::new();
                 entry.read_to_string(&mut content)?;
                 return Ok(Some(content));

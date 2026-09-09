@@ -450,6 +450,7 @@ mod tests {
             services: Vec::new(),
             binaries: Vec::new(),
             file_hashes: HashMap::new(),
+            provenance: None,
         };
         let mut tx = db.begin_transaction().expect("begin transaction");
         tx.register_package_placement(&pkg).expect("register package placement");
@@ -490,6 +491,7 @@ mod tests {
             services: Vec::new(),
             binaries: Vec::new(),
             file_hashes: HashMap::new(),
+            provenance: None,
         };
         let mut tx = db.begin_transaction().expect("begin transaction");
         tx.register_package_placement(&pkg).expect("register package placement");
@@ -531,6 +533,7 @@ mod tests {
             services: Vec::new(),
             binaries: Vec::new(),
             file_hashes: HashMap::new(),
+            provenance: None,
         };
         let mut tx = db.begin_transaction().expect("begin transaction");
         tx.register_package_placement(&pkg).expect("register package placement");
@@ -601,6 +604,7 @@ mod tests {
             services: Vec::new(),
             binaries: Vec::new(),
             file_hashes: hashes,
+            provenance: None,
         };
         let mut tx = db.begin_transaction().expect("begin transaction");
         tx.register_package_placement(&pkg).expect("register placement");

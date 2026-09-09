@@ -25,6 +25,7 @@ The Package Manager of **`[Cudane]`**, built for a full lifecycle and heavy work
 ## Table of Contents
 
 - [**`[Commands]`**](#commands)
+  - [**`[Local package sources]`**](#local-package-sources)
 - [**`[Architecture]`**](#architecture)
   - [**`[Module graph]`**](#module-graph)
   - [**`[Module inventory]`**](#module-inventory)
@@ -721,6 +722,107 @@ When installing a package, each configured repository is queried in the order th
 
 Edit `etc/mcx/repo.ini` directly with any text editor. The file is managed through CLI commands (`--repo-add`, `--repo-remove`, `--repo-list`) but can also be written manually.
 
+## Local package sources
+
+Local package sources let you install packages that are staged or built outside of a configured repository. A local source is either a **source** or a **prebuilt** directory of finished `<name>-<version>.xcs` archives. Source mode accepts the full set of universal source kinds:
+
+- a local **directory** (or a `manifest.json` file) containing `ous`-compatible source;
+- a **git URL** (`https://…/x.git`, `git@`, `git://`, `git+…`, `file://….git`);
+- a downloadable **archive** — an `http(s)` or `file://` tarball (`*.tar.gz`, `*.tgz`, `*.tar.xz`, `*.tar.zst`);
+- a **`.json`/bare-manifest URL** (downloaded straight into the work directory as `manifest.json`);
+- any other **plain `http(s)` URL** (downloaded into `var/lib/mcx/localsrc/downloads/` and treated as the manifest).
+
+Every `mcx --update` builds and installs enabled sources that changed since the last run — before repository indexes are refreshed.
+
+| Command (long flag) | Aliases | Struct | Module |
+| ------------------- | ------- | ------ | ------ |
+| `--local-source-add` | `lsrc-add`, `lsra` | `LocalSourceCommand` | `commands::localsrc` |
+| `--local-source-remove` | `lsrc-rm` | `LocalSourceCommand` | `commands::localsrc` |
+| `--local-source-list` | `lsrc-ls` | `LocalSourceCommand` | `commands::localsrc` |
+| `--local-source-build` | `lsrc-build` | `LocalSourceCommand` | `commands::localsrc` |
+
+### `--local-source-add`
+
+```shell
+mcx --local-source-add <name> <path-or-url> [--prebuilt] [--enable|--disable]
+mcx lsra <name> <path-or-url>
+```
+
+Registers an entry in `etc/mcx/localsources.ini`. Default mode is `source`; pass `--prebuilt` for a directory of finished `.xcs` archives (a URL is rejected for prebuilt sources). Source mode accepts any of the universal kinds: a local path containing `manifest.json` (the directory or the file itself), a git URL (auto-mirrored into `var/lib/mcx/localsrc/mirrors/<name>/` and refreshed with `git fetch origin` + `git reset --hard origin/HEAD` on every update), an archive/`.json`/plain `http(s)` URL (auto-downloaded into `var/lib/mcx/localsrc/downloads/` and extracted/copied into `var/lib/mcx/localsrc/work/<name>/`; requires `curl` and, for archives, `tar`), or a `file://` archive or directory. A source is enabled unless `--disable` is given; `--enable`/`--disable` let you spell the flag out.
+
+### `--local-source-remove`
+
+```shell
+mcx --local-source-remove <name>
+mcx lsrc-rm <name>
+```
+
+Removes the entry from `etc/mcx/localsources.ini`.
+
+### `--local-source-list`
+
+```shell
+mcx --local-source-list
+mcx lsrc-ls
+```
+
+Lists every source with its path/URL, mode (`source`|`prebuilt`), enabled state, and the fingerprint of the last successful build (`last_built`).
+
+### `--local-source-build`
+
+```shell
+mcx --local-source-build [name ...] [--force]
+mcx lsrc-build [name ...] [--force]
+```
+
+Builds and installs the named sources (all enabled sources when no name is given). `--force` rebuilds and reinstalls even when a source is unchanged.
+
+### How sources run on `mcx --update`
+
+`SyncCommand::execute()` calls `LocalSourceCommand::sync_local_sources()` before repository indexes are fetched, so a freshly built source can satisfy the same update. The decision per enabled source is:
+
+- **source**: `mcx` locates `ous` (`OUS_BIN` first, then `/usr/bin/ous`, `/usr/local/bin/ous`, `/bin/ous`, then `PATH`), computes the fingerprint (`sha256` of `manifest.json` for dirs, `git rev-parse origin/HEAD` for git URL sources, or the `sha256` of the downloaded artifact **bytes** for archive/`.json`/`http(s)` sources — so a byte-identical redownload skips), and when it differs from `last_built` (or a resulting package is missing/older than installed) runs:
+
+```shell
+ous -m <manifest> -o <outdir> -c
+```
+
+  with the working directory set to the manifest's parent so relative `source` fields resolve. `ous`'s automatic build/install path (used by pure-cargo manifests with no explicit `build`/`install` steps) is left enabled and `-c` forces a clean rebuild even when a previous archive exists; `OUS_UPLOAD_URL`, `OUS_UPLOAD_TOKEN`, and `OUS_UPLOAD_INDEX` are stripped from the environment so a build can never self-upload. The produced `<name>-<version>.xcs` archives are installed via `AddLocalCommand`.
+
+- **prebuilt**: each `.xcs` archive in the directory is installed via `AddLocalCommand` when any archive is missing, has a version newer than the installed one, or when the directory fingerprint (sorted archive names + sizes) changed.
+
+When nothing changed, the source is skipped and `last_built` is left untouched. If `ous` cannot be found, `mcx --update` skips source-mode sources with a warning (update is never blocked) while `mcx --local-source-build` fails.
+
+### Origin provenance and auto-link
+
+Packages built by the producer can carry a `provenance` block in their embedded `metadata.json` recording the original source: `source_type` (`dir`/`git`/`archive`/`http`), `source_url` (the original source; the registry/pool download URL lives in `source`), `source_revision` (git commit or `null`), `built_at` (RFC 3339 UTC), and `builder` (the producing `ous` version). The block is additive: old archives without it install and link identically to before, and the fields never appear when absent.
+
+On any **local** package install (`mcx --local-package`, or a local source's built/prebuilt archives routed through the same path), `mcx` auto-links the origin:
+
+- if the origin URL points into an Outsider-style pool (`…/pool/{arch}/{name}/…`), the registry base — everything before `/pool/` — is `repo-add`-ed automatically (name derived from host/path, enabled), only if that exact URL is not already registered;
+- independently, a `source`-mode local source named after the package is recorded with `path` = `provenance.source_url` (falling back to `metadata.source` minus any `/pool/…` rewrite), unless an entry with that path already exists;
+- when a registry link exists, the local source is recorded disabled (`enabled = false`, the registry drives updates); otherwise it is enabled;
+- every step is idempotent and best-effort: failures only warn and never fail the already-succeeded install.
+
+`mcx query`/`info` surfaces the provenance alongside `Source` when present, showing the original `Source URL`, `Source revision`, `Built at`, and `Builder` lines.
+
+### Configuring without CLI
+
+Edit `etc/mcx/localsources.ini` directly — one `[section]` per source with `path`, `mode = source|prebuilt`, `enabled`, and the `last_built` fingerprint `mcx` maintains:
+
+```ini
+[my-tool]
+path = /srv/src/my-tool
+mode = source
+enabled = true
+
+[my-binaries]
+path = /srv/dist/my-binaries
+mode = prebuilt
+enabled = true
+last_built = 6a4fdc...
+```
+
 ## Global flags
 
 | Flag | Type | Default | Description |
@@ -1114,6 +1216,7 @@ Every command struct implements `pub fn execute(&self, engine: &EngineContext) -
 | `theme.rs` | `ThemeCommand` | Python theme management | `execute()` |
 | `tui.rs` | `TuiCommand` | Python TUI management | `execute()` |
 | `service.rs` | `ServiceCommand` | Forward args to Cesar service manager | `execute()` |
+| `localsrc.rs` | `LocalSourceCommand` | Register/build/install local package sources | `add()`, `remove()`, `list()`, `build()`, `sync_local_sources()` |
 | `command_not_found.rs` | `CommandNotFoundCommand` | Binary-index lookup for missing commands | `execute()` |
 | `binindex.rs` | `BinIndexCommand` | Rebuild binary index | `execute()` |
 | `autoremove.rs` | `AutoRemoveCommand` | Orphaned-package analysis + removal | `execute()` |
@@ -1126,6 +1229,7 @@ Every command struct implements `pub fn execute(&self, engine: &EngineContext) -
 | `config.rs` | `MappedConfig<'a>`, `ConfigManager`, `CalibratedParams` | Mmap INI parser with `PhantomData` lifetime tracking. `ConfigManager` embeds `config.ini` + `repo.ini`. | `memmap2` |
 | `database.rs` | `Database`, `DbTransaction`, `PackageMetadata` | LMDB-backed package registry via `heed` + `bincode`. Three named databases: installed, available, virtual_provides. | `heed`, `bincode` |
 | `repo.rs` | `RepositoryManager` | CRUD for `etc/mcx/repo.ini` (INI format). Synced indexes remain JSON on disk. | — |
+| `localsrc.rs` | `LocalSourceManager`, `SourceMode`, `LocalSource` | CRUD + fingerprints for `etc/mcx/localsources.ini`; pure build-decision helpers. | `sha2`, `package.rs` |
 | `manifest.rs` | `ManifestParser` | Deserialise `metadata.json` from inside `.xcs` package archives. | — |
 | `solver.rs` | `DependencySolver`, `ResolutionVerdict`, `UpgradePath` | Dependency graph resolution, delta-cost estimation, deadlock detection, cycle breaking. | `graph.rs` |
 | `graph.rs` | `DepGraph` | DAG of package dependencies and conflicts. | — |
@@ -1235,6 +1339,7 @@ All paths are relative to the `--root` directory (default `/`).
 etc/mcx/
 ├── config.ini          # Engine configuration (mmap-based, INI format)
 ├── repo.ini            # Repository definitions (INI format, CLI-managed)
+├── localsources.ini    # Local package sources (INI format, CLI-managed)
 └── profile.ini         # Declarative package profile (INI format)
 
 var/
@@ -1242,6 +1347,9 @@ var/
 │   ├── data/           # LMDB environment directory
 │   │   ├── data.mdb    # Package metadata (installed, available, virtual_provides)
 │   │   └── lock.mdb    # LMDB lock file
+│   ├── localsrc/       # Local package source state
+│   │   ├── mirrors/    # Git mirrors for URL-based source-mode sources
+│   │   └── out/        # Per-source build output (built .xcs archives)
 │   ├── active/         # Symlinks to current generation for each installed package
 │   │   └── <pkg> → ../generations/<pkg>/<N>/
 │   ├── generations/    # Per-package numbered snapshots for atomic rollback

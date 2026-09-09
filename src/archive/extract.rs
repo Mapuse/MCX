@@ -18,8 +18,9 @@ impl Extractor {
         for entry in archive.entries()? {
             let mut entry = entry?;
             let path = entry.path()?.to_path_buf();
+            let rel = path.strip_prefix("./").unwrap_or(&path);
 
-            if path.is_absolute() || path.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
+            if rel.is_absolute() || rel.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
                 return Err(anyhow!("Structural hazard: Invalid path template detected"));
             }
 
@@ -42,18 +43,18 @@ impl Extractor {
                 _ => {}
             }
 
-            if path == Path::new("metadata.json") {
+            if rel == Path::new("metadata.json") {
                 continue;
             }
 
-            let destination = dest_dir.join(&path);
+            let destination = dest_dir.join(rel);
 
             if let Some(parent) = destination.parent() {
                 fs::create_dir_all(parent)?;
             }
 
             entry.unpack(&destination)?;
-            extracted_files.push(path);
+            extracted_files.push(rel.to_path_buf());
         }
 
         Ok(extracted_files)

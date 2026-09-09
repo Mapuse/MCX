@@ -8,6 +8,7 @@ pub use commands::add::AddLocalCommand;
 pub use commands::clean::CleanCommand;
 pub use commands::configuration::ConfigEditorCommand;
 pub use commands::install::InstallCommand;
+pub use commands::localsrc::LocalSourceCommand;
 pub use commands::remove::RemoveCommand;
 pub use commands::search::SearchCommand;
 pub use commands::sync::SyncCommand;
@@ -26,6 +27,7 @@ pub use core::graph::DepGraph;
 pub use core::history::HistoryEngine;
 pub use core::integrity::IntegrityScanner;
 pub use core::lifecycle::{LifecycleEngine, LifecycleEntry, LifecycleTransition, LifecycleEvent, PackageState, DependencyGraph, OrphanSet};
+pub use core::localsrc::{LocalSource, LocalSourceManager, SourceMode, LocalSourceResult, LocalSourceAction};
 pub use core::manifest::ManifestParser;
 pub use core::mode::{
     Mode, ModeConfig, UserSelection, current_user, ensure_mode_fields, normalize_root,
@@ -33,6 +35,7 @@ pub use core::mode::{
     user_selection_path, user_selection_path_in, write_user_selection, write_user_selection_in,
 };
 pub use core::package::PackageEntity;
+pub use core::provenance::{PackageProvenance, auto_link_origin};
 pub use core::plugin::{PluginSlot, PluginManager, PythonPlugin, PluginManifest, PluginHook, PluginEvent, PluginResult};
 pub use core::profiler::{SystemProfile, NetworkProfile, CalibratedParams, DecisionEngine, DecisionMatrix, HeuristicVerdict, NetworkProber};
 pub use core::repo::RepositoryManager;

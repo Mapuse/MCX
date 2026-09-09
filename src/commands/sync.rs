@@ -16,6 +16,19 @@ impl SyncCommand {
     }
 
     pub async fn execute(&self) -> Result<(), anyhow::Error> {
+        // Local package sources run before repository indexes refresh: they
+        // may contribute fresh packages (or prebuilt archives) that the
+        // index sync would otherwise mask. Failures are surfaced as warnings
+        // so a broken source never blocks a plain update.
+        if let Err(e) = crate::commands::localsrc::LocalSourceCommand::new(
+            &self.root,
+            Arc::clone(&self.db),
+        )
+        .sync_local_sources()
+        {
+            crate::utils::ui::UserInterface::warning(&format!("Local source sync skipped: {e}"));
+        }
+
         let mgr = RepositoryManager::new(&self.root);
         let (synced, errors) = mgr.sync_all_parallel().await?;
         if !errors.is_empty() {

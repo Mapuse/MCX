@@ -23,6 +23,7 @@ use crate::commands::clean::CleanCommand;
 use crate::commands::configuration::{ConfigEditorCommand, ConfigTarget};
 use crate::core::component::ComponentFilter;
 use crate::commands::install::InstallCommand;
+use crate::commands::localsrc::LocalSourceCommand;
 use crate::commands::remove::RemoveCommand;
 use crate::commands::search::SearchCommand;
 use crate::commands::service::ServiceCommand;
@@ -159,6 +160,31 @@ pub enum Commands {
 
     #[command(long_flag = "repo-disable", aliases = ["rd"])]
     RepoDisable { name: String },
+
+    #[command(long_flag = "local-source-add", aliases = ["lsrc-add", "lsra"])]
+    LocalSourceAdd {
+        name: String,
+        path_or_url: String,
+        #[arg(long, help = "Register a prebuilt .xcs archive directory instead of a buildable source")]
+        prebuilt: bool,
+        #[arg(long = "enable", help = "Register the source enabled (default)")]
+        enable: bool,
+        #[arg(long = "disable", help = "Register the source but keep it disabled")]
+        disable: bool,
+    },
+
+    #[command(long_flag = "local-source-remove", aliases = ["lsrc-rm"])]
+    LocalSourceRemove { name: String },
+
+    #[command(long_flag = "local-source-list", aliases = ["lsrc-ls"])]
+    LocalSourceList,
+
+    #[command(long_flag = "local-source-build", aliases = ["lsrc-build"])]
+    LocalSourceBuild {
+        names: Vec<String>,
+        #[arg(long, help = "Rebuild/reinstall even when the source is unchanged")]
+        force: bool,
+    },
 
     #[command(long_flag = "repo-info", aliases = ["ri"])]
     RepoInfo { name: String },
@@ -1182,6 +1208,54 @@ async fn main() {
             }
         }
 
+        Commands::LocalSourceAdd { name, path_or_url, prebuilt, enable: _enable, disable } => {
+            let cmd = LocalSourceCommand::new(&root_path, Arc::clone(&ctx.db));
+            let enabled = !disable;
+            match cmd.add(&name, &path_or_url, prebuilt, enabled) {
+                Ok(_) => UserInterface::success(&format!("Local source '{}' registered.", name)),
+                Err(e) => { UserInterface::error(&format!("{e}")); process::exit(1); }
+            }
+        }
+
+        Commands::LocalSourceRemove { name } => {
+            let cmd = LocalSourceCommand::new(&root_path, Arc::clone(&ctx.db));
+            match cmd.remove(&name) {
+                Ok(_) => UserInterface::success(&format!("Local source '{}' removed.", name)),
+                Err(e) => { UserInterface::error(&format!("{e}")); process::exit(1); }
+            }
+        }
+
+        Commands::LocalSourceList => {
+            let cmd = LocalSourceCommand::new(&root_path, Arc::clone(&ctx.db));
+            match cmd.list() {
+                Ok(sources) => {
+                    if sources.is_empty() {
+                        UserInterface::info("No local package sources registered.");
+                    } else {
+                        let items: Vec<String> = sources
+                            .into_iter()
+                            .map(|s| {
+                                let status = if s.enabled { "enabled" } else { "disabled" };
+                                let built = s.last_built.as_deref().unwrap_or("never");
+                                format!("{} -> {} [{} ({})] last built: {}",
+                                        s.name, s.path, s.mode.as_str(), status, built)
+                            })
+                            .collect();
+                        UserInterface::render_list("Local package sources", &items);
+                    }
+                }
+                Err(e) => { UserInterface::error(&format!("{e}")); process::exit(1); }
+            }
+        }
+
+        Commands::LocalSourceBuild { names, force } => {
+            let cmd = LocalSourceCommand::new(&root_path, Arc::clone(&ctx.db));
+            if let Err(e) = cmd.build(names, force) {
+                UserInterface::error(&format!("{e}"));
+                process::exit(1);
+            }
+        }
+
         Commands::RepoInfo { name } => {
             let mgr = crate::core::repo::RepositoryManager::new(&args.root);
             match mgr.info(&name) {
@@ -1873,16 +1947,31 @@ fn run_query_command(db: &Database, package: &str) {
                 })
                 .collect();
 
-            let pairs = [
-                ("Package", meta.pkg_name.as_str()),
-                ("Version", meta.version.as_str()),
-                ("License", meta.license.as_str()),
-                ("Architecture", &meta.architecture),
-                ("Source", meta.source.as_str()),
-                ("Files", &file_count),
-                ("Dependencies", &dep_count),
-                ("Reverse deps", &rdeps_str),
+            let mut pairs: Vec<(&str, String)> = vec![
+                ("Package", meta.pkg_name.clone()),
+                ("Version", meta.version.clone()),
+                ("License", meta.license.clone()),
+                ("Architecture", meta.architecture.clone()),
+                ("Source", meta.source.clone()),
             ];
+            if let Some(prov) = &meta.provenance {
+                if !prov.source_url.is_empty() {
+                    pairs.push(("Source URL", prov.source_url.clone()));
+                }
+                if let Some(rev) = &prov.source_revision {
+                    pairs.push(("Source revision", rev.clone()));
+                }
+                if let Some(built_at) = &prov.built_at {
+                    pairs.push(("Built at", built_at.clone()));
+                }
+                if let Some(builder) = &prov.builder {
+                    pairs.push(("Builder", builder.clone()));
+                }
+            }
+            pairs.push(("Files", file_count.clone()));
+            pairs.push(("Dependencies", dep_count.clone()));
+            pairs.push(("Reverse deps", rdeps_str.clone()));
+            let pairs: Vec<(&str, &str)> = pairs.iter().map(|(k, v)| (*k, v.as_str())).collect();
             UserInterface::render_key_values(&format!("Package: {}", meta.pkg_name), &pairs);
 
             let table_rows = vec![
@@ -1934,6 +2023,7 @@ fn subcommand_is_read_only(cmd: &Commands) -> bool {
             | Commands::Completion { .. }
             | Commands::RepoList
             | Commands::RepoInfo { .. }
+            | Commands::LocalSourceList
     )
 }
 
