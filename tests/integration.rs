@@ -1,4 +1,5 @@
 use std::fs;
+use std::io::Read as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use mcx::utils::ui::UserInterface;
@@ -11,6 +12,7 @@ use mcx::core::cas::CasStore;
 use mcx::core::rollback::RollbackManager;
 use mcx::core::lifecycle::{LifecycleEngine, DependencyGraph, PackageState, OrphanSet};
 
+use mcx::commands::add::AddLocalCommand;
 use mcx::commands::remove::RemoveCommand;
 use mcx::commands::install::InstallCommand;
 use mcx::commands::configuration::ConfigTarget;
@@ -1542,4 +1544,173 @@ fn test_wildcard_expand_from_library() {
     // Exact names are flagged as non-wildcards and match themselves.
     assert!(!mcx::core::wildcard::has_wildcard("pkg-tools-1"));
     assert!(mcx::core::wildcard::has_wildcard("pkg-*"));
+}
+
+// ── Outsider ↔ MCX round-trip (add.rs local path) ──────────────────────────
+
+/// Construct a zstd-compressed tar archive whose layout mirrors an
+/// Outsider-produced `.xcs` package, including a `metadata.json` with
+/// the `{"kind","value"}` checksum object and an `architecture` field.
+/// Install it via `AddLocalCommand` and assert every interlock point.
+#[tokio::test]
+async fn test_outsider_round_trip_local_install() {
+    let root = create_temporary_root("outsider_round_trip");
+    let db = Arc::new(Database::open(&root).expect("open test database"));
+
+    let archive_dir = root.join("pool/x86_64/hello-pkg");
+    fs::create_dir_all(&archive_dir).expect("create archive dir");
+    let archive_path = archive_dir.join("hello-pkg-2.0.0.xcs");
+    let tar_path = archive_path.with_extension("tar");
+
+    // ── Build the tar with Outsider's exact metadata.json shape ──
+    {
+        let f = fs::File::create(&tar_path).expect("create tar");
+        let mut builder = tar::Builder::new(f);
+
+        // payload file
+        let mut hdr = tar::Header::new_gnu();
+        hdr.set_size(6);
+        hdr.set_mode(0o755);
+        hdr.set_entry_type(tar::EntryType::Regular);
+        hdr.set_path("usr/bin/hello").unwrap();
+        builder.append_data(&mut hdr, "usr/bin/hello", &b"hello!"[..]).unwrap();
+
+        // metadata.json — Outsider's exact output shape.
+        // The checksum value here is the hash of the UNCOMPRESSED tar stream
+        // (informational per contract); transport integrity uses the sidecar.
+        let meta = serde_json::json!({
+            "pkg_name": "hello-pkg",
+            "version": "2.0.0",
+            "license": "MIT",
+            "architecture": "x86_64",
+            "checksum": {"kind": "sha256", "value": "uncompressed-tar-hash-info-only"},
+            "dependencies": [],
+            "provides": null,
+            "conflicts": null
+        });
+        let meta_bytes = serde_json::to_vec_pretty(&meta).unwrap();
+        let mut mhdr = tar::Header::new_gnu();
+        mhdr.set_size(meta_bytes.len() as u64);
+        mhdr.set_mode(0o644);
+        mhdr.set_entry_type(tar::EntryType::Regular);
+        mhdr.set_path("metadata.json").unwrap();
+        builder.append_data(&mut mhdr, "metadata.json", &*meta_bytes).unwrap();
+
+        builder.finish().expect("finish tar");
+    }
+
+    // ── Compress to zstd ──
+    {
+        let mut input = fs::File::open(&tar_path).expect("open tar");
+        let output = fs::File::create(&archive_path).expect("create xcs");
+        let mut enc = zstd::stream::Encoder::new(output, 1).expect("zstd encoder");
+        std::io::copy(&mut input, &mut enc).expect("compress to zstd");
+        enc.finish().expect("finish zstd");
+    }
+    fs::remove_file(&tar_path).expect("remove temp tar");
+
+    // ── Write .sha256 sidecar (compressed-bytes hash) ──
+    let sidecar_hash = mcx::archive::hash::HashVerifier::calculate(&archive_path, "sha256")
+        .expect("hash compressed archive");
+    fs::write(
+        archive_path.with_file_name("hello-pkg-2.0.0.xcs.sha256"),
+        format!("{}\n", sidecar_hash),
+    ).expect("write sidecar");
+
+    // ── (a) metadata.json deserializes from Outsider's checksum object ──
+    let meta_json = {
+        let f = fs::File::open(&archive_path).expect("open archive for read");
+        let dec = zstd::stream::Decoder::new(f).expect("zstd decoder");
+        let mut archive = tar::Archive::new(dec);
+        let mut content = String::new();
+        for entry in archive.entries().expect("entries") {
+            let mut e = entry.expect("entry");
+            if e.path().expect("path").as_ref() == Path::new("metadata.json") {
+                e.read_to_string(&mut content).expect("read metadata");
+                break;
+            }
+        }
+        content
+    };
+    let parsed: serde_json::Value = serde_json::from_str(&meta_json).expect("parse metadata");
+    assert_eq!(parsed["architecture"], "x86_64", "architecture key present");
+    assert!(parsed["checksum"].is_object(), "checksum is object");
+    assert_eq!(parsed["checksum"]["kind"], "sha256");
+
+    // ── Install via AddLocalCommand ──
+    let cmd = AddLocalCommand::new(root.to_string_lossy().into_owned(), Arc::clone(&db));
+    cmd.execute(archive_path.to_str().expect("archive path str"))
+        .expect("add local install");
+
+    // ── (b) installed package has the correct architecture ──
+    let pkg = db.get_package_manifest("hello-pkg").expect("manifest");
+    assert_eq!(pkg.architecture, "x86_64", "architecture consumed from metadata.json");
+
+    // ── (c) checksum from metadata.json round-trips to DB (informational) ──
+    assert_eq!(pkg.checksum.kind, "sha256", "checksum kind");
+    assert_eq!(pkg.checksum.value, "uncompressed-tar-hash-info-only",
+        "checksum value from metadata.json object (informational, not verified at install)");
+
+    // ── (d) metadata.json does NOT land on the live root ──
+    assert!(!root.join("metadata.json").exists(), "metadata.json filtered from live root");
+
+    // ── (e) payload file was placed ──
+    assert_eq!(
+        fs::read_to_string(root.join("usr/bin/hello")).unwrap(),
+        "hello!",
+        "payload file placed correctly"
+    );
+
+    // ── (f) sidecar file is readable and matches the compressed archive hash ──
+    let sidecar_content = fs::read_to_string(
+        archive_path.with_file_name("hello-pkg-2.0.0.xcs.sha256")
+    ).expect("read sidecar");
+    assert_eq!(sidecar_content.trim(), sidecar_hash, "sidecar matches compressed hash");
+
+    fs::remove_dir_all(&root).expect("remove temp root");
+}
+
+/// Verify that the `PackageEntity` flexible checksum deserializes both
+/// the Outsider `{"kind","value"}` object and a legacy flat string, and
+/// that `ManifestParser::parse_embedded_manifest` accepts both.
+#[test]
+fn test_manifest_parser_accepts_outsider_checksum_object() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+
+    // Outsider-shaped metadata.json
+    let outsider_meta = serde_json::json!({
+        "pkg_name": "outsider-pkg",
+        "version": "3.0.0",
+        "license": "MIT",
+        "build_type": "custom",
+        "build_date": "2026-09-09",
+        "architecture": "aarch64",
+        "checksum": {"kind": "sha256", "value": "abcdef0123456789"}
+    });
+    fs::write(root.join("metadata.json"), serde_json::to_string_pretty(&outsider_meta).unwrap())
+        .expect("write outsider metadata");
+
+    let entity = mcx::core::manifest::ManifestParser::parse_embedded_manifest(root)
+        .expect("parse Outsider-shaped metadata.json");
+    assert_eq!(entity.pkg_name, "outsider-pkg");
+    assert_eq!(entity.architecture, "aarch64");
+    assert_eq!(entity.checksum, "sha256:abcdef0123456789");
+
+    // Legacy flat-string checksum also accepted
+    let legacy_meta = serde_json::json!({
+        "pkg_name": "legacy-pkg",
+        "version": "1.0.0",
+        "license": "GPL",
+        "build_type": "static",
+        "build_date": "2026-01-01",
+        "architecture": "native",
+        "checksum": "flat_hash_value"
+    });
+    fs::write(root.join("metadata.json"), serde_json::to_string_pretty(&legacy_meta).unwrap())
+        .expect("write legacy metadata");
+
+    let entity2 = mcx::core::manifest::ManifestParser::parse_embedded_manifest(root)
+        .expect("parse legacy metadata.json");
+    assert_eq!(entity2.checksum, "flat_hash_value");
 }

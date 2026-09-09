@@ -30,35 +30,55 @@ impl AddLocalCommand {
 
         let metadata_file_in_archive = self.read_metadata_from_archive(package_path)?;
 
-        let (pkg_name, version, license, checksum_kind, checksum_value) = if let Some(ref content) = metadata_file_in_archive {
-            #[derive(serde::Deserialize)]
-            struct EmbeddedMeta {
-                #[serde(default)]
-                pkg_name: String,
-                #[serde(default)]
-                version: String,
-                #[serde(default)]
-                license: String,
-                #[serde(default)]
-                checksum: String,
-                #[serde(default, rename = "checksum_kind")]
-                kind: Option<String>,
-            }
-            let emb: EmbeddedMeta = serde_json::from_str(content)?;
-            let kind = emb.kind.unwrap_or_else(|| "sha256".to_string());
-            (emb.pkg_name, emb.version, emb.license, kind, emb.checksum)
+        let (pkg_name, version, license, checksum_kind, checksum_value, embedded_arch) = if let Some(ref content) = metadata_file_in_archive {
+            let v: serde_json::Value = serde_json::from_str(content)?;
+            let pkg_name = v.get("pkg_name").and_then(|x| x.as_str()).unwrap_or("").to_string();
+            let version = v.get("version").and_then(|x| x.as_str()).unwrap_or("").to_string();
+            let license = v.get("license").and_then(|x| x.as_str()).unwrap_or("").to_string();
+            let (kind, value) = match v.get("checksum") {
+                Some(serde_json::Value::String(s)) => ("sha256".to_string(), s.clone()),
+                Some(serde_json::Value::Object(_)) => (
+                    v.pointer("/checksum/kind").and_then(|x| x.as_str()).unwrap_or("sha256").to_string(),
+                    v.pointer("/checksum/value").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+                ),
+                _ => ("sha256".to_string(), String::new()),
+            };
+            let arch = v.get("architecture").and_then(|x| x.as_str())
+                .or_else(|| v.get("arch").and_then(|x| x.as_str()))
+                .unwrap_or("native").to_string();
+            (pkg_name, version, license, kind, value, arch)
         } else {
             let name = package_path.file_stem()
                 .and_then(|s| s.to_str())
                 .unwrap_or("unknown")
                 .to_string();
-            (name, "0.0.0".to_string(), "Unknown".to_string(), "sha256".to_string(), "none".to_string())
+            (name, "0.0.0".to_string(), "Unknown".to_string(), "sha256".to_string(), "none".to_string(), "native".to_string())
         };
 
-        if checksum_value != "none" && !checksum_value.is_empty()
-            && let Err(e) = HashVerifier::verify_integrity(package_path, &checksum_kind, &checksum_value) {
-                return Err(anyhow!("Package integrity check failed ({}): {}", checksum_kind, e));
+        // The embedded checksum in metadata.json is the hash of the
+        // UNCOMPRESSED tar stream (informational). Transport integrity is
+        // verified against the sidecar (.xcs.sha256) if present.
+        {
+            let sidecar_path = package_path.with_file_name(format!(
+                "{}.sha256",
+                package_path.file_name().unwrap_or_default().to_string_lossy()
+            ));
+            match fs::read_to_string(&sidecar_path) {
+                Ok(expected) => {
+                    let expected = expected.trim().to_string();
+                    if !expected.is_empty()
+                        && let Err(e) = HashVerifier::verify_integrity(package_path, "sha256", &expected) {
+                            return Err(anyhow!("Package integrity check failed (sha256 sidecar): {}", e));
+                        }
+                }
+                Err(_) => {
+                    crate::utils::ui::UserInterface::warning(&format!(
+                        "Sidecar checksum not found for {}; transport integrity verification skipped",
+                        package_path.file_name().unwrap_or_default().to_string_lossy()
+                    ));
+                }
             }
+        }
 
         let stage_dir = self.root.join(constants::PATH_STAGE);
         if stage_dir.exists() {
@@ -75,6 +95,9 @@ impl AddLocalCommand {
             let path = entry.path()?.into_owned();
             if path.is_absolute() || path.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
                 anyhow::bail!("Path traversal detected in local package: {:?}", path);
+            }
+            if path == Path::new("metadata.json") {
+                continue;
             }
             let dest = stage_dir.join(&path);
             if let Some(parent) = dest.parent() {
@@ -133,7 +156,7 @@ impl AddLocalCommand {
             checksum: crate::core::database::ChecksumData { kind: checksum_kind, value: checksum_value },
             provides: Some(Vec::new()),
             conflicts: Some(Vec::new()),
-            architecture: "native".to_string(),
+            architecture: embedded_arch,
             components: Vec::new(),
             services: Vec::new(),
             binaries: Vec::new(),

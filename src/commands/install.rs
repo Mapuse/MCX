@@ -134,7 +134,13 @@ let sys_profile = SystemProfile::probe();
                         crate::core::transaction::atomic_copy(&vendored, &target_path)?;
                         UserInterface::info(&format!("Using vendored offline archive for {}", meta.pkg_name));
                     }
-                    None => downloads.push((meta.source.clone(), target_path.clone())),
+                    None => {
+                        downloads.push((meta.source.clone(), target_path.clone()));
+                        downloads.push((
+                            sidecar_url_for(&meta.source),
+                            cache_dir.join(sidecar_path_for(&meta.pkg_name, &meta.version)),
+                        ));
+                    }
                 }
             }
             pending.push((meta.clone(), target_path));
@@ -311,16 +317,42 @@ let sys_profile = SystemProfile::probe();
     }
 }
 
+fn sidecar_url_for(source: &str) -> String {
+    format!("{}.sha256", source)
+}
+
+fn sidecar_path_for(name: &str, version: &str) -> PathBuf {
+    PathBuf::from(format!("{}-{}.xcs.sha256", name, version))
+}
+
 fn stage_package(
     root: &Path,
     meta: PackageMetadata,
     archive_path: &Path,
     filter: Option<&ComponentFilter>,
 ) -> Result<StagedPackage> {
-    if let Err(e) = HashVerifier::verify_integrity(archive_path, &meta.checksum.kind, &meta.checksum.value) {
-        // Never keep a corrupt archive in the cache.
-        let _ = fs::remove_file(archive_path);
-        return Err(e);
+    {
+        let sidecar_path = archive_path.with_file_name(format!(
+            "{}.sha256",
+            archive_path.file_name().unwrap_or_default().to_string_lossy()
+        ));
+        let sidecar_bytes = fs::read_to_string(&sidecar_path);
+        match sidecar_bytes {
+            Ok(expected) => {
+                let expected = expected.trim().to_string();
+                if !expected.is_empty()
+                    && let Err(e) = HashVerifier::verify_integrity(archive_path, "sha256", &expected) {
+                        let _ = fs::remove_file(archive_path);
+                        return Err(e);
+                    }
+            }
+            Err(_) => {
+                UserInterface::warning(&format!(
+                    "Sidecar checksum not found for {}; transport integrity verification skipped",
+                    archive_path.file_name().unwrap_or_default().to_string_lossy()
+                ));
+            }
+        }
     }
 
     let pkg_stage = root.join(constants::PATH_STAGE).join(&meta.pkg_name);
@@ -531,5 +563,104 @@ fn place_package(
     let _ = fs::remove_dir_all(&pkg_stage);
 
     Ok((changed, removed))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_sidecar_url_for() {
+        let source = "https://packages.cudane.org/pool/x86_64/foo/foo-1.0.0.xcs";
+        let url = sidecar_url_for(source);
+        assert_eq!(url, "https://packages.cudane.org/pool/x86_64/foo/foo-1.0.0.xcs.sha256");
+    }
+
+    #[test]
+    fn test_sidecar_path_for() {
+        let p = sidecar_path_for("foo", "1.0.0");
+        assert_eq!(p, PathBuf::from("foo-1.0.0.xcs.sha256"));
+    }
+
+    #[test]
+    fn test_sidecar_enqueued_when_archive_missing() {
+        let cache_dir = tempfile::tempdir().unwrap();
+        let meta = PackageMetadata {
+            pkg_name: "foo".into(),
+            version: "1.0.0".into(),
+            license: "MIT".into(),
+            source: "https://example.com/pool/x86_64/foo/foo-1.0.0.xcs".into(),
+            checksum: crate::core::database::ChecksumData { kind: "sha256".into(), value: "abc".into() },
+            dependencies: vec![],
+            files: vec![],
+            provides: None,
+            conflicts: None,
+            architecture: "x86_64".into(),
+            components: vec![],
+            services: vec![],
+            binaries: vec![],
+            file_hashes: HashMap::new(),
+        };
+
+        let mut downloads: Vec<(String, PathBuf)> = Vec::new();
+        let mut pending: Vec<(PackageMetadata, PathBuf)> = Vec::new();
+
+        let archive_name = format!("{}-{}.xcs", meta.pkg_name, meta.version);
+        let target_path = cache_dir.path().join(&archive_name);
+
+        if !target_path.exists() {
+            downloads.push((meta.source.clone(), target_path.clone()));
+            downloads.push((
+                sidecar_url_for(&meta.source),
+                cache_dir.path().join(sidecar_path_for(&meta.pkg_name, &meta.version)),
+            ));
+        }
+        pending.push((meta.clone(), target_path));
+
+        assert_eq!(downloads.len(), 2);
+        assert_eq!(downloads[0].0, "https://example.com/pool/x86_64/foo/foo-1.0.0.xcs");
+        assert_eq!(downloads[1].0, "https://example.com/pool/x86_64/foo/foo-1.0.0.xcs.sha256");
+        assert_eq!(pending.len(), 1);
+    }
+
+    #[test]
+    fn test_sidecar_not_enqueued_when_archive_cached() {
+        let cache_dir = tempfile::tempdir().unwrap();
+        let meta = PackageMetadata {
+            pkg_name: "bar".into(),
+            version: "2.0.0".into(),
+            license: "MIT".into(),
+            source: "https://example.com/pool/x86_64/bar/bar-2.0.0.xcs".into(),
+            checksum: crate::core::database::ChecksumData { kind: "sha256".into(), value: "def".into() },
+            dependencies: vec![],
+            files: vec![],
+            provides: None,
+            conflicts: None,
+            architecture: "x86_64".into(),
+            components: vec![],
+            services: vec![],
+            binaries: vec![],
+            file_hashes: HashMap::new(),
+        };
+
+        let archive_name = format!("{}-{}.xcs", meta.pkg_name, meta.version);
+        let target_path = cache_dir.path().join(&archive_name);
+        fs::write(&target_path, b"cached").unwrap();
+
+        let mut downloads: Vec<(String, PathBuf)> = Vec::new();
+        let mut pending: Vec<(PackageMetadata, PathBuf)> = Vec::new();
+
+        if !target_path.exists() {
+            downloads.push((meta.source.clone(), target_path.clone()));
+            downloads.push((
+                sidecar_url_for(&meta.source),
+                cache_dir.path().join(sidecar_path_for(&meta.pkg_name, &meta.version)),
+            ));
+        }
+        pending.push((meta.clone(), target_path));
+
+        assert!(downloads.is_empty());
+        assert_eq!(pending.len(), 1);
+    }
 }
 

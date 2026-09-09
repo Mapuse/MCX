@@ -42,6 +42,10 @@ impl Extractor {
                 _ => {}
             }
 
+            if path == Path::new("metadata.json") {
+                continue;
+            }
+
             let destination = dest_dir.join(&path);
 
             if let Some(parent) = destination.parent() {

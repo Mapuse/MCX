@@ -40,7 +40,7 @@ pub struct PackageMetadata {
     pub files: Vec<PathBuf>,
     pub provides: Option<Vec<String>>,
     pub conflicts: Option<Vec<String>>,
-    #[serde(default = "default_arch")]
+    #[serde(default = "default_arch", alias = "arch")]
     pub architecture: String,
     #[serde(default)]
     pub components: Vec<Component>,
@@ -326,5 +326,37 @@ impl<'e> Drop for DbTransaction<'e> {
             // RwTxn drops automatically (aborts) when Option::take'd on drop
             let _ = self.txn.take();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_package_metadata_accepts_both_arch_keys() {
+        let canonical = r#"{
+            "pkg_name": "test", "version": "1.0", "license": "MIT",
+            "source": "https://x", "checksum": {"kind": "sha256", "value": "0"},
+            "architecture": "x86_64"
+        }"#;
+        let m1: PackageMetadata = serde_json::from_str(canonical).expect("architecture key");
+        assert_eq!(m1.architecture, "x86_64");
+
+        let legacy = r#"{
+            "pkg_name": "test", "version": "1.0", "license": "MIT",
+            "source": "https://x", "checksum": {"kind": "sha256", "value": "0"},
+            "arch": "aarch64"
+        }"#;
+        let m2: PackageMetadata = serde_json::from_str(legacy).expect("arch key");
+        assert_eq!(m2.architecture, "aarch64");
+    }
+
+    #[test]
+    fn test_checksum_data_parsing() {
+        let json = r#"{"kind": "sha256", "value": "e3b0c44298fc1c149afbf4c8996fb924"}"#;
+        let cs: ChecksumData = serde_json::from_str(json).expect("parse checksum object");
+        assert_eq!(cs.kind, "sha256");
+        assert_eq!(cs.value, "e3b0c44298fc1c149afbf4c8996fb924");
     }
 }

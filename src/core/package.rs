@@ -9,6 +9,51 @@ pub enum PackageStatus {
     Unknown,
 }
 
+/// Flexible checksum field that accepts either a plain string (legacy) or
+/// an `{"kind":"sha256","value":"<hash>"}` object (Outsider format).
+/// Serializes to the structured object form.
+mod flexible_checksum {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    #[derive(Serialize, Deserialize)]
+    struct ChecksumObj {
+        kind: String,
+        value: String,
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<String, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let v = serde_json::Value::deserialize(deserializer)?;
+        match v {
+            serde_json::Value::String(s) => Ok(s),
+            serde_json::Value::Object(_) => {
+                let kind = v.pointer("/kind").and_then(|x| x.as_str()).unwrap_or("sha256");
+                let value = v.pointer("/value").and_then(|x| x.as_str()).unwrap_or("");
+                if value.is_empty() {
+                    Err(serde::de::Error::custom("checksum value is empty"))
+                } else {
+                    Ok(format!("{}:{}", kind, value))
+                }
+            }
+            _ => Err(serde::de::Error::custom("checksum must be a string or {kind,value} object")),
+        }
+    }
+
+    pub fn serialize<S>(checksum: &str, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let (kind, value) = if let Some(pos) = checksum.find(':') {
+            (&checksum[..pos], &checksum[pos + 1..])
+        } else {
+            ("sha256", checksum)
+        };
+        ChecksumObj { kind: kind.to_string(), value: value.to_string() }.serialize(serializer)
+    }
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct PackageEntity {
     pub pkg_name: String,
@@ -16,12 +61,13 @@ pub struct PackageEntity {
     pub license: String,
     pub build_type: String,
     pub build_date: String,
+    #[serde(with = "flexible_checksum")]
     pub checksum: String,
     #[serde(default)]
     pub files: Vec<String>,
     #[serde(default = "default_status")]
     pub status: PackageStatus,
-    #[serde(default = "default_arch")]
+    #[serde(default = "default_arch", alias = "arch")]
     pub architecture: String,
 }
 
@@ -194,5 +240,37 @@ mod tests {
         assert_eq!(compare_versions("1.0", "1.0.0"), Ordering::Equal);
         assert_eq!(compare_versions("1.2", "1.10"), Ordering::Less);
         assert_eq!(compare_versions("2.1", "1.9"), Ordering::Greater);
+    }
+
+    #[test]
+    fn test_package_entity_accepts_both_arch_keys() {
+        let canonical = r#"{
+            "pkg_name": "test", "version": "1.0", "license": "MIT",
+            "build_type": "static", "build_date": "2026-01-01",
+            "checksum": {"kind": "sha256", "value": "abc"},
+            "architecture": "x86_64"
+        }"#;
+        let p1: PackageEntity = serde_json::from_str(canonical).expect("architecture key");
+        assert_eq!(p1.architecture, "x86_64");
+        assert_eq!(p1.checksum, "sha256:abc");
+
+        let legacy = r#"{
+            "pkg_name": "test", "version": "1.0", "license": "MIT",
+            "build_type": "static", "build_date": "2026-01-01",
+            "checksum": {"kind": "sha256", "value": "abc"},
+            "arch": "aarch64"
+        }"#;
+        let p2: PackageEntity = serde_json::from_str(legacy).expect("arch key");
+        assert_eq!(p2.architecture, "aarch64");
+        assert_eq!(p2.checksum, "sha256:abc");
+
+        // Flat string checksum (legacy format) is also accepted
+        let legacy_flat = r#"{
+            "pkg_name": "test", "version": "1.0", "license": "MIT",
+            "build_type": "static", "build_date": "2026-01-01",
+            "checksum": "abc123"
+        }"#;
+        let p3: PackageEntity = serde_json::from_str(legacy_flat).expect("flat checksum");
+        assert_eq!(p3.checksum, "abc123");
     }
 }

@@ -111,7 +111,7 @@ mcx --install <package>...
 mcx in <package>...
 ```
 
-Resolves the dependency graph for the target packages via `DependencySolver`, downloads missing `.xcs` archives into `var/cache/mcx/`, verifies SHA-256 checksums, extracts each package in parallel (≥4 CPUs + ≥1 GB RAM triggers `spawn_blocking` per-package), copies artifacts into both the active root and `var/lib/mcx/active/<pkg>/`, and commits the transaction to LMDB.
+Resolves the dependency graph for the target packages via `DependencySolver`, downloads missing `.xcs` archives into `var/cache/mcx/`, verifies each archive against its sidecar `.xcs.sha256` checksum (single-line hex SHA-256 of the compressed bytes; best-effort — skipped with a warning when the sidecar is absent or unreadable, never a hard failure), extracts each package in parallel (≥4 CPUs + ≥1 GB RAM triggers `spawn_blocking` per-package), copies artifacts into both the active root and `var/lib/mcx/active/<pkg>/`, and commits the transaction to LMDB. The embedded `checksum` inside each archive's `metadata.json` is informational only; mcx does not byte-verify against it.
 
 Installs proceed in topological dependency order. Downloads write to a sibling `<name>.xcs.part` file and are only promoted to the final archive once the full body has been received; a retried transfer sends a `Range: bytes=<resume_from>-` request so an interrupted download resumes from the last byte instead of restarting (the server responds with `206 Partial Content`, or `200`/`416` to fall back to a full re-download). If an older version of a package is already installed, `mcx install <pkg>` re-installs it to upgrade; an installed version that is already equal to or newer than the resolved target is a no-op. Updates behave like `git clone` then `git pull`: the **first install of a package is always complete** (the full payload is materialised), while every later update is a **diff** — the new active generation is seeded from the current one (an instant rename, no data copy) and only the files that actually changed are written, so unchanged files are never rewritten and files that dropped out of the payload are removed. Every state transition is recorded in `var/lib/mcx/lifecycle.jsonl` by `LifecycleEngine`.
 
@@ -140,7 +140,7 @@ mcx --add <file.xcs>
 mcx local <file.xcs>
 ```
 
-Installs a local `.xcs` package file directly — no dependency resolution, no repository lookup. Extracts the archive to `var/tmp/mcx/stage/`, renames the staging directory into `var/lib/mcx/active/`, and updates the ledger.
+Installs a local `.xcs` package file directly — no dependency resolution, no repository lookup. Verifies the archive against its sidecar `<file>.xcs.sha256` if present (best-effort, never a hard failure), then extracts the archive to `var/tmp/mcx/stage/`, renames the staging directory into `var/lib/mcx/active/`, and updates the ledger. A root `metadata.json` inside the archive is never installed onto the live system; it is skipped during extraction.
 
 | Input | Type | Required | Description |
 | ----- | ---- | -------- | ----------- |
@@ -784,17 +784,17 @@ Environment overrides: `MCX_USER_MODE` / `MCX_SYSTEM_MODE` force the mode for th
 
 ## Multi-arch support
 
-MCX supports building and deploying packages for both `amd64` (x86_64) and `arm64` (aarch64) architectures, as well as a `"native"` fallback.
+MCX recognises exactly three canonical architecture values: `x86_64`, `aarch64`, and `native`. Legacy values `amd64` and `arm64` are mapped to `x86_64` and `aarch64` respectively on read (e.g. in serde deserialization of `metadata.json` and index entries); any other value is an error with no silent fallback.
 
 ### Architecture types
 
-The `Architecture` enum (`src/core/arch.rs`) defines three variants:
+The `Architecture` enum (`src/core/arch.rs`) defines three canonical variants. Legacy string values `amd64` and `arm64` are mapped to `x86_64` and `aarch64` respectively on read via a serde alias; any unrecognised value is rejected.
 
-| Variant | String value | Target triple | Matches on host |
-| ------- | ------------ | ------------- | --------------- |
-| `Amd64` | `"amd64"` / `"x86_64"` | `x86_64-unknown-linux-musl` | x86_64 hosts only |
-| `Arm64` | `"arm64"` / `"aarch64"` | `aarch64-unknown-linux-musl` | aarch64 hosts only |
-| `Native` | `"native"` | *host-dependent* | Any host (wildcard) |
+| Variant | Canonical string | Legacy aliases (mapped on read) | Target triple | Matches on host |
+| ------- | ---------------- | ------------------------------- | ------------- | --------------- |
+| `Amd64` | `"x86_64"` | `"amd64"` | `x86_64-unknown-linux-musl` | x86_64 hosts only |
+| `Arm64` | `"aarch64"` | `"arm64"` | `aarch64-unknown-linux-musl` | aarch64 hosts only |
+| `Native` | `"native"` | — | *host-dependent* | Any host (wildcard) |
 
 ### Host detection
 
@@ -802,21 +802,21 @@ On startup, `Architecture::host()` auto-detects the running architecture by read
 
 ### Package metadata
 
-Each `PackageMetadata` record carries an `architecture` field (default: `"native"`). This field is:
+Each `PackageMetadata` record carries an `architecture` field (default: `"native"`). The key is read from JSON as `architecture` but a legacy `arch` key is also tolerated via a serde alias. This field is:
 
-- **Propagated from repository indexes.** When syncing repository data, packages whose architecture does not match the host are silently skipped.
-- **Checked during install.** If a package specifies `"amd64"` but the host is `arm64`, the install is rejected with a clear error.
+- **Propagated from repository indexes.** The index (the packages registry — `index.<arch>.json` files synced into the local DB by `RepositoryManager`) provides per-package `architecture` values. Packages whose architecture does not match the host are rejected with a clear error during install, not silently skipped.
+- **Read from `metadata.json` inside each `.xcs` archive.** This per-package metadata lives at the tar root (`"./"`) and is used during extraction and local `add`; its embedded `checksum` is informational only.
 - **Displayed in query output.** `mcx -q <pkg>` shows the architecture alongside version and license.
 - **Used by the dependency solver.** Only packages matching the host architecture are considered during dependency resolution.
 
 ### Repository index format
 
-Repository indexes are architecture-specific. Each repository exposes one index per architecture at `index.<arch>.json`:
+Repository indexes are architecture-specific. The "index" is the packages registry/database — Outsider (the publisher) writes `index.<arch>.json` and mcx syncs it into its local DB. Each repository exposes one index per architecture at `index.<arch>.json`:
 
 | Architecture | Index file |
 | ------------ | ---------- |
-| amd64 | `index.x86_64.json` |
-| arm64 | `index.aarch64.json` |
+| x86_64 | `index.x86_64.json` |
+| aarch64 | `index.aarch64.json` |
 
 When MCX syncs a repository, it automatically fetches the index matching the host architecture by appending `index.<arch>.json` to the repo base URL. For example, a repo configured with `url = https://packages.cudane.org` will fetch `https://packages.cudane.org/index.x86_64.json` on an amd64 host.
 
@@ -826,7 +826,7 @@ Each index entry carries an `"architecture"` field and a `"source"` URL rooted i
 {
   "pkg_name": "curl",
   "version": "8.0.0",
-  "architecture": "amd64",
+  "architecture": "x86_64",
   "license": "MIT",
   "source": "https://packages.cudane.org/pool/x86_64/curl/curl-8.0.0.xcs",
   "checksum": { "kind": "sha256", "value": "abc…" },
@@ -951,7 +951,7 @@ The profiler (`SystemProfile::probe()`) now includes an `architecture: Architect
 
 ### Package entity
 
-The `PackageEntity` struct (used for embedded `metadata.json` manifests) also carries an `architecture` field with the same semantics, defaulting to `"native"` when absent.
+The `PackageEntity` struct (used for `metadata.json` manifests found inside `.xcs` archives at the tar root) also carries an `architecture` field with the same semantics, defaulting to `"native"` when absent.
 
 ## Module inventory
 
@@ -1126,7 +1126,7 @@ Every command struct implements `pub fn execute(&self, engine: &EngineContext) -
 | `config.rs` | `MappedConfig<'a>`, `ConfigManager`, `CalibratedParams` | Mmap INI parser with `PhantomData` lifetime tracking. `ConfigManager` embeds `config.ini` + `repo.ini`. | `memmap2` |
 | `database.rs` | `Database`, `DbTransaction`, `PackageMetadata` | LMDB-backed package registry via `heed` + `bincode`. Three named databases: installed, available, virtual_provides. | `heed`, `bincode` |
 | `repo.rs` | `RepositoryManager` | CRUD for `etc/mcx/repo.ini` (INI format). Synced indexes remain JSON on disk. | — |
-| `manifest.rs` | `ManifestParser` | Deserialise `.xcs` package manifests. | — |
+| `manifest.rs` | `ManifestParser` | Deserialise `metadata.json` from inside `.xcs` package archives. | — |
 | `solver.rs` | `DependencySolver`, `ResolutionVerdict`, `UpgradePath` | Dependency graph resolution, delta-cost estimation, deadlock detection, cycle breaking. | `graph.rs` |
 | `graph.rs` | `DepGraph` | DAG of package dependencies and conflicts. | — |
 | `transaction.rs` | `PackageTransaction` | Transaction log for install/remove operations. | — |
@@ -1222,10 +1222,10 @@ LMDB provides memory-mapped, zero-copy reads and full ACID transactions with sin
 | `source` | `String` | URL or path of the source artifact |
 | `files` | `Vec<PathBuf>` | Relative paths of installed files |
 | `dependencies` | `Vec<Dependency>` | Dependency specs (`name`, `dep_type`) |
-| `checksum` | `ChecksumData` | `{ type: String, value: String }` |
+| `checksum` | `ChecksumData` | `{ type: String, value: String }` — embedded in `metadata.json` inside the archive; informational only (hash of the uncompressed tar stream). mcx never byte-verifies against it. |
 | `provides` | `Option<Vec<String>>` | Virtual package names provided by this package |
 | `conflicts` | `Option<Vec<String>>` | Package names this package conflicts with |
-| `architecture` | `String` | Target architecture (`"amd64"`, `"arm64"`, or `"native"`). Defaults to `"native"` for backward compatibility. When set to a specific arch, packages are only installed on matching hosts. `"native"` matches any host architecture. |
+| `architecture` | `String` | Target architecture — canonical values: `"x86_64"`, `"aarch64"`, or `"native"` (legacy `"amd64"`/`"arm64"` are mapped on read). Defaults to `"native"` for backward compatibility. When set to a specific arch, packages are only installed on matching hosts. `"native"` matches any host architecture. |
 
 ## On-disk layout
 
@@ -1305,8 +1305,9 @@ Default files are written on first `ConfigManager::new()` if absent.
 | Compression | Zstandard (level from `config.ini [engine] zstd_level`, default 3) |
 | Compression command | `zstd --compress -3 --tar -o output.xcs input/` |
 | Decompression command | `zstd --decompress --tar -o output_dir input.xcs` |
-| Internal structure | Plain directory tree with no wrapper metadata |
-| Metadata location | Stored in LMDB `installed` database (`PackageMetadata.checksum`) — the archive itself has no embedded manifest |
+| Internal structure | Plain directory tree plus a root `metadata.json` |
+| Metadata location | `metadata.json` at the tar root (`"./"`) inside each `.xcs` archive; a root `metadata.json` is never installed onto the live system (skipped during extraction in both repo-install and local `add` paths). Install-time metadata for a package also comes from the solver/index. |
+| Sidecar checksum | `<name>-<ver>.xcs.sha256` — single-line hex SHA-256 of the compressed `.xcs` bytes; downloaded from `source + ".sha256"`. Used for transport integrity during `mcx install` and `mcx add`. If absent or unreadable, verification is skipped with a warning (best-effort, never a hard failure). |
 
 ## Transaction flow
 
@@ -1522,7 +1523,7 @@ Repository sync is handled by `RepositoryManager::sync_all_parallel` (in `core/r
 `IntegrityScanner` (in `core::integrity.rs`) verifies every installed package's file tree:
 
 - **Per-file digests**: packages installed by this version record a SHA-256 digest per regular file (`file_hashes`); verification recomputes each digest and flags tampered content
-- **Legacy manifests**: packages installed before per-file digests existed are checked for existence only (the archive-level checksum validates downloads, not placed content)
+- **Legacy manifests**: packages installed before per-file digests existed are checked for existence only (the embedded `checksum` in `metadata.json` is informational and is not verified against installed content; transport integrity is handled by the sidecar `.xcs.sha256` file at download time)
 - **Dangling symlinks**: dangling links under the managed `usr/`, `etc/`, and `var/` trees are reported; `repair_all()` removes only links recorded in some installed package's manifest — unowned links are left untouched
 
 | Method | Signature |
@@ -2203,7 +2204,7 @@ prune_age_hours = 168
 | `[network]` | `fallback_repos` | `enabled` | `enabled`, `disabled` | Fall through to secondary repos on primary failure |
 | `[network]` | `latency_threshold_ms` | `200` | integer (ms) | Concurrency drops if latency exceeds this |
 | `[network]` | `bandwidth_threshold_kbps` | `5000` | integer (kbps) | Switches to serial downloads below this |
-| `[security]` | `verify_checksums` | `true` | `true`, `false` | SHA-256 verification before extraction |
+| `[security]` | `verify_checksums` | `true` | `true`, `false` | Verify `.xcs` archive against its sidecar `.xcs.sha256` before extraction (best-effort) |
 | `[security]` | `allow_unverified` | `false` | `true`, `false` | Install packages without checksums (with warning) |
 | `[cache]` | `limit_bytes` | `5368709120` | integer (bytes) | Max size of `var/cache/mcx/` (5 GB default) |
 | `[cache]` | `prune_age_hours` | `168` | integer (hours) | Cache eviction age threshold (7 days) |
@@ -2327,7 +2328,7 @@ The `url` field in `repo.ini` points to `<repo-root>`.
     "license": "Zlib",
     "source": "https://repo.example.com/pool/zlib/zlib-1.3.1.xcs",
     "checksum": {
-      "type": "sha256",
+      "kind": "sha256",
       "value": "a1b2c3d4e5f67890abcdef1234567890abcdef1234567890abcdef1234567890"
     },
     "dependencies": [
@@ -2343,7 +2344,7 @@ The `url` field in `repo.ini` points to `<repo-root>`.
     "license": "libpng-2.0",
     "source": "https://repo.example.com/pool/libpng/libpng-1.6.40.xcs",
     "checksum": {
-      "type": "sha256",
+      "kind": "sha256",
       "value": "fedcba0987654321fedcba0987654321fedcba0987654321fedcba0987654321"
     },
     "dependencies": [
@@ -2362,7 +2363,7 @@ The `url` field in `repo.ini` points to `<repo-root>`.
 | `version` | string | yes | Semantic version |
 | `license` | string | yes | SPDX identifier or custom |
 | `source` | string | yes | Download URL for the `.xcs` archive |
-| `checksum` | object | yes | `{ type: "sha256", value: "<hex>" }` |
+| `checksum` | object | yes | `{ kind: "sha256", value: "<hex>" }` — SHA-256 of the compressed `.xcs` bytes (same as the sidecar `.xcs.sha256`). |
 | `dependencies` | array | yes | List of `{ name, dep_type }` objects. `dep_type` is typically `"runtime"`, `"build"`, or `"library"`. |
 | `files` | array | yes | Populated after installation; empty in the index is fine |
 | `provides` | array | no | Virtual package names this package provides (e.g., `libz.so.1`) |
@@ -2384,6 +2385,10 @@ zstd --compress -3 --tar -o my-pkg-1.0.0.xcs .
 
 ```shell
 # Assuming .xcs files are in pool/<pkg>/
+# Note: the index checksum is the SHA-256 of the COMPRESSED .xcs bytes
+# (same value as the sidecar .xcs.sha256). This is distinct from the
+# metadata.json embedded checksum, which hashes the uncompressed tar
+# stream and is informational only.
 cat << 'SCRIPT' > generate-index.sh
 #!/bin/sh
 ARCH=${1:-x86_64}
@@ -2401,7 +2406,7 @@ for xcs in pool/*/*.xcs; do
     "version": "$ver",
     "license": "Unknown",
     "source": "https://repo.example.com/pool/$pkg/$pkg-$ver.xcs",
-    "checksum": { "type": "sha256", "value": "$hash" },
+    "checksum": { "kind": "sha256", "value": "$hash" },
     "dependencies": [],
     "files": [],
     "provides": [],
