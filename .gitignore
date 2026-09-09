@@ -1,5 +1,5 @@
-/target
-TODO.md
-# Meson/Ninja build dir + generated cross file
+x86_64/
+aarch64/
+target/
 builddir/
 scripts/cross.txt
