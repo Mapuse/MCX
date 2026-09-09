@@ -161,7 +161,7 @@ pub enum Commands {
     #[command(long_flag = "repo-disable", aliases = ["rd"])]
     RepoDisable { name: String },
 
-    #[command(long_flag = "local-source-add", aliases = ["lsrc-add", "lsra"])]
+    #[command(long_flag = "local-source-add", aliases = ["lsrc-add", "lsa"])]
     LocalSourceAdd {
         name: String,
         path_or_url: String,
@@ -173,13 +173,13 @@ pub enum Commands {
         disable: bool,
     },
 
-    #[command(long_flag = "local-source-remove", aliases = ["lsrc-rm"])]
+    #[command(long_flag = "local-source-remove", aliases = ["lsrc-rm", "lsr"])]
     LocalSourceRemove { name: String },
 
-    #[command(long_flag = "local-source-list", aliases = ["lsrc-ls"])]
+    #[command(long_flag = "local-source-list", aliases = ["lsrc-ls", "ls"])]
     LocalSourceList,
 
-    #[command(long_flag = "local-source-build", aliases = ["lsrc-build"])]
+    #[command(long_flag = "local-source-build", aliases = ["lsrc-build", "lsb"])]
     LocalSourceBuild {
         names: Vec<String>,
         #[arg(long, help = "Rebuild/reinstall even when the source is unchanged")]
