@@ -2767,6 +2767,14 @@ println!("Target packages: {:?}", profile.packages);
 | Check | `cargo check` | — | Compile-only verification, no artifacts |
 | Release with debug | `cargo +nightly -Zjson-target-spec -Zbuild-std build --profile release --target x86_64-unknown-linux-musl.json` | same as Release + debug symbols preserved | Profiling with `perf`, flamegraph |
 
+The examples below use these shell variables (set them before running):
+
+| Variable | Example | Purpose |
+| -------- | ------- | ------- |
+| `TRIPLE` | `x86_64-unknown-linux-musl` | Rust target triple passed to `--target` and `RUST_TARGET` |
+| `PREFIX` | `/system` or `$HOME/.local` | Install prefix (binary lands under `$DESTDIR$PREFIX/bin`) |
+| `DESTDIR` | `/tmp/staging` | Staging root for `make install` / `install` |
+
 ```shell
 # Compile-only verification (fastest)
 cargo  +nightly -Zjson-target-spec -Zbuild-std check --target x86_64-unknown-linux-musl.json
@@ -2784,6 +2792,8 @@ Both musl targets build through `clang` — no GNU cross-toolchain is needed.
 `.cargo/config.toml` already wires each target to `clang` as the linker with
 `--sysroot=/system`, `+crt-static`, and target-specific CPU/LTO flags
 (`x86-64-v3` for amd64, `armv8-a` for arm64). rustc links via clang directly.
+When the host only supports `x86-64-v2`, override the amd64 CPU at build time
+via `CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUSTFLAGS="-C target-cpu=x86-64-v2"`.
 
 Build-script C code (`cc`-style crates) needs rustc's C compiler to resolve per
 target, which is what the `CC_*` variables below supply.
@@ -2807,7 +2817,7 @@ under `./toolchains/` — they rewrite rustc's triples into zig's native form
 ls toolchains/   # zig-x86_64-musl-cc  zig-aarch64-musl-cc
 ```
 
-Point `CC_*` (and `TARGET_CC` for the foreign target) at the matching wrapper:
+Point `CC_*`, `AR_*`, and `TARGET_CC` at the matching wrapper:
 
 ```shell
 # ── amd64 (native or cross) ──────────────────────────────────────────────
@@ -2816,6 +2826,7 @@ cargo build --release --target x86_64-unknown-linux-musl
 
 # ── arm64 (cross from amd64) ─────────────────────────────────────────────
 CC_aarch64_unknown_linux_musl="$PWD/toolchains/zig-aarch64-musl-cc" \
+AR_aarch64_unknown_linux_musl=/usr/bin/ar \
 TARGET_CC="$PWD/toolchains/zig-aarch64-musl-cc" \
 cargo build --release --target aarch64-unknown-linux-musl
 
@@ -2826,12 +2837,23 @@ Apply the same environment forward for tests and linting on the foreign target:
 
 ```shell
 CC_aarch64_unknown_linux_musl="$PWD/toolchains/zig-aarch64-musl-cc" \
+AR_aarch64_unknown_linux_musl=/usr/bin/ar \
 TARGET_CC="$PWD/toolchains/zig-aarch64-musl-cc" \
 cargo test --target aarch64-unknown-linux-musl
 
 CC_aarch64_unknown_linux_musl="$PWD/toolchains/zig-aarch64-musl-cc" \
+AR_aarch64_unknown_linux_musl=/usr/bin/ar \
 TARGET_CC="$PWD/toolchains/zig-aarch64-musl-cc" \
 cargo clippy --target aarch64-unknown-linux-musl --all-targets -- -D warnings
+```
+
+`make install` respects `RUST_TARGET`, `DESTDIR`, and `PREFIX` to control
+where the binary lands:
+
+```shell
+# Binaries land under $DESTDIR$PREFIX/bin
+make install RUST_TARGET=x86_64-unknown-linux-musl DESTDIR=$DESTDIR PREFIX=$PREFIX
+make install RUST_TARGET=aarch64-unknown-linux-musl DESTDIR=$DESTDIR PREFIX=$PREFIX
 ```
 
 ### Feature flags
@@ -2873,32 +2895,31 @@ The active target is auto-detected from the host via `uname -m`. To cross-compil
 # ── Native (host arch auto-detected) ────────────────────────────────────
 cargo build --release --locked
 # Binary: target/$(RUST_TARGET)/release/mcx
-install -Dm755 target/*/release/mcx /system/bin/mcx
+install -Dm755 target/*/release/mcx "$DESTDIR$PREFIX/bin/mcx"
 
 # ── amd64 ────────────────────────────────────────────────────────────────
 cargo build --release --locked --target x86_64-unknown-linux-musl
-install -Dm755 target/x86_64-unknown-linux-musl/release/mcx /system/bin/mcx
+install -Dm755 target/x86_64-unknown-linux-musl/release/mcx "$DESTDIR$PREFIX/bin/mcx"
 
 # ── arm64 (cross from amd64) ─────────────────────────────────────────────
 cargo build --release --locked --target aarch64-unknown-linux-musl
-install -Dm755 target/aarch64-unknown-linux-musl/release/mcx /system/bin/mcx
+install -Dm755 target/aarch64-unknown-linux-musl/release/mcx "$DESTDIR$PREFIX/bin/mcx"
 ```
 
 ### Build and install (Make)
 
 ```shell
 # ── Native (host arch auto-detected) ────────────────────────────────────
-make build                    # builds for host
-make install                  # installs to /system/bin/mcx
-make install DESTDIR=/mnt     # staging install
+make build                                          # builds for host
+make install DESTDIR=$DESTDIR PREFIX=$PREFIX        # installs to $DESTDIR$PREFIX/bin/mcx
 
 # ── amd64 ────────────────────────────────────────────────────────────────
 make build RUST_TARGET=x86_64-unknown-linux-musl
-make install RUST_TARGET=x86_64-unknown-linux-musl
+make install RUST_TARGET=x86_64-unknown-linux-musl DESTDIR=$DESTDIR PREFIX=$PREFIX
 
 # ── arm64 (cross from amd64) ─────────────────────────────────────────────
 make build RUST_TARGET=aarch64-unknown-linux-musl
-make install RUST_TARGET=aarch64-unknown-linux-musl
+make install RUST_TARGET=aarch64-unknown-linux-musl DESTDIR=$DESTDIR PREFIX=$PREFIX
 ```
 
 ### Build and install (Ninja)
@@ -3006,13 +3027,42 @@ cargo +nightly -Zjson-target-spec -Zbuild-std test --test integration --target x
 cargo +nightly -Zjson-target-spec -Zbuild-std test --release --all-features --target x86_64-unknown-linux-musl.json
 ```
 
+### Two-target testing
+
+Both musl targets can be tested through the nightly json-spec pipeline:
+
+```shell
+# ── amd64 (native host) ──────────────────────────────────────────────────
+cargo +nightly -Zjson-target-spec -Zbuild-std test --target x86_64-unknown-linux-musl.json
+
+# ── aarch64 (cross from amd64 host) ──────────────────────────────────────
+CC_aarch64_unknown_linux_musl="$PWD/toolchains/zig-aarch64-musl-cc" \
+AR_aarch64_unknown_linux_musl=/usr/bin/ar \
+CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_RUSTFLAGS="-C link-self-contained=no -C target-feature=+crt-static -C link-arg=-target -C link-arg=aarch64-unknown-linux-musl" \
+cargo +nightly -Zjson-target-spec -Zbuild-std test --target aarch64-unknown-linux-musl.json
+
+# ── amd64 (cross from arm64 host) ──────────────────────────────────────
+CC_x86_64_unknown_linux_musl="$PWD/toolchains/zig-x86_64-musl-cc" \
+AR_x86_64_unknown_linux_musl=/usr/bin/ar \
+CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUSTFLAGS="-C target-cpu=x86-64-v2 -C link-self-contained=no -C target-feature=+crt-static -C link-arg=-target -C link-arg=x86_64-unknown-linux-musl" \
+cargo +nightly -Zjson-target-spec -Zbuild-std test --target x86_64-unknown-linux-musl.json
+```
+
+On an amd64 host the aarch64 test binaries run under qemu-user (binfmt);
+CI's arm64 runner executes them natively. On an arm64 host the x86_64
+test binaries likewise run under qemu-user (binfmt); CI's amd64 runner
+executes them natively on `ubuntu-latest`. A few MCX tests open an
+LMDB-backed database and under qemu-user the unemulated `get_robust_list`
+syscall causes `ENOSYS` — on native arm64 hardware/CI runners they pass
+(this is an emulation artifact, not a code bug).
+
 Integration tests are located in `tests/integration.rs`. They exercise full command pipelines against a temporary directory root, verifying ledger state transitions, file system layout, and error paths.
 
 ## Linting
 
 ```shell
 # Clippy (lint checks)
-cargo clippy -- -D warnings
+cargo clippy --all-targets -- -D warnings
 
 # Format check
 cargo fmt --check
@@ -3068,27 +3118,36 @@ perf stat -e cycles,instructions,cache-misses,faults ./target/release/mcx -i zli
 
 ## Continuous integration
 
+CI runs on GitHub Actions with a native matrix — each architecture executes
+on its own runner (no emulation):
+
 ```yaml
-# Expected CI pipeline (GitHub Actions)
-steps:
-  - name: Checkout
-    run: git checkout ${{ github.ref }}
+# .github/workflows/rust.yml  (actual pipeline)
+jobs:
+  build-and-test:
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+            os: ubuntu-latest
+          - arch: arm64
+            os: ubuntu-24.04-arm
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
 
-  - name: Build
-    run: cargo build --release
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y meson ninja-build
 
-  - name: Test
-    run: cargo test --release
+      - name: Build
+        run: cargo build --verbose
 
-  - name: Lint
-    run: cargo clippy -- -D warnings
-
-  - name: Format
-    run: cargo fmt --check
-
-  - name: Audit
-    run: cargo audit
+      - name: Test
+        run: cargo test --verbose
 ```
+
+Each matrix leg runs natively: amd64 on `ubuntu-latest`, arm64 on
+`ubuntu-24.04-arm`. No qemu in CI.
 
 ## Cargo.toml release profile
 
